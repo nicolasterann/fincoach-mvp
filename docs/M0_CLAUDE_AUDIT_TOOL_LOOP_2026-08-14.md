@@ -4286,3 +4286,68 @@ IR351 fija los negativos («gambas» solo, «a») y el positivo hablado
   muestra real **11/11** · HR_INVENTED re-certificada tras el
   endurecimiento (pregunta → «Fueron 100» → write limpio) · capture
   **883/883** · mutaciones **558/558** SOLAS · PostgreSQL **82/82**.
+
+# ADENDA 58 — 2026-08-23 — Los tres hallazgos finales del founder: preguntas que no apilan, totales que se responden, y voz hasta en el fallo
+
+Estado: **AUTORITATIVA.** Diagnóstico 100% desde telemetría de producción
+(read-only) antes de tocar código; el founder pidió no romper nada.
+
+## A58-1. Diagnóstico con evidencia
+
+1. **La colgada + cancel muerto ×2**: cada pregunta (del guard y del
+   executor) dejaba su operación en `awaiting_input`; se APILARON TRES
+   abiertas (dos awaiting + una `planning`+pregunta) y el «cancela» murió
+   primero con `dispatch/Error` crudo y después con
+   `round_completion/KIPU_LOOP_MESSAGE_SEQUENCE_INVALID`.
+2. **El total de Ecuador rehusado**: las tres respuestas llevaban el
+   advisory `unsupported_figure` — la SUMA (-110+172.73+0 = 62.73) no
+   está literal en la evidencia; la única reescritura del advisory empujó
+   al modelo a soltar el número («esa suma anterior quedó mal»).
+3. **La doble pregunta de los choripanes**: duplicado adyacente exacto en
+   un solo mensaje — sin colapso determinista en la publicación.
+4. **FX (20 USD desde cuenta ARS)**: por instrucción del founder queda
+   COMO ESTÁ (caso atípico): el writer rehúsa con física correcta, el
+   modelo pregunta los ARS — y ahora la salida es limpia, no colgada.
+
+## A58-2. Los fixes (evaluados contra «no romper nada»)
+
+- **`awaiting_input` queda RESERVADO a propuestas con manifiesto** (y al
+  reject que las conserva). Una pregunta conversacional COMPLETA su
+  operación: su respuesta se re-deriva del episodio (una-entrega-atrás,
+  probado desde HR_FOLLOWUP). El apilamiento se vuelve imposible por
+  construcción. El riesgo identificado ANTES de aplicar — el
+  cortacircuitos anti-repetición perdía su memoria de operaciones
+  abiertas — se cubrió con memoria de ARCHIVO (lectura tipada 111, fallo
+  de lectura = no comparar, jamás bloquear); `DRY_NO_PROGRESS_REFUSAL`
+  verde con la memoria nueva.
+- **Clausura aritmética** en el advisory de cifras: subconjuntos con
+  signo (≤8 de las 16 mayores) — un TOTAL de cifras probadas está
+  probado; 62.73 pasa, 999.99 no.
+- **Colapso determinista de oraciones duplicadas adyacentes** en
+  `sanitizeAgentReply` («¿Cuánto fue? ¿Cuánto fue?» → una), conservando
+  repeticiones legítimas no adyacentes («Sí. Sí, confirmado.»).
+- **Recomposición también en el catch EXTERNO**: si un turno muere SIN
+  writes, una completion limpia (historial en texto + mensaje, cero
+  contexto financiero, cero tools, barrera de falso-éxito con evidencia
+  VACÍA — la forma más estricta) responde la intención con voz; el texto
+  muerto «reintenta este mismo mensaje» pasa a ser triple-fallback.
+  Es el 8º call site de la frontera vigilada `completeLoopModel` (pin
+  IR340 7→8).
+
+## A58-3. Red
+
+- `DRY_STACKED_CANCEL` (nueva): el guion del caso real 00:43 — dos
+  rechazos FX consecutivos + «cancela» — prueba CERO awaiting apiladas y
+  cancel con voz humana, sin Error ni SEQUENCE_INVALID.
+- IR352 (no-stack + aritmética + colapso + recomposición) con
+  M0M565 («la aritmética vuelve a marcarse no probada») y M0M566 («las
+  preguntas vuelven a apilar») muertos por ella.
+- Lanes adaptadas al diseño (DRY_UNSTATED_ASK, DRY_QUOTED_SLANG,
+  DRY_NO_PROGRESS_REFUSAL) y pins refrescados (IR340 count 8, IR346a
+  dry 32).
+
+## A58-4. Batería
+
+dry **32/32** · Ola 0 **16/16** · calibración **2/2** · muestra real
+**11/11** · capture **884/884** · mutaciones **560/560** SOLAS (M0M565 sobrevivió una ronda porque IR352 probaba el helper y no su CONSUMO — cuarta repetición de la lección de la aserción débil; ahora muerde el caso literal de Ecuador) ·
+PostgreSQL **82/82** · M117–M122 verdes.

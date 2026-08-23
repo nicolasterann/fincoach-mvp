@@ -3462,7 +3462,7 @@ const cases = [
   {
     name: "M0M503 native loop pays the heavy envelope role-binding tax again",
     file: "src/lib/ai/agent/kipu-agent.ts",
-    from: "      extractNormalizedReplyMoneyClaims(reply)\n        .filter(\n          (claim) => !amountWasStated(evidence, claim.value, tolerance),\n        )\n        .map((claim) => claim.value),",
+    from: "      extractNormalizedReplyMoneyClaims(reply)\n        .filter(\n          (claim) =>\n            !amountWasStated(evidence, claim.value, tolerance) &&\n            !evidenceArithmeticSupports(claim.value, evidenceValues, tolerance),\n        )\n        .map((claim) => claim.value),",
     to: "      replyMoneyGroundingFailures(reply, evidence, evidence).map(\n        (failure) => failure.value,\n      ), // mutation: heavy role binding re-enters the loop advisory",
     detector: "IR328q",
   },
@@ -3880,6 +3880,20 @@ const cases = [
     from: "  if (!carriesNumeral) return false;\n  return episodeMessages.some((message) => fold(message).includes(needle));",
     to: "  return true; // mutation: any quote authorizes, fabricated included",
     detector: "IR351",
+  },
+  {
+    name: "M0M565 arithmetic over proven figures is flagged unsupported again",
+    file: "src/lib/ai/agent/kipu-agent.ts",
+    from: "            !amountWasStated(evidence, claim.value, tolerance) &&\n            !evidenceArithmeticSupports(claim.value, evidenceValues, tolerance),",
+    to: "            !amountWasStated(evidence, claim.value, tolerance), // mutation: totals unsupported again",
+    detector: "IR352",
+  },
+  {
+    name: "M0M566 conversational questions stack awaiting operations again",
+    file: "src/lib/ai/agent/kipu-agent-loop.ts",
+    from: "      terminalStatus = manifestAwaitsConfirmation\n        ? \"awaiting_input\"\n        : outcome.hadError\n          ? \"failed_retriable\"\n          : \"completed\";",
+    to: "      terminalStatus = manifestAwaitsConfirmation || outcome.needsInfo\n        ? \"awaiting_input\"\n        : outcome.hadError\n          ? \"failed_retriable\"\n          : \"completed\"; // mutation: questions stack again",
+    detector: "IR352",
   },
   {
     name: "M0M560 degraded authority guards stop emitting their bounded telemetry counter",

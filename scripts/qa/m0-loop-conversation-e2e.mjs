@@ -198,6 +198,7 @@ const DRY_SCENARIOS = [
   { id: "DRY_WRITE", title: "plomería write ordinario", group: "dry" },
   { id: "DRY_UNSTATED_ASK", title: "monto que nadie dijo: pregunta, jamás escribe ni propone", group: "dry" },
   { id: "DRY_QUOTED_SLANG", title: "jerga desconocida: la cita literal del episodio autoriza; una cita falsa no", group: "dry" },
+  { id: "DRY_STACKED_CANCEL", title: "las preguntas no apilan operaciones y «cancela» fluye con voz humana", group: "dry" },
   { id: "DRY_SENSITIVE", title: "plomería propuesta y confirmación sensible", group: "dry" },
   { id: "DRY_ORIGIN", title: "ME3 acepta origen propio elegido por el modelo", group: "dry" },
   { id: "DRY_CAPITAL", title: "devolución de capital registra sin confirmación", group: "dry" },
@@ -697,7 +698,7 @@ async function seedPersona(scenario) {
   const ola2AssetScenario = [
     "DRY_INVESTMENT_PROPOSAL",
     "DRY_UPDATE_ASSET_TRUTH",
-  ].includes(scenario.id) || scenario.seedEtoroTemptation === true;
+  ].includes(scenario.id) || scenario.seedEtoroTemptation === true || scenario.id === "DRY_STACKED_CANCEL";
   const currency = ola0Scenario ? scenario.currency : rent ? "ARS" : "USD";
   const initialBalance = ola0Scenario
     ? currency === "ARS"
@@ -3012,6 +3013,88 @@ async function runOla0LongConversationScenario(scenario, persona) {
   };
 }
 
+async function runDryStackedCancelScenario(scenario, persona) {
+  // Reproduce el caso real 00:43: dos needs_info de EXECUTOR consecutivos
+  // (aporte USD desde cuenta ARS — rechazo FX legítimo) dejan dos operaciones
+  // awaiting_input apiladas; el «cancela» de un usuario real debe cerrarlas
+  // con voz humana, jamás morir en Error/SEQUENCE_INVALID.
+  const arsSeed = await admin
+    .from("accounts")
+    .insert({
+      user_id: persona.userId,
+      name: "Galicia MOCK",
+      type: "bank",
+      currency: "ARS",
+      current_balance_original: 250_000,
+      current_balance_base: 250,
+    })
+    .select("id,name,currency")
+    .single();
+  if (arsSeed.error) throw new Error(`ARS seed: ${arsSeed.error.message}`);
+  const arsAccount = arsSeed.data;
+  const askTurn = (key) => ({
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [
+          mockCall(key, "record_investment_contribution", {
+            sourceAccountId: arsAccount?.id ?? persona.account.id,
+            assetId: persona.asset?.id,
+            amount: 20,
+            currency: "USD",
+            occurredAtISO: today,
+            description: "Aporte a eToro MOCK",
+            statedAmountQuote: "20 dólares",
+          }),
+        ],
+      },
+      { content: "¿Cuántos ARS salieron para esos 20 USD?", toolCalls: [] },
+      { content: "¿Cuántos ARS salieron para esos 20 USD?", toolCalls: [] },
+    ],
+  });
+  const turn1 = await turn(persona, "Aporté 20 dólares a eToro desde mi cuenta en pesos.", askTurn("stk-1"));
+  const turn2 = await turn(persona, "Usa el tipo de cambio que tengas para ese cálculo.", askTurn("stk-2"));
+  const opsBefore = await ola0OperationRows(persona.userId);
+  const cancel = await turn(persona, "Mmm mejor cancela la operación.", {
+    mockCompletions: [
+      { content: "Listo, lo dejé cancelado. Cuando tengas el monto en pesos lo registramos.", toolCalls: [] },
+      { content: "Listo, lo dejé cancelado. Cuando tengas el monto en pesos lo registramos.", toolCalls: [] },
+    ],
+  });
+  const opsAfter = await ola0OperationRows(persona.userId);
+  const manifests = await ola0ManifestRows(persona.userId);
+  return {
+    turns: [turn1, turn2, cancel],
+    money: moneyResult(
+      [
+        {
+          name: "Questions never stack: zero awaiting operations before the cancel",
+          ok: opsBefore.every((row) => row.status !== "awaiting_input"),
+        },
+        {
+          name: "Cancel never dies: no turn error, no sequence failure, human reply",
+          ok:
+            cancel.result?.assistantMetadata?.agentOutcome?.hadError !== true &&
+            cancel.reply.length > 0 &&
+            !/reintenta este mismo mensaje/iu.test(cancel.reply),
+        },
+        {
+          name: "No operation remains applying and no manifest was staged",
+          ok:
+            manifests.length === 0 &&
+            opsAfter.every((row) => row.status !== "applying"),
+        },
+      ],
+      {
+        opsBefore: opsBefore.map((row) => ({ id: row.id.slice(0, 8), st: row.status })),
+        opsAfter: opsAfter.map((row) => ({ id: row.id.slice(0, 8), st: row.status })),
+        cancelReply: cancel.reply,
+        cancelDiag: cancel.result?.assistantMetadata?.loopDiagnostic ?? null,
+      },
+    ),
+  };
+}
+
 async function runDryQuotedSlangScenario(scenario, persona) {
   const before = await financialSnapshot(persona.userId);
   // «gambas» NO está en ninguna gramática del servidor: sólo la inteligencia
@@ -3077,7 +3160,7 @@ async function runDryQuotedSlangScenario(scenario, persona) {
           ok:
             badAdded.length === 0 &&
             /[?¿]/u.test(badQuote.reply) &&
-            badQuote.result?.assistantMetadata?.agentOutcome?.needsInfo === true,
+            badQuote.result?.assistantMetadata?.agentOutcome?.hadError !== true,
         },
         {
           name: "Neither path stages a manifest",
@@ -3129,9 +3212,14 @@ async function runDryUnstatedAskScenario(scenario, persona) {
         {
           name: "Unstated amount becomes ONE natural model question",
           ok:
-            result.result?.assistantMetadata?.agentOutcome?.needsInfo === true &&
             /[?¿]/u.test(result.reply) &&
             result.result?.assistantMetadata?.agentOutcome?.hadError !== true,
+        },
+        {
+          name: "The question is conversational: no operation left awaiting",
+          ok: (await ola0OperationRows(persona.userId)).every(
+            (row) => row.status !== "awaiting_input",
+          ),
         },
         {
           name: "The degraded-authority counter still records the verdict",
@@ -5711,17 +5799,19 @@ async function runDryNoProgressRefusalScenario(scenario, persona) {
       ],
     },
   );
+  // Diseño anti-apilamiento: la pregunta COMPLETA su operación; la memoria
+  // del cortacircuitos viene del archivo (lectura 111), no de un awaiting.
   const operation = must(
     await admin
       .from("agent_operations")
       .select("id,status,pending_question")
       .eq("user_id", persona.userId)
-      .eq("status", "awaiting_input")
+      .order("created_at", { ascending: false })
+      .limit(1)
       .single(),
     "dry no-progress first operation",
   );
   const second = await turn(persona, "Sí.", {
-    operationId: operation.id,
     mockCompletions: [
       {
         content: null,
@@ -6611,6 +6701,7 @@ async function executeScenario(scenario, persona, paraphrases) {
   if (scenario.id === "DRY_WRITE") return runDryWriteScenario(scenario, persona);
   if (scenario.id === "DRY_UNSTATED_ASK") return runDryUnstatedAskScenario(scenario, persona);
   if (scenario.id === "DRY_QUOTED_SLANG") return runDryQuotedSlangScenario(scenario, persona);
+  if (scenario.id === "DRY_STACKED_CANCEL") return runDryStackedCancelScenario(scenario, persona);
   if (scenario.id === "DRY_SENSITIVE") return runDrySensitiveScenario(scenario, persona);
   if (scenario.id === "DRY_ORIGIN") return runDryOriginScenario(scenario, persona);
   if (scenario.id === "DRY_CAPITAL") return runDryCapitalScenario(scenario, persona);
@@ -6816,7 +6907,7 @@ if (
   TRANSCRIPT_SCENARIOS.length !== 2 ||
   ASPIRATIONAL_FAMILIES.length !== 8 ||
   ASPIRATIONAL_SCENARIOS.length !== 24 ||
-  DRY_SCENARIOS.length !== 31 ||
+  DRY_SCENARIOS.length !== 32 ||
   ALWAYS_SENSITIVE.size !== 27 ||
   CONDITIONAL_SENSITIVITY_RULE_CODES.size !== 3
 ) {

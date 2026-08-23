@@ -29,6 +29,7 @@ import {
   unstatedMonetaryClaims,
 } from "@/lib/capture/amount-evidence";
 import { loopPreviousUserDeliveryMessages, loopQuoteAuthorizesAmount } from "@/lib/ai/agent/kipu-agent-loop";
+import { collapseAdjacentDuplicateSentences, evidenceArithmeticSupports, replyMoneyFiguresAbsentFromEvidence } from "@/lib/ai/agent/kipu-agent";
 import {
   MODEL_AUTHORITY_COUNTERS,
   MODEL_AUTHORITY_COUNTER_REASONS,
@@ -32032,7 +32033,7 @@ assert(
       ir340TypedError.role === "system" &&
       ir340TypedError.message ===
         "KIPU_LOOP_MESSAGE_SEQUENCE_INVALID index=1 role=system" &&
-      ir340CompletionCalls.length === 7 &&
+      ir340CompletionCalls.length === 8 &&
       ir328Loop.includes(
         "  assertLoopMessagesSequence(request.messages);\n  return model.complete(request);",
       ) &&
@@ -32776,6 +32777,29 @@ assert(
     JSON.stringify({ previous: ir347Previous }),
   );
   assert(
+    "IR352 · una pregunta jamás apila operaciones; el total es aritmética probada; el duplicado adyacente colapsa; un fallo sin writes recompone con voz",
+    ir328Loop.includes("awaiting_input queda RESERVADO") &&
+      ir328Loop.includes("const manifestAwaitsConfirmation =") &&
+      !/outcome\.needsInfo\s*\?\s*"awaiting_input"/u.test(ir328Loop) &&
+      ir328Loop.includes("let recomposed: string | null = null;") &&
+      ir328Loop.includes("mutationClaimNeedsActionReceipt(candidate, \"\")") &&
+      evidenceArithmeticSupports(62.73, [-110, 172.73, 0, 3914.2, 100]) &&
+      !evidenceArithmeticSupports(999.99, [-110, 172.73, 0]) &&
+      replyMoneyFiguresAbsentFromEvidence(
+        "En total tienes 62.73$ en Ecuador.",
+        "Pichincha -110$ · Produbanco 172.73$ · Efectivo 0$",
+      ).length === 0 &&
+      replyMoneyFiguresAbsentFromEvidence(
+        "En total tienes 999.99$ en Ecuador.",
+        "Pichincha -110$ · Produbanco 172.73$ · Efectivo 0$",
+      ).length === 1 &&
+      collapseAdjacentDuplicateSentences(
+        "¿Cuánto fue por los 2 choripanes? ¿Cuánto fue por los 2 choripanes?",
+      ) === "¿Cuánto fue por los 2 choripanes?" &&
+      collapseAdjacentDuplicateSentences("Sí. Sí, confirmado.") === "Sí. Sí, confirmado.",
+    "question-no-stack + arithmetic + collapse + recompose",
+  );
+  assert(
     "IR351 · cualquier jerga autoriza por CITA literal del episodio — sin listas hardcodeadas; una cita fabricada jamás autoriza y un fallo de control jamás pide reformular",
     loopQuoteAuthorizesAmount("9 gambas", ["Anota 9 gambas de taxi.", "ok"]) === true &&
       loopQuoteAuthorizesAmount("9 GAMBAS", ["anota 9 gambas de taxi."]) === true &&
@@ -32909,7 +32933,7 @@ assert(
       ir346Probe.includes("M120.3 · el reversor genérico no puede devolver caja") &&
       ir346Probe.includes("M120.4 · el dispatcher v3 revierte caja+activo") &&
       tgLoopConversationE2E.includes('id: "DRY_INVESTMENT_PROPOSAL"') &&
-      tgLoopConversationE2E.includes("DRY_SCENARIOS.length !== 31"),
+      tgLoopConversationE2E.includes("DRY_SCENARIOS.length !== 32"),
     JSON.stringify({
       plan: ir346Contribution,
       sensitivity: ir346Sensitive,

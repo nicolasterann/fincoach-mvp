@@ -69,6 +69,7 @@ import {
   type DurableAgentOperation,
   type DurableAgentOperationStep,
   type QuarantineAgentLoopOperationReason,
+  readRecentCompletedAgentOperations,
 } from "@/lib/ai/agent/agent-operation-store";
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { hasDisallowedKipuLoopVoice, NEUTRAL_LATAM_SPANISH_RULE } from "@/lib/ai/voice-policy";
@@ -2232,6 +2233,14 @@ export async function runKipuAgentLoop(
       throw new Error("complete durable context unavailable");
     }
     let activeOpenOperations = [...openRead.operations];
+    // Memoria del cortacircuitos anti-repetición (diseño anti-apilamiento):
+    // las preguntas completan su operación, así que el comparador necesita el
+    // archivo reciente. Lectura tipada 111; si falla, el breaker simplemente
+    // no compara contra archivo (jamás bloquea por no poder leer).
+    const completedOperationsRead = await readRecentCompletedAgentOperations(
+      input.userId,
+      12,
+    ).catch(() => null);
     const preTurnOpenOperations = new Map(
       activeOpenOperations.map((operation) => [operation.id, operation] as const),
     );
@@ -2563,6 +2572,23 @@ export async function runKipuAgentLoop(
         stagedSensitive.length > 0 ||
         deferredEconomic.length > 0 ||
         pendingManifestHandled;
+      // Con las preguntas conversacionales COMPLETANDO su operación (diseño
+      // anti-apilamiento), la memoria del cortacircuitos vive también en el
+      // ARCHIVO: una operación completada de esta conversación cuya respuesta
+      // final fue una pregunta equivale al viejo pendingQuestion.
+      const archivedQuestionCandidates = (completedOperationsRead?.ok ? completedOperationsRead.operations : [])
+        .filter(
+          (operation) =>
+            operation.channel === input.channel &&
+            operation.chatId === (input.chatId ?? null) &&
+            /[?¿]/u.test(String(operation.result?.reply ?? "")),
+        )
+        .slice(0, 8)
+        .map((operation) => ({
+          ...operation,
+          pendingQuestion:
+            operation.pendingQuestion ?? String(operation.result?.reply ?? ""),
+        }));
       const candidates = [
         ...(preTurnOpenOperations.get(attempt.operationId)
           ? [preTurnOpenOperations.get(attempt.operationId)!]
@@ -2573,6 +2599,7 @@ export async function runKipuAgentLoop(
             operation.channel === input.channel &&
             operation.chatId === (input.chatId ?? null),
         ),
+        ...archivedQuestionCandidates,
       ];
       const repeat = candidates
         .map((previous) =>
@@ -4029,7 +4056,12 @@ export async function runKipuAgentLoop(
             summary:
               `${monetaryRequirement.prompt} Si el usuario SÍ expresó ese monto en ESTE episodio con jerga, palabras o cifras que yo no reconocí, re-llama la MISMA tool agregando statedAmountQuote con el fragmento EXACTO de su mensaje que lo dice. Si de verdad no lo dijo, pregúntale el monto en UNA frase natural tuya (sin proponer ni pedir confirmación) y re-llama con su respuesta.`,
           });
-          outcome.needsInfo = true;
+          // La pregunta es CONVERSACIONAL: la respuesta se re-deriva del
+          // episodio (una-entrega-atrás), no de un pendiente durable. Marcar
+          // needsInfo dejaba la operación awaiting_input y las preguntas
+          // APILABAN operaciones abiertas hasta romper el claim del «cancela»
+          // (caso real 00:43, tres abiertas). La operación completa, como las
+          // preguntas en texto del modelo.
           continue;
         }
         if (isReadOnlyAgentTool(call.name) && monetaryRequirement) {
@@ -4536,13 +4568,19 @@ export async function runKipuAgentLoop(
           manifestExecuting && !outcome.hadError && !outcome.needsInfo,
         );
       }
-      terminalStatus = rejectedOnly
+      // awaiting_input queda RESERVADO a lo que de verdad espera una segunda
+      // delivery ligada a estado durable: una PROPUESTA con manifiesto (o un
+      // reject que la conserva). Una pregunta conversacional (needs_info de
+      // guard o de executor) completa: su respuesta se re-deriva del episodio
+      // (una-entrega-atrás), y dejarla abierta APILABA operaciones hasta
+      // romper el «cancela» (caso real 00:43, tres abiertas).
+      const manifestAwaitsConfirmation =
+        rejectedOnly || retainedProposedManifest;
+      terminalStatus = manifestAwaitsConfirmation
         ? "awaiting_input"
         : outcome.hadError
           ? "failed_retriable"
-          : outcome.needsInfo
-            ? "awaiting_input"
-            : "completed";
+          : "completed";
       const terminal = await transitionAgentOperation({
         userId: input.userId,
         operationId: claim.id,
@@ -4601,9 +4639,51 @@ export async function runKipuAgentLoop(
       settleFailure: settleFailureDiagnostic,
     });
     const continuity = postWriteContinuityForOuter?.() ?? null;
+    // RECOMPOSICIÓN (doctrina anti-bot, caso real «cancela» 00:43): si el
+    // turno murió SIN escribir nada, el modelo aún puede responder la
+    // intención con su voz desde una secuencia LIMPIA (historial + mensaje,
+    // sin el tráfico de tools del turno roto). Sin tools: cero riesgo de
+    // write post-fallo; la barrera de falso-éxito sigue vigilando el texto.
+    let recomposed: string | null = null;
+    if (!outcome.wrote && continuity === null) {
+      try {
+        // Secuencia LIMPIA desde el alcance externo: historial en texto plano
+        // + el mensaje del usuario. Sin contexto financiero: esta voz jamás
+        // cita cifras (la barrera de falso-éxito corre con evidencia VACÍA,
+        // la forma más estricta — cualquier afirmación de escritura muere).
+        const spoken = await completeLoopModel(model, {
+          messages: [
+            {
+              role: "system",
+              content:
+                "Eres Kipu, el coach financiero personal. Responde en español latinoamericano cercano y breve. Hubo un fallo interno de control y este turno no ejecutó nada: responde a la intención del último mensaje del usuario con tu voz (si pedía cancelar, confírmale que no quedó nada ejecutado de eso y que puede seguir normal). No llames tools, no cites cifras, no afirmes escrituras y no le pidas repetir ni reformular.",
+            },
+            ...input.recentMessages
+              .filter((row) => typeof row.content === "string" && row.content.trim())
+              .slice(-10)
+              .map((row) => ({
+                role: row.role === "assistant" ? ("assistant" as const) : ("user" as const),
+                content: String(row.content),
+              })),
+            { role: "user", content: input.message },
+          ],
+          tools: KIPU_LOOP_TOOL_SCHEMAS,
+          toolChoice: "none",
+          temperature: 0.4,
+        });
+        addUsage(usage, spoken.usage);
+        const candidate = sanitizeAgentReply(spoken.content ?? "");
+        if (candidate && !mutationClaimNeedsActionReceipt(candidate, "")) {
+          recomposed = candidate;
+        }
+      } catch {
+        recomposed = null;
+      }
+    }
     return {
       ok: false,
       message:
+        recomposed ??
         continuity ??
         "No pude completar la operación con seguridad. Lo ya confirmado conserva sus recibos; reintenta este mismo mensaje.",
       toolsUsed: [...new Set(toolsUsed)],

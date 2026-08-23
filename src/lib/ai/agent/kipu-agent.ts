@@ -667,15 +667,32 @@ export const STRUCTURE_MARKERS =
 // model's final text, leaving only the natural-language reply. The common leak
 // is a flat tool-args object ("{...}") on its own line followed by the real
 // sentence — removing the object salvages the sentence cleanly.
+/** Un mismo enunciado repetido de forma adyacente es siempre un desliz de
+ * generación, jamás una intención («¿Cuánto fue? ¿Cuánto fue?»). Colapso
+ * determinista por oración normalizada. */
+export function collapseAdjacentDuplicateSentences(text: string): string {
+  const parts = text.split(/(?<=[.!?…])\s+|\n+/u).filter((row) => row.trim().length > 0);
+  const out: string[] = [];
+  for (const part of parts) {
+    const normalized = part.trim().toLowerCase().replace(/\s+/gu, " ");
+    const previous = out.length > 0 ? out[out.length - 1]!.trim().toLowerCase().replace(/\s+/gu, " ") : null;
+    if (previous !== null && previous === normalized) continue;
+    out.push(part.trim());
+  }
+  return out.join(" ").trim() || text.trim();
+}
+
 export function sanitizeAgentReply(raw: string): string {
   let text = raw.replace(/```[\s\S]*?```/g, " ");
   for (let i = 0; i < 4; i += 1) {
     text = text.replace(/\{[^{}]*\}/g, " ").replace(/\[[^[\]]*\]/g, " ");
   }
-  return text
-    .replace(/[ \t]+/g, " ")
-    .replace(/\s*\n\s*\n\s*/g, "\n\n")
-    .trim();
+  return collapseAdjacentDuplicateSentences(
+    text
+      .replace(/[ \t]+/g, " ")
+      .replace(/\s*\n\s*\n\s*/g, "\n\n")
+      .trim(),
+  );
 }
 
 const ACTIVE_MUTATION_CLAIM =
@@ -1315,16 +1332,53 @@ export function replyMoneyGroundingFailures(
  * in deterministic context/receipts. Entity and financial-role binding remain
  * an envelope publication barrier and are deliberately not part of this cheap
  * advisory. */
+/** Clausura ARITMÉTICA acotada: un total pedido («¿cuánto tengo en total?»)
+ * es la suma de cifras que la evidencia ya prueba. Sin esto, el advisory de
+ * cifras marcaba la suma como no probada y su reescritura empujaba al modelo
+ * a rehusar el total — el caso real «Ecuador 62.73». Subconjuntos con signo
+ * de hasta 8 de las 16 cifras mayores: cerrado, determinista y barato. */
+export function evidenceArithmeticSupports(
+  value: number,
+  evidenceValues: readonly number[],
+  tolerance = 0.005,
+): boolean {
+  const pool = [...new Set(evidenceValues.map((row) => Math.round(row * 100)))]
+    .sort((left, right) => Math.abs(right) - Math.abs(left))
+    .slice(0, 16);
+  const target = Math.round(value * 100);
+  const cents = Math.round(tolerance * 100 * 2) || 1;
+  let sums = new Set<number>([0]);
+  let used = 0;
+  for (const item of pool) {
+    if (used >= 8) break;
+    used += 1;
+    const next = new Set<number>(sums);
+    for (const partial of sums) {
+      next.add(partial + item);
+      next.add(partial - item);
+    }
+    sums = next;
+    if (sums.size > 200_000) break;
+  }
+  for (const candidate of sums) {
+    if (candidate !== 0 && Math.abs(candidate - target) <= cents) return true;
+  }
+  return false;
+}
+
 export function replyMoneyFiguresAbsentFromEvidence(
   reply: string,
   evidence: string,
   tolerance = 0.005,
 ): number[] {
+  const evidenceValues = statedAmounts(evidence);
   return [
     ...new Set(
       extractNormalizedReplyMoneyClaims(reply)
         .filter(
-          (claim) => !amountWasStated(evidence, claim.value, tolerance),
+          (claim) =>
+            !amountWasStated(evidence, claim.value, tolerance) &&
+            !evidenceArithmeticSupports(claim.value, evidenceValues, tolerance),
         )
         .map((claim) => claim.value),
     ),
