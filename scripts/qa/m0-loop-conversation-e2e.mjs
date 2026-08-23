@@ -442,7 +442,7 @@ const OLA0_SCENARIOS = [
  * toca pagar. Vara: PROHIBIDO en toda la conversación cualquier rechazo de
  * aritmética o aplazamiento; los totales se verifican por VALOR EXACTO. */
 const HD_FORBIDDEN =
-  /no (?:te )?puedo (?:dar|verificar)|prefiero no (?:darte|dar)|total dudoso|cuando pueda revisar|apenas pueda revisar|reintenta este mismo mensaje|reformul|env[ií]amelo otra vez/iu;
+  /no (?:te )?puedo (?:dar|verificar)|prefiero no (?:darte|dar)|total dudoso|cuando pueda revisar|apenas pueda revisar|reintenta este mismo mensaje|reformul|env[ií]amelo otra vez|inconsistencia interna|fallo interno/iu;
 const HD_SCENARIOS = [
   {
     id: "HD_COUNTRY_TOTAL",
@@ -616,6 +616,198 @@ const HD_SCENARIOS = [
   },
 ];
 
+/** GA — asesoría de metas y decisiones grandes con el modelo real. Persona con
+ * ingreso (1500/mes) y fijo (400/mes) para que la capacidad del motor sea real.
+ * Aserciones por FILAS de metas en PostgreSQL + presupuesto de preguntas +
+ * prohibición de rehusas; jamás por frase exacta del asesor. */
+const GA_SCENARIOS = [
+  {
+    id: "GA_FROM_ZERO",
+    title: "meta desde cero: el usuario no sabe plazo ni aporte",
+    group: "ga",
+    currency: "USD",
+    accountName: "Produbanco",
+    seedGoalAdvisory: true,
+    turnsScript: [
+      "Quiero ahorrar para una moto que cuesta $2400, ¿cómo lo armamos?",
+      "Dale, armalo así como dices",
+    ],
+    expect: {
+      maxQuestions: 2,
+      requireToolCalled: "plan_goal_funding",
+      goalRows: [
+        { targetAmount: 2_400, requireContribution: true, requireDate: true },
+      ],
+      maxGoals: 1,
+    },
+  },
+  {
+    id: "GA_AMBITIOUS",
+    title: "fecha demasiado ambiciosa: el asesor lo dice y renegocia",
+    group: "ga",
+    currency: "USD",
+    accountName: "Produbanco",
+    seedGoalAdvisory: true,
+    turnsScript: [
+      "Quiero juntar $3000 para el 30 de septiembre, arma la meta",
+      "Uf, tienes razón. Hazla para fin de diciembre entonces",
+    ],
+    expect: {
+      maxQuestions: 2,
+      requireToolCalled: "plan_goal_funding",
+      goalRows: [
+        {
+          targetAmount: 3_000,
+          dateAfter: "2026-12-01",
+          dateBefore: "2027-01-15",
+        },
+      ],
+      maxGoals: 1,
+    },
+  },
+  {
+    id: "GA_WELL",
+    title: "propuesta bien calibrada: se confirma y se crea en un turno",
+    group: "ga",
+    currency: "USD",
+    accountName: "Produbanco",
+    seedGoalAdvisory: true,
+    turnsScript: [
+      "Crea una meta de $500 para el 20 de diciembre aportando 125 al mes, ¿te parece viable?",
+      "Sí, dale, con ese plan",
+    ],
+    expect: {
+      maxQuestions: 1,
+      goalRows: [
+        {
+          targetAmount: 500,
+          cadence: "monthly",
+          contributionAmount: 125,
+        },
+      ],
+      maxGoals: 1,
+    },
+  },
+  {
+    id: "GA_AFFORD_NOW",
+    title: "le alcanza cómodo: honestidad sin inventar una meta",
+    group: "ga",
+    currency: "USD",
+    accountName: "Produbanco",
+    seedGoalAdvisory: true,
+    turnsScript: [
+      "Quiero comprarme unos audífonos de $40, ¿me alcanza o lo armo como meta?",
+    ],
+    expect: {
+      maxQuestions: 1,
+      requireNoWrite: true,
+      maxGoals: 0,
+    },
+  },
+  {
+    id: "GA_STAGED_TRIP",
+    title: "meta por etapas: pasajes antes, viaje después",
+    group: "ga",
+    currency: "USD",
+    accountName: "Produbanco",
+    seedGoalAdvisory: true,
+    turnsScript: [
+      "Quiero hacer un viaje en marzo que me costará unos $2000 en total; los pasajes son $800 y hay que comprarlos máximo en noviembre. Ayúdame a armarlo por partes",
+      "Perfecto, dale, créalo así con los aportes mensuales que hagan falta",
+    ],
+    expect: {
+      maxQuestions: 2,
+      goalTotalTarget: 2_000,
+      minGoals: 2,
+      maxGoals: 2,
+      allGoalsCommitted: true,
+      stagedDates: { earlyBefore: "2026-12-05", lateAfter: "2027-02-01" },
+    },
+  },
+  {
+    id: "GA_FEEDBACK",
+    title: "feedback vivo: baja el aporte y la fecha se corre",
+    group: "ga",
+    currency: "USD",
+    accountName: "Produbanco",
+    seedGoalAdvisory: true,
+    turnsScript: [
+      "Arma una meta de $600 para mediados de diciembre",
+      "Me queda muy alto ese aporte, puedo más o menos la mitad. Ajústala",
+    ],
+    expect: {
+      maxQuestions: 2,
+      requireToolCalled: "plan_goal_funding",
+      goalRows: [
+        { targetAmount: 600, requireContribution: true },
+      ],
+      maxGoals: 1,
+      replyStatesGoalContribution: true,
+    },
+  },
+  {
+    id: "GA_QUESTION_NO_DUP",
+    title: "iPhone 18 con $900: sin interrogatorio absurdo y sin meta duplicada",
+    group: "ga",
+    currency: "USD",
+    accountName: "Produbanco",
+    seedGoalAdvisory: true,
+    turnsScript: [
+      "Crea una meta para el iphone 18 nuevo que me va a costar $900, para el 31 de octubre",
+      "¿Y qué día se harían los aportes?",
+      "Semanal, con el aporte que haga falta para llegar",
+    ],
+    expect: {
+      maxQuestions: 1,
+      goalRows: [
+        {
+          targetAmount: 900,
+          cadence: "weekly",
+          requireContribution: true,
+          dateAfter: "2026-10-30",
+          dateBefore: "2026-11-01",
+        },
+      ],
+      maxGoals: 1,
+      replyStatesGoalContribution: true,
+    },
+  },
+  {
+    id: "GA_CARD_CUOTAS",
+    title: "cuotas sin intereses como financiamiento de la meta",
+    group: "ga",
+    currency: "USD",
+    accountName: "Produbanco",
+    seedGoalAdvisory: true,
+    seedAdvisoryCard: true,
+    turnsScript: [
+      "Quiero una bici de $600. La tienda da 3 cuotas sin intereses con mi Visa GA, ¿me conviene o mejor ahorro?",
+    ],
+    expect: {
+      maxQuestions: 1,
+      requireNoWrite: true,
+      maxGoals: 0,
+      finalReplyTotals: [200],
+    },
+  },
+  {
+    id: "GA_BIG_DECISION",
+    title: "decisión grande fuera de metas: préstamo para un carro",
+    group: "ga",
+    currency: "USD",
+    accountName: "Produbanco",
+    seedGoalAdvisory: true,
+    turnsScript: [
+      "Estoy pensando sacar un préstamo de $5000 para un carro, ¿cómo me afectaría mes a mes?",
+    ],
+    expect: {
+      maxQuestions: 1,
+      requireNoWrite: true,
+      maxGoals: 0,
+    },
+  },
+];
+
 const HR_SCENARIOS = [
   {
     id: "HR_FOLLOWUP",
@@ -754,7 +946,7 @@ if (listOnly) {
 }
 for (const id of requestedScenarios) {
   const selectable = realSample
-    ? [...HR_SCENARIOS, ...HD_SCENARIOS]
+    ? [...HR_SCENARIOS, ...HD_SCENARIOS, ...GA_SCENARIOS]
     : ola0
       ? OLA0_SCENARIOS
       : dryRun
@@ -861,6 +1053,10 @@ async function countByIdentity(table, keyColumn, identityColumn, userId) {
 }
 
 async function cleanupPersona(persona, diagnostics) {
+  if (process.env.KEEP_PERSONA === "1") {
+    console.log(`KEEP_PERSONA=1 → persona conservada: ${persona.userId}`);
+    return;
+  }
   if (!persona?.userId) return;
   const deleted = await admin.auth.admin.deleteUser(persona.userId);
   if (deleted.error) diagnostics.push(`cleanup auth: ${boundedErrorText(deleted.error)}`);
@@ -900,7 +1096,7 @@ async function assertNoMarkedPersonas() {
 
 async function seedPersona(scenario) {
   const rent = scenario.id === "REAL_RENT";
-  const ola0Scenario = scenario.group === "ola0" || scenario.group === "hr" || scenario.group === "hd";
+  const ola0Scenario = scenario.group === "ola0" || scenario.group === "hr" || scenario.group === "hd" || scenario.group === "ga";
   const ola2AssetScenario = [
     "DRY_INVESTMENT_PROPOSAL",
     "DRY_UPDATE_ASSET_TRUTH",
@@ -2318,6 +2514,55 @@ async function runHumanRealismScenario(scenario, persona) {
       .map((d) => d.id);
     persona.hdLoanId = debts.data.find((d) => d.name === "Crédito Alpaca HD")?.id ?? null;
   }
+  if (scenario.seedGoalAdvisory) {
+    must(
+      await admin.from("income_sources").insert({
+        user_id: persona.userId,
+        name: "Sueldo GA",
+        amount: 1_500,
+        currency: "USD",
+        frequency: "monthly",
+        expected_day: 28,
+        is_variable: false,
+        destination_account_id: persona.account.id,
+      }),
+      "GA income",
+    );
+    must(
+      await admin.from("fixed_expenses").insert({
+        user_id: persona.userId,
+        name: "Arriendo GA",
+        amount: 400,
+        currency: "USD",
+        category: "housing",
+        frequency: "monthly",
+        expected_day: 10,
+        payment_source_type: "account",
+        payment_source_id: persona.account.id,
+        is_variable: false,
+        is_active: true,
+      }),
+      "GA fixed",
+    );
+    if (scenario.seedAdvisoryCard) {
+      const gaCard = await admin
+        .from("debt_accounts")
+        .insert({
+          user_id: persona.userId,
+          name: "Visa GA",
+          type: "credit_card",
+          currency: "USD",
+          current_balance_original: 0,
+          current_balance_base: 0,
+          full_payment_due: 0,
+          statement_covered: true,
+        })
+        .select("id,name")
+        .single();
+      if (gaCard.error) throw new Error(`GA card: ${gaCard.error.message}`);
+      persona.cards = [...(persona.cards ?? []), gaCard.data];
+    }
+  }
   if (scenario.seedEtoroTemptation) {
     const temptBase = Date.now() - 3 * 86_400_000;
     const temptAt = (offsetSeconds) =>
@@ -2471,7 +2716,7 @@ async function runHumanRealismScenario(scenario, persona) {
         (row) => row.result?.assistantMetadata?.agentOutcome?.hadError !== true,
       ),
   });
-  if (scenario.group === "hd") {
+  if (scenario.group === "hd" || scenario.group === "ga") {
     checks.push({
       name: "HD forbidden refusal/deferral language never appears",
       ok: turns.every((row) => !HD_FORBIDDEN.test(String(row.reply ?? ""))),
@@ -2519,6 +2764,119 @@ async function runHumanRealismScenario(scenario, persona) {
         !loan.error &&
         Math.abs(Number(loan.data?.current_balance_original) - expect.loanUntouched) <= 0.005,
     });
+  }
+  // GA — aserciones por FILAS de metas (la persona nace sin metas: toda fila es
+  // del escenario) + tool del motor + presupuesto de duplicados.
+  const gaChecked =
+    expect.goalRows != null ||
+    expect.maxGoals != null ||
+    expect.minGoals != null ||
+    expect.goalTotalTarget != null ||
+    expect.requireToolCalled != null ||
+    expect.replyStatesGoalContribution === true ||
+    expect.firstTurnNoGoal === true ||
+    expect.stagedDates != null;
+  if (gaChecked) {
+    const goalsRead = await admin
+      .from("goals")
+      .select("id,name,target_amount,currency,cadence,contribution_amount,target_date,status,created_at")
+      .eq("user_id", persona.userId)
+      .neq("status", "cancelled")
+      .neq("id", persona.goal?.id ?? "00000000-0000-0000-0000-000000000000")
+      .order("created_at");
+    const goalRowsDb = goalsRead.error ? null : goalsRead.data ?? [];
+    if (goalRowsDb == null) {
+      checks.push({ name: "GA goals readable", ok: false });
+    } else {
+      if (expect.maxGoals != null) {
+        checks.push({
+          name: `GA at most ${expect.maxGoals} goal(s) exist (no duplicates, no reflex goals)`,
+          ok: goalRowsDb.length <= expect.maxGoals,
+        });
+      }
+      if (expect.minGoals != null) {
+        checks.push({
+          name: `GA at least ${expect.minGoals} goal(s) exist`,
+          ok: goalRowsDb.length >= expect.minGoals,
+        });
+      }
+      if (expect.allGoalsCommitted === true) {
+        checks.push({
+          name: "GA every stage carries its committed contribution",
+          ok:
+            goalRowsDb.length > 0 &&
+            goalRowsDb.every(
+              (row) => Number(row.contribution_amount) > 0 && row.cadence != null,
+            ),
+        });
+      }
+      for (const wanted of expect.goalRows ?? []) {
+        const match = goalRowsDb.find(
+          (row) => Math.abs(Number(row.target_amount) - wanted.targetAmount) <= 0.005,
+        );
+        const dateOk =
+          match?.target_date == null
+            ? !wanted.requireDate && !wanted.dateAfter && !wanted.dateBefore
+            : (wanted.dateAfter == null || match.target_date > wanted.dateAfter) &&
+              (wanted.dateBefore == null || match.target_date < wanted.dateBefore);
+        checks.push({
+          name: `GA goal ${wanted.targetAmount} lands with the agreed plan`,
+          ok:
+            match != null &&
+            (wanted.cadence == null || match.cadence === wanted.cadence) &&
+            (wanted.contributionAmount == null ||
+              Math.abs(Number(match.contribution_amount) - wanted.contributionAmount) <= 0.005) &&
+            (wanted.requireContribution !== true ||
+              (Number(match.contribution_amount) > 0 && match.cadence != null)) &&
+            dateOk,
+        });
+        if (expect.replyStatesGoalContribution === true && match) {
+          checks.push({
+            name: "GA final reply states the exact committed contribution",
+            ok: amountWasStatedInReply(
+              String(turns.at(-1)?.reply ?? ""),
+              Number(match.contribution_amount),
+            ),
+          });
+        }
+      }
+      if (expect.goalTotalTarget != null) {
+        const total = goalRowsDb.reduce((sum, row) => sum + Number(row.target_amount), 0);
+        checks.push({
+          name: `GA staged goals total exactly ${expect.goalTotalTarget}`,
+          ok: Math.abs(total - expect.goalTotalTarget) <= 0.01,
+        });
+      }
+      if (expect.stagedDates != null) {
+        const dates = goalRowsDb.map((row) => row.target_date).filter(Boolean).sort();
+        checks.push({
+          name: "GA stages carry their own dates (early milestone + final)",
+          ok:
+            dates.length >= 2 &&
+            dates[0] < expect.stagedDates.earlyBefore &&
+            dates[dates.length - 1] > expect.stagedDates.lateAfter,
+        });
+      }
+      if (expect.firstTurnNoGoal === true) {
+        const firstEnd = Date.parse(String(turns[0]?.finishedAt ?? 0));
+        checks.push({
+          name: "GA an ambitious ask writes no goal before the renegotiation",
+          ok:
+            Number.isFinite(firstEnd) &&
+            goalRowsDb.every((row) => Date.parse(row.created_at) > firstEnd),
+        });
+      }
+    }
+    if (expect.requireToolCalled != null) {
+      checks.push({
+        name: `GA the engine tool ${expect.requireToolCalled} was consulted`,
+        ok: turns.some((row) =>
+          (row.result?.assistantMetadata?.toolTrace ?? []).some(
+            (t) => t?.name === expect.requireToolCalled,
+          ),
+        ),
+      });
+    }
   }
   return {
     turns,
@@ -7056,7 +7414,7 @@ async function executeScenario(scenario, persona, paraphrases) {
   if (scenario.id === "O0_CLARIFIED_CAPTURE") {
     return runOla0ClarifiedCaptureScenario(scenario, persona);
   }
-  if (scenario.group === "hr" || scenario.group === "hd") {
+  if (scenario.group === "hr" || scenario.group === "hd" || scenario.group === "ga") {
     return runHumanRealismScenario(scenario, persona);
   }
   if (scenario.group === "ola0") {
@@ -7286,13 +7644,15 @@ if (
   HR_SCENARIOS.length !== 11 ||
   new Set(HR_SCENARIOS.map((scenario) => scenario.id)).size !== 11 ||
   HD_SCENARIOS.length !== 12 ||
-  new Set(HD_SCENARIOS.map((scenario) => scenario.id)).size !== 12
+  new Set(HD_SCENARIOS.map((scenario) => scenario.id)).size !== 12 ||
+  GA_SCENARIOS.length !== 9 ||
+  new Set(GA_SCENARIOS.map((scenario) => scenario.id)).size !== 9
 ) {
   throw new Error("Ola0 catalog topology is incomplete or duplicated");
 }
 
 const selected = realSample
-  ? [...HR_SCENARIOS, ...HD_SCENARIOS].filter(
+  ? [...HR_SCENARIOS, ...HD_SCENARIOS, ...GA_SCENARIOS].filter(
       (scenario) =>
         requestedScenarios.size === 0 || requestedScenarios.has(scenario.id),
     )

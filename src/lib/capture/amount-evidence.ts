@@ -274,6 +274,36 @@ export function statedAmounts(rawMessage: string): number[] {
   return [...values];
 }
 
+/** Amounts whose mention carries its OWN monetary emphasis: an adjacent
+ * currency marker ($900, 900 USD, 900 dólares) or a price verb immediately
+ * before (cuesta 900, me va a costar 900, vale 900, por 900). A bare numeral
+ * embedded in a product name ("iPhone 18", "PlayStation 5") has neither.
+ * Consumers use this asymmetry to resolve association: one currency-marked
+ * amount matching the proposal, with every other stated number bare, is the
+ * user's own answer — not an ambiguity to interrogate. */
+export function emphasizedStatedAmounts(rawMessage: string): number[] {
+  const message = rawMessage ?? "";
+  const values = new Set<number>();
+  const currencyBefore = /(?:[$€£¥]|\b(?:ars|usd|eur|cop|pen|clp|uyu|brl|mxn))\s*$/i;
+  const currencyAfter = /^\s*(?:[$€£¥]|\b(?:ars|usd|eur|cop|pen|clp|uyu|brl|mxn|d[oó]lar(?:es)?|pesos?|euros?|lucas?|palos?|luquitas?|mangos?)\b)/i;
+  const priceVerbBefore =
+    /\b(?:cuesta[n]?|costar|costo|cost[oó]|vale[n]?|valor(?:\s+de)?|precio(?:\s+de)?|sale[n]?|sali[oó]|son|por(?:\s+unos?)?|de)\s*$/i;
+  for (const mention of statedMoneyMentions(message)) {
+    const before = message
+      .slice(Math.max(0, mention.start - 24), mention.start)
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "");
+    const after = message.slice(mention.end, Math.min(message.length, mention.end + 16));
+    const emphasized =
+      currencyBefore.test(before) ||
+      currencyAfter.test(after) ||
+      priceVerbBefore.test(before);
+    if (emphasized) mention.values.forEach((value) => values.add(value));
+  }
+  return [...values];
+}
+
 /** Money tokens plus their position in the current delivery. Keeping the
  * position is what lets a domain adapter prove amount↔row association instead
  * of merely proving that all numbers occur somewhere in the sentence. */

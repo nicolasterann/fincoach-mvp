@@ -2,6 +2,8 @@ import { roundMoney } from "@/lib/financial/money";
 import type { DebtPressureLevel } from "@/lib/financial/debt-pressure";
 import type { AmbitionMode, FinancialGoal } from "@/types/financial";
 import { buildGoalPortfolio, type GoalPortfolio } from "@/lib/financial/goal-portfolio";
+import { buildGoalPlan } from "@/lib/financial/goal-planning";
+import type { MargenCapacity } from "@/lib/financial/margen-kipu";
 import { allocateExtraCashflow, type AllocationPlan } from "@/lib/financial/allocation-engine";
 import { assessAdherence, type AdherenceModel } from "@/lib/financial/psychological-adherence";
 import { computeNetWorth, type AssetLike, type NetWorthResult } from "@/lib/financial/net-worth";
@@ -40,6 +42,13 @@ export interface GoalsIntelligence {
   wealthTarget: number | null;
   confidence: "high" | "medium" | "low";
   digest: string;
+  /** Capacity picture for a NEW goal: the same conservative flow math as every
+   *  goal plan, with EXISTING goals' committed contributions and the investment
+   *  commitment already subtracted. `availableMonthlyForNewGoal` is the honest
+   *  "free for one more goal each month" scalar the funding advisor quotes —
+   *  engine-owned so the model never derives it by mental arithmetic. */
+  newGoalCapacity: MargenCapacity;
+  availableMonthlyForNewGoal: number;
   /** Re-auditoría 2 (punto 7): la mitad de PATRIMONIO se pudo leer entera. Con
    *  false, `netWorth: null` significa "no pude leer", no "no tiene nada" — y
    *  ningún tool puede afirmar ausencia de activos/inversiones. */
@@ -95,6 +104,17 @@ export function emptyGoalsIntelligence(): GoalsIntelligence {
     wealthTarget: null,
     confidence: "low",
     digest: "METAS: aún no disponible este turno; no afirmes planes de metas.",
+    newGoalCapacity: {
+      monthlyIncome: 0,
+      monthlyFixed: 0,
+      monthlyDebtService: 0,
+      monthlyInstallments: 0,
+      monthlyEssentials: 0,
+      monthlyDisposableBeforeAllocations: 0,
+      monthlyProtected: { savings: 0, investment: 0, goals: 0 },
+      monthlyTrulyFree: 0,
+    },
+    availableMonthlyForNewGoal: 0,
     // El briefing vacío NO probó nada: netWorth null aquí es "no pude leer".
     wealthAvailable: false,
   };
@@ -207,6 +227,25 @@ export function buildGoalsIntelligence(input: GoalsIntelligenceInput): GoalsInte
   }
 
   const weeklyJoyBudget = roundMoney(Math.max(allocation.discretionaryAfterPlanWeekly, 0));
+  // S34: 30/7, the same weeks-per-month the margen recarve uses.
+  const newGoalCapacity = buildGoalPlan({
+    goal: null,
+    estimatedMonthlyIncome: input.estimatedMonthlyIncome,
+    estimatedMonthlyFixedExpenses: input.estimatedMonthlyFixedExpenses,
+    monthlyDebtDue: input.monthlyDebtDue,
+    monthlyInstallments: input.monthlyInstallments,
+    flexibleSpending: input.flexibleSpending,
+    debtPressureLevel: input.debtPressureLevel,
+    baseCurrency: input.baseCurrency,
+    essentialMonthlyEstimate: input.essentialMonthlyEstimate,
+    essentialsKnown: input.essentialsKnown,
+    monthlyInvestmentCommitment: input.monthlyInvestmentContribution,
+    monthlyGoalContribution: roundMoney(portfolio.committedWeeklyTotal * (30 / 7)),
+    now,
+  }).capacity;
+  const availableMonthlyForNewGoal = roundMoney(
+    Math.max(0, newGoalCapacity.monthlyTrulyFree),
+  );
   const digest = buildGoalsDigest({ portfolio, allocation, adherence, netWorth, investment, ambitionMode, weeklyJoyBudget, baseCurrency: input.baseCurrency });
 
   return {
@@ -222,6 +261,8 @@ export function buildGoalsIntelligence(input: GoalsIntelligenceInput): GoalsInte
     wealthTarget: input.wealthTarget ?? null,
     confidence: portfolio.confidence,
     digest,
+    newGoalCapacity,
+    availableMonthlyForNewGoal,
     wealthAvailable: input.wealthAvailable ?? true,
   };
 }

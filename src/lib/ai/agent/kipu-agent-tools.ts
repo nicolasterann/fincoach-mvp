@@ -144,6 +144,8 @@ import type { FxRate } from "@/lib/fx/fx-rates";
 import { frankfurterProvider } from "@/lib/fx/fx-provider-frankfurter";
 import type { FinancialPhilosophy } from "@/types/financial";
 import { evaluatePurchase, planMiniGoal } from "@/lib/financial/mini-goal";
+import { simulateByDate, simulateByContribution, type GoalSimBase, type GoalSimResult } from "@/lib/financial/goal-simulator";
+import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
 import type { AssetClass } from "@/lib/financial/net-worth";
 import type { AmbitionMode, GoalArchetype, GoalCadence } from "@/types/financial";
 import { formatKipuMoney as formatMoney } from "@/lib/financial/money";
@@ -828,7 +830,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "evaluate_purchase_as_goal",
       description:
-        "Read-only. The IMPULSE-SAFE purchase check. For \"quiero comprar X\", \"¿puedo comprarlo hoy?\", \"¿de contado o lo ahorro?\": first compares the purchase with the CURRENT Saldo Kipu and warns any protected-layer crossing, then evaluates forward cashflow and can propose a MINI-GOAL (weekly set-aside + realistic date). Saldo and cashflow projection are different facts; never call the projection Saldo. Always offer both options when safe. If the price is unknown, ask for it in one line.",
+        "Read-only. The IMPULSE-SAFE purchase check. For \"quiero comprar X\", \"¿puedo comprarlo hoy?\", \"¿de contado o lo ahorro?\": first compares the purchase with the CURRENT Saldo Kipu and warns any protected-layer crossing, then evaluates forward cashflow and can propose a MINI-GOAL (weekly set-aside + realistic date). Saldo and cashflow projection are different facts; never call the projection Saldo. Always offer both options when safe. If the price is unknown, ask for it in one line. For the full date⇄contribution advisory math (required per week/month, reach dates, frontier, verdict on the user's own plan) use plan_goal_funding.",
       parameters: {
         type: "object",
         properties: {
@@ -844,9 +846,31 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "plan_goal_funding",
+      description:
+        "Read-only. The goal-advisory CALCULATOR: every date⇄contribution number in a goal conversation comes from here, never from your own arithmetic. Give it the target (or goalId of an existing goal) plus whatever the user proposed — a target date, a contribution+cadence, both, or neither — and the engine returns exact figures: required contribution per week/biweek/month for that date, the reach date for that contribution, the feasible frontier (earliest possible date at full capacity, max affordable per cadence), a verdict on the user's own proposal (fits/short/over and by how much), and the engine's available monthly capacity for one more goal. Call it AGAIN on every renegotiation turn ('octubre muy lejos', 'baja el aporte') with the new inputs. For staged goals (e.g. flights before a trip) call it once per stage with each stage's amount and date. installmentMonths computes the interest-free card option (cuota mensual + whether it fits).",
+      parameters: {
+        type: "object",
+        properties: {
+          targetAmount: { type: "number", description: "Goal target. Omit only with goalId (uses the stored target)." },
+          currency: { type: "string", description: "ISO currency of the target. Omit for the goal's or base currency." },
+          goalId: { type: "string", description: "Existing goal to evaluate/renegotiate (exact id, or its name when only one matches); pulls its target, saved amount and currency." },
+          alreadySaved: { type: "number", description: "Amount already set aside. Defaults to the goal's current amount or 0." },
+          targetDateISO: { type: "string", description: "Candidate target date YYYY-MM-DD (user's or yours to test)." },
+          contributionAmount: { type: "number", description: "Candidate contribution per cadence period. Requires cadence." },
+          cadence: { type: "string", enum: ["weekly", "biweekly", "monthly"], description: "Cadence of contributionAmount." },
+          installmentMonths: { type: "number", description: "Only when the user says the purchase offers N interest-free card installments: computes the monthly cuota and whether it fits." },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_goal",
       description:
-        "Create a goal (or wealth/emergency/investment goal). Use for \"quiero viajar a Brasil\", \"quiero ahorrar para mi mamá\", \"quiero una laptop en 3 meses\", \"quiero un fondo de emergencia\". Ask for the amount if missing; the date is optional (flexible goals are fine). Set isPrimary only if the user says it's their main goal. A committed cadence+contribution will RESERVE money in their plan — only set it when the user agrees to a contribution.",
+        "Create a goal (or wealth/emergency/investment goal). Use for \"quiero viajar a Brasil\", \"quiero ahorrar para mi mamá\", \"quiero una laptop en 3 meses\", \"quiero un fondo de emergencia\". Ask for the amount if missing; the date is optional (flexible goals are fine). Set isPrimary only if the user says it's their main goal. A committed cadence+contribution will RESERVE money in their plan — only set it when the user agrees to a contribution. When an advisory conversation converges, close it in ONE call: pass the agreed targetDate AND cadence+contributionAmount together (numbers from plan_goal_funding), instead of creating first and updating later.",
       parameters: {
         type: "object",
         properties: {
@@ -857,6 +881,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           isPrimary: { type: "boolean" },
           cadence: { type: "string", enum: ["weekly", "biweekly", "monthly"], description: "Only if the user commits to a recurring contribution." },
           contributionAmount: { type: "number", description: "Committed amount per cadence (reserves money). Only with an agreed contribution." },
+          commitRequiredContribution: { type: "boolean", description: "When the user asks to commit WHATEVER contribution the target date needs ('con los aportes que hagan falta'), set true (requires targetDate): the ENGINE computes the exact required contribution and reserves it — never compute it yourself. Uses the user's cadence if given, else monthly." },
           currency: { type: "string", description: "ISO code only if stated; omit for the user's primary currency." },
         },
         required: ["name", "targetAmount"],
@@ -902,13 +927,14 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       parameters: {
         type: "object",
         properties: {
-          goalId: { type: "string" },
+          goalId: { type: "string", description: "Exact id, or the goal's name when only one matches." },
           status: { type: "string", enum: ["active", "paused", "cancelled"], description: "cancelled = soft delete (stops counting, drops from plan). Requires confirm=true." },
           targetDate: { type: "string", description: "New ISO date YYYY-MM-DD." },
           targetAmount: { type: "number", description: "New positive target in the goal currency." },
           currency: { type: "string", description: "New ISO currency. Allowed only before any money/history and requires targetAmount in the same call." },
           contributionAmount: { type: "number" },
           cadence: { type: "string", enum: ["weekly", "biweekly", "monthly"] },
+          commitRequiredContribution: { type: "boolean", description: "When the user asks to commit WHATEVER contribution the goal's target date needs ('semanal con lo que haga falta'), set true: the ENGINE derives the exact required contribution for the goal's (or newly passed) target date and commits it in the user's cadence (or monthly). Never compute the figure yourself." },
           makePrimary: { type: "boolean" },
           flexibleDeadline: { type: "boolean" },
           confirm: { type: "boolean", description: "Required true for status='cancelled', ONLY after the user explicitly confirmed. Never set it on the first call." },
@@ -4117,7 +4143,33 @@ async function executeLogMovement(
     }
     const supabase = createSupabaseAdminClient();
     const transactionId = await applyLedgerEntry(supabase, built.entry);
-    return { status: "done", data: { transactionId }, summary: built.summary };
+    // «¿Con cuánto quedo?» en el mismo turno: el recibo trae el saldo POST-write
+    // de la(s) cuenta(s) tocadas, leído fresco — así la respuesta cita el número
+    // nuevo del motor y nunca el saldo viejo del contexto pre-escritura.
+    let balanceNote = "";
+    const touchedAccountIds = [
+      built.entry.sourceAccountId,
+      built.entry.destinationAccountId,
+    ].filter((id): id is string => typeof id === "string" && id.length > 0);
+    if (touchedAccountIds.length > 0) {
+      try {
+        const fresh = await supabase
+          .from("accounts")
+          .select("id,name,currency,current_balance_original")
+          .eq("user_id", ctx.userId)
+          .in("id", touchedAccountIds);
+        if (!fresh.error && fresh.data) {
+          const parts = fresh.data.map(
+            (row) =>
+              `${row.name} queda en ${money(Number(row.current_balance_original), String(row.currency))}`,
+          );
+          if (parts.length > 0) balanceNote = ` Saldo post-registro: ${parts.join(" · ")}.`;
+        }
+      } catch {
+        balanceNote = "";
+      }
+    }
+    return { status: "done", data: { transactionId }, summary: `${built.summary}${balanceNote}` };
   } catch (error) {
     if (isOwnershipViolation(error)) {
       return { status: "error", summary: "No pude validar que esa cuenta/tarjeta sea tuya; no registré nada." };
@@ -5298,13 +5350,235 @@ async function executeEvaluatePurchaseAsGoal(args: Record<string, unknown>, ctx:
   return { status: "done", summary: `Ahora mismo ${label} (${priceText}) presiona tus pagos${ev.pressureReason ? ` (${ev.pressureReason})` : ""}. ${saldoTruth}${paymentTruth} No hay plata libre para una mini-meta cómoda: sugiere esperar o ajustar otra prioridad, pero no confundas la recomendación con un bloqueo de capa. Con tacto, sin culpa.` };
 }
 
+/** goalId acepta el id exacto O un nombre con candidato único (la doctrina del
+ * candidato único, mismo helper que cuentas/tarjetas): un needs_info por pasar
+ * «Meta de 600» en vez del uuid era fricción pura. Ambiguo → null + candidatos. */
+function resolveGoalRef(
+  ref: unknown,
+  ctx: AgentContext,
+): { goal: AgentContext["goals"][number] | null; ambiguous: string[] } {
+  const raw = typeof ref === "string" ? ref.trim() : "";
+  if (!raw) return { goal: null, ambiguous: [] };
+  const byId = ctx.goals.find((g) => g.id === raw);
+  if (byId) return { goal: byId, ambiguous: [] };
+  const { exact, possible } = resolveExistingInstrumentName(raw, ctx.goals);
+  if (exact) return { goal: exact, ambiguous: [] };
+  if (possible.length === 1) return { goal: possible[0], ambiguous: [] };
+  return { goal: null, ambiguous: possible.map((g) => g.name) };
+}
+
+// The goal-advisory calculator. Semantics (which goal, which stage, what the
+// user is willing to change) stay with the model; every number — required
+// contribution, reach date, frontier, proposal verdict — is engine arithmetic
+// over the SAME capacity picture the dashboard/goals intelligence uses.
+export async function executePlanGoalFunding(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const goalRef = resolveGoalRef(args.goalId, ctx);
+  const goal = goalRef.goal;
+  if (typeof args.goalId === "string" && args.goalId.trim() && !goal) {
+    return {
+      status: "needs_info",
+      summary:
+        goalRef.ambiguous.length > 1
+          ? `Hay varias metas que matchean: ${goalRef.ambiguous.join(", ")}. Re-llama con el nombre exacto o el id del contexto.`
+          : "No encuentro esa meta; re-llama con el id o el nombre exacto que aparece en el contexto (goals).",
+    };
+  }
+  const targetAmount = Number(args.targetAmount ?? goal?.targetAmount);
+  if (!Number.isFinite(targetAmount) || targetAmount <= 0) {
+    return { status: "needs_info", summary: "¿De cuánto es el objetivo? Con el monto te doy los números exactos." };
+  }
+  const statedCurrency =
+    typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim())
+      ? args.currency.trim().toUpperCase()
+      : null;
+  if (args.currency != null && !statedCurrency) {
+    return { status: "needs_info", summary: "La moneda debe ser un código ISO de 3 letras." };
+  }
+  const currency = statedCurrency ?? (goal?.currency as string | undefined) ?? ctx.baseCurrency;
+  const alreadySaved = Number(args.alreadySaved ?? goal?.currentAmount ?? 0);
+  if (!Number.isFinite(alreadySaved) || alreadySaved < 0) {
+    return { status: "needs_info", summary: "Lo ya ahorrado debe ser cero o positivo." };
+  }
+  const targetDate = validISODate(args.targetDateISO);
+  if (args.targetDateISO != null && !targetDate) {
+    return { status: "needs_info", summary: "La fecha candidata no existe o no está en formato YYYY-MM-DD." };
+  }
+  const cadence = ["weekly", "biweekly", "monthly"].includes(args.cadence as string)
+    ? (args.cadence as GoalCadence)
+    : null;
+  const contribution = Number(args.contributionAmount);
+  const hasContribution = args.contributionAmount !== undefined;
+  if (hasContribution && (!Number.isFinite(contribution) || contribution <= 0)) {
+    return { status: "needs_info", summary: "El aporte candidato debe ser mayor a cero." };
+  }
+  if (hasContribution && !cadence) {
+    return { status: "needs_info", summary: "Dime la frecuencia del aporte candidato (weekly/biweekly/monthly)." };
+  }
+  const installmentMonths = Number(args.installmentMonths);
+  if (
+    args.installmentMonths !== undefined &&
+    (!Number.isInteger(installmentMonths) || installmentMonths < 1 || installmentMonths > 48)
+  ) {
+    return { status: "needs_info", summary: "Las cuotas sin intereses deben ser un número entero de meses (1–48)." };
+  }
+
+  // Capacity: engine-owned "free for one more goal per month", in BASE. For an
+  // EXISTING goal its own committed contribution is free for itself. A non-base
+  // goal converts with the current proven rate or drops affordability honestly.
+  const gi = ctx.briefing.goalsIntel;
+  const monthlyFromCadence = (amount: number, cad: GoalCadence): number =>
+    Math.round(cadenceToWeekly(amount, cad) * (30 / 7) * 100) / 100;
+  let availableMonthly: number | null =
+    ctx.saldoAvailable === false ? null : gi.availableMonthlyForNewGoal;
+  if (
+    availableMonthly != null &&
+    goal &&
+    goal.contributionAmount &&
+    goal.cadence &&
+    goal.cashflowProtected !== false
+  ) {
+    availableMonthly += monthlyFromCadence(goal.contributionAmount, goal.cadence as GoalCadence);
+  }
+  let capacityNote: string | null = null;
+  if (availableMonthly != null && currency !== ctx.baseCurrency) {
+    const unit = planHypotheticalPurchase({
+      amountOriginal: 1,
+      originalCurrency: currency as CurrencyCode,
+      baseCurrency: ctx.baseCurrency,
+      category: "shopping",
+      fxRates: ctx.fxRates ?? [],
+    });
+    if (unit.ok && unit.amountBase > 0) {
+      availableMonthly = Math.round((availableMonthly / unit.amountBase) * 100) / 100;
+    } else {
+      availableMonthly = null;
+      capacityNote = `sin tasa ${currency}→${ctx.baseCurrency} confiable no puedo probar cuánto te queda libre; la matemática fecha⇄aporte va igual`;
+    }
+  }
+  const capacityKnown =
+    availableMonthly != null && gi.newGoalCapacity.monthlyIncome > 0;
+  if (availableMonthly != null && gi.newGoalCapacity.monthlyIncome <= 0) {
+    capacityNote = "no tengo tu ingreso configurado, así que la capacidad libre no es comprobable; la matemática fecha⇄aporte va igual";
+  }
+  if (ctx.saldoAvailable === false) {
+    capacityNote = "tu panorama no es legible este turno, así que no afirmo capacidad libre; la matemática fecha⇄aporte va igual";
+  }
+
+  const base: GoalSimBase = {
+    targetAmount,
+    currentAmount: alreadySaved,
+    availableMonthly: capacityKnown ? (availableMonthly as number) : 0,
+    now: new Date(`${todayISO(ctx)}T12:00:00.000Z`),
+  };
+  const remaining = Math.round(Math.max(0, targetAmount - alreadySaved) * 100) / 100;
+  const m = (v: number) => money(v, currency);
+  const perCadence = (monthly: number) => ({
+    monthly: Math.round(monthly * 100) / 100,
+    weekly: Math.round(((monthly * 7) / 30) * 100) / 100,
+    biweekly: Math.round(((monthly * 7) / 30) * 2 * 100) / 100,
+  });
+
+  const byDate = targetDate ? simulateByDate(base, targetDate) : null;
+  const proposedMonthly =
+    hasContribution && cadence ? monthlyFromCadence(contribution, cadence) : null;
+  const byContribution =
+    proposedMonthly != null ? simulateByContribution(base, proposedMonthly) : null;
+  const frontierSource: GoalSimResult =
+    byDate ?? byContribution ?? simulateByDate(base, "");
+
+  const lines: string[] = [];
+  lines.push(
+    `Objetivo ${m(targetAmount)}${alreadySaved > 0 ? ` · ya apartado ${m(alreadySaved)} · falta ${m(remaining)}` : ""}.`,
+  );
+  if (remaining <= 0) {
+    lines.push("Ya está completamente fondeado: no hace falta plan nuevo.");
+  }
+  if (capacityKnown) {
+    lines.push(`Capacidad libre del motor para una meta más: ~${m(availableMonthly as number)}/mes.`);
+  } else if (capacityNote) {
+    lines.push(`Ojo: ${capacityNote}.`);
+  }
+  let proposalVerdict: { fits: boolean; gapMonthly: number } | null = null;
+  if (byDate && remaining > 0) {
+    const req = perCadence(byDate.effectiveMonthly);
+    lines.push(
+      `Para llegar al ${byDate.reachDateISO} necesitas ${m(req.monthly)}/mes (= ${m(req.weekly)}/sem o ${m(req.biweekly)}/quincena)${capacityKnown ? byDate.feasible ? byDate.status === "tight" ? " — entra pero JUSTO (≥90% de lo libre)" : " — entra con holgura" : ` — NO entra: te pasa por ${m(byDate.overBy)}/mes de lo libre` : ""}.`,
+    );
+  }
+  if (byContribution && proposedMonthly != null && remaining > 0) {
+    lines.push(
+      `Aportando ${m(contribution)}/${cadence === "weekly" ? "sem" : cadence === "biweekly" ? "quincena" : "mes"} (≈ ${m(proposedMonthly)}/mes) llegas el ${byContribution.reachDateISO} (~${byContribution.monthsToTarget} meses)${capacityKnown ? byContribution.feasible ? "" : ` — ese aporte NO entra en lo libre (sobra por ${m(byContribution.overBy)}/mes)` : ""}.`,
+    );
+  }
+  if (byDate && proposedMonthly != null && remaining > 0) {
+    const gap = Math.round((byDate.effectiveMonthly - proposedMonthly) * 100) / 100;
+    proposalVerdict = { fits: gap <= 0, gapMonthly: gap };
+    lines.push(
+      gap > 0
+        ? `Veredicto de SU propuesta: con ese aporte NO llegas a esa fecha — faltan ${m(gap)}/mes (sube el aporte o corre la fecha al ${byContribution?.reachDateISO ?? "?"}).`
+        : `Veredicto de SU propuesta: alcanza — incluso sobra ${m(Math.abs(gap))}/mes frente a lo requerido.`,
+    );
+  }
+  if (capacityKnown && remaining > 0) {
+    const maxPer = perCadence(frontierSource.maxAffordableMonthly);
+    lines.push(
+      frontierSource.earliestFeasibleDateISO
+        ? `Frontera posible: a tope de lo libre (${m(maxPer.monthly)}/mes = ${m(maxPer.weekly)}/sem) lo más pronto es ${frontierSource.earliestFeasibleDateISO}.`
+        : "Frontera posible: hoy no hay nada libre para una meta nueva sin mover otra cosa.",
+    );
+  }
+  let installments: { months: number; monthlyInstallment: number; fits: boolean | null } | null = null;
+  if (Number.isInteger(installmentMonths) && installmentMonths >= 1 && remaining > 0) {
+    const cuota = Math.round((remaining / installmentMonths) * 100) / 100;
+    installments = {
+      months: installmentMonths,
+      monthlyInstallment: cuota,
+      fits: capacityKnown ? cuota <= (availableMonthly as number) + 0.5 : null,
+    };
+    lines.push(
+      `Opción cuotas sin intereses (${installmentMonths} meses): ${m(cuota)}/mes${installments.fits === false ? ` — NO entra en lo libre` : installments.fits === true ? " — entra en lo libre" : ""}. La tarjeta sigue siendo deuda: el plan real se crea con create_installment_plan al comprar, y el aporte de la meta se convierte en ese pago mensual.`,
+    );
+  }
+  lines.push(
+    "Negocia con estos números tal cual (jamás recalcules de cabeza); si el usuario cambia fecha o aporte, vuelve a llamarme con lo nuevo.",
+  );
+  return {
+    status: "done",
+    summary: lines.join("\n"),
+    data: {
+      currency,
+      targetAmount,
+      alreadySaved,
+      remaining,
+      availableMonthly: capacityKnown ? availableMonthly : null,
+      capacityKnown,
+      byDate: byDate
+        ? { ...perCadence(byDate.effectiveMonthly), reachDateISO: byDate.reachDateISO, months: byDate.monthsToTarget, status: byDate.status, overBy: byDate.overBy }
+        : null,
+      byContribution: byContribution
+        ? { monthlyEquivalent: proposedMonthly, reachDateISO: byContribution.reachDateISO, months: byContribution.monthsToTarget, status: byContribution.status }
+        : null,
+      frontier: {
+        earliestFeasibleDateISO: frontierSource.earliestFeasibleDateISO,
+        ...perCadence(frontierSource.maxAffordableMonthly),
+      },
+      proposalVerdict,
+      installments,
+    },
+  };
+}
+
 async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const name = typeof args.name === "string" ? args.name.trim() : "";
   const targetAmount = Number(args.targetAmount);
   if (!name) return { status: "needs_info", summary: "¿Cómo quieres llamar a esta meta?" };
   if (!Number.isFinite(targetAmount) || targetAmount <= 0) return { status: "needs_info", summary: `¿De cuánto es la meta "${name}"?` };
-  const cadence = ["weekly", "biweekly", "monthly"].includes(args.cadence as string) ? (args.cadence as GoalCadence) : undefined;
-  const contributionAmount = Number(args.contributionAmount);
+  let cadence = ["weekly", "biweekly", "monthly"].includes(args.cadence as string) ? (args.cadence as GoalCadence) : undefined;
+  let contributionAmount = Number(args.contributionAmount);
+  let engineCommittedContribution = false;
   if (
     args.contributionAmount !== undefined &&
     (!Number.isFinite(contributionAmount) || contributionAmount <= 0)
@@ -5315,18 +5589,55 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
         "El aporte comprometido debe ser mayor a cero; no creé la meta descartando ese dato.",
     };
   }
-  if ((cadence && args.contributionAmount === undefined) || (!cadence && args.contributionAmount !== undefined)) {
-    return {
-      status: "needs_info",
-      summary:
-        "Para reservar un aporte necesito juntos el monto y su frecuencia; no creé una meta con medio compromiso.",
-    };
-  }
   const targetDate = validISODate(args.targetDate);
   if (args.targetDate != null && !targetDate) {
     return {
       status: "needs_info",
       summary: "La fecha de la meta no existe o no está en formato YYYY-MM-DD; no creé la meta.",
+    };
+  }
+  // «Con los aportes que hagan falta»: el MOTOR deriva el aporte requerido para
+  // la fecha y lo COMPROMETE en la misma escritura — cero aritmética del modelo,
+  // cero segundo turno. Sin fecha no hay «requerido»: se pide.
+  if (args.commitRequiredContribution === true && args.contributionAmount === undefined) {
+    if (!targetDate) {
+      return {
+        status: "needs_info",
+        summary: "Para comprometer el aporte que haga falta necesito la fecha objetivo de la meta.",
+      };
+    }
+    const requiredPlan = simulateByDate(
+      {
+        targetAmount,
+        currentAmount: 0,
+        availableMonthly:
+          ctx.saldoAvailable === false
+            ? 0
+            : ctx.briefing.goalsIntel.availableMonthlyForNewGoal,
+        now: new Date(`${todayISO(ctx)}T12:00:00.000Z`),
+      },
+      targetDate,
+    );
+    if (requiredPlan.effectiveMonthly > 0) {
+      const chosenCadence: GoalCadence = cadence ?? "monthly";
+      contributionAmount =
+        chosenCadence === "monthly"
+          ? requiredPlan.effectiveMonthly
+          : chosenCadence === "weekly"
+            ? Math.round(((requiredPlan.effectiveMonthly * 7) / 30) * 100) / 100
+            : Math.round(((requiredPlan.effectiveMonthly * 7) / 30) * 2 * 100) / 100;
+      cadence = chosenCadence;
+      engineCommittedContribution = true;
+    }
+  }
+  if (
+    !engineCommittedContribution &&
+    ((cadence && args.contributionAmount === undefined) || (!cadence && args.contributionAmount !== undefined))
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "Para reservar un aporte necesito juntos el monto y su frecuencia; no creé una meta con medio compromiso.",
     };
   }
   const statedCurrency =
@@ -5359,10 +5670,73 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
       contributionAmount,
     ]),
   };
+  // Cross-turn re-narración net (misma doctrina que los movimientos): la meta
+  // idéntica recién creada en esta conversación no se re-crea porque un turno
+  // posterior la mencione — el dedupe por entrega es NUEVO en cada turno por
+  // diseño (K13). El escape explícito («otra meta igual») conserva el write.
+  if (
+    ctx.operationManifestAuthorized !== true &&
+    !/\b(otr[oa]s?|de nuevo|otra vez|nuevamente|again|segunda)\b/iu.test(ctx.rawMessage ?? "")
+  ) {
+    const normalizedName = normName(name);
+    const recentDup = await (async () => {
+      try {
+        const supabase = createSupabaseAdminClient();
+        const { data, error } = await supabase
+          .from("goals")
+          .select("id,name,target_amount,currency,created_at,status")
+          .eq("user_id", ctx.userId)
+          .gte("created_at", new Date(Date.now() - 15 * 60_000).toISOString())
+          .neq("status", "cancelled")
+          .limit(20);
+        if (error || !data) return null;
+        return (
+          data.find(
+            (row) =>
+              normName(String(row.name ?? "")) === normalizedName ||
+              (Math.abs(Number(row.target_amount) - targetAmount) <= 0.005 &&
+                String(row.currency ?? "").toUpperCase() === goalCurrency),
+          ) ?? null
+        );
+      } catch {
+        return null;
+      }
+    })();
+    if (recentDup) {
+      return {
+        status: "done",
+        effect: "noop",
+        summary: `La meta "${recentDup.name}" (${formatMoney(Number(recentDup.target_amount), goalCurrency as CurrencyCode)}) ya quedó creada hace un momento en esta misma conversación; no la dupliqué. Si de verdad quiere OTRA meta igual, que lo diga y la creo.`,
+        data: { goalId: recentDup.id, noop: true },
+      };
+    }
+  }
   const res = await createGoalRow(a);
   if (!res.ok) return { status: "error", summary: `No pude guardar la meta "${name}". No prometas que quedó registrada; ofrécele reintentar.` };
   ctx.dirty = true;
   const committed = a.cadence && a.contributionAmount ? ` Con ~${formatMoney(a.contributionAmount, goalCurrency as CurrencyCode)}/${a.cadence === "weekly" ? "sem" : a.cadence === "biweekly" ? "quincena" : "mes"} reservados.` : "";
+  // Meta con fecha pero sin aporte: el recibo trae la referencia del MOTOR en
+  // la mano (misma matemática de plan_goal_funding), para que la propuesta de
+  // aporte salga en ESTA respuesta con cifras del motor — nunca de cabeza.
+  let fundingReference = "";
+  if (a.targetDate && !a.contributionAmount) {
+    const requiredPlan = simulateByDate(
+      {
+        targetAmount,
+        currentAmount: 0,
+        availableMonthly:
+          ctx.saldoAvailable === false
+            ? 0
+            : ctx.briefing.goalsIntel.availableMonthlyForNewGoal,
+        now: new Date(`${todayISO(ctx)}T12:00:00.000Z`),
+      },
+      a.targetDate,
+    );
+    if (requiredPlan.effectiveMonthly > 0) {
+      const weeklyRef = Math.round(((requiredPlan.effectiveMonthly * 7) / 30) * 100) / 100;
+      fundingReference = ` Referencia del motor para llegar a esa fecha: ~${formatMoney(requiredPlan.effectiveMonthly, goalCurrency as CurrencyCode)}/mes (= ${formatMoney(weeklyRef, goalCurrency as CurrencyCode)}/sem). DILE estas cifras en esta misma respuesta — una respuesta sin el aporte está incompleta; cuando el usuario acepte o elija cadencia, fíjalo con update_goal (commitRequiredContribution si pide «lo que haga falta»).`;
+    }
+  }
   return res.replayed
     ? {
         status: "done",
@@ -5372,7 +5746,7 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
       }
     : {
         status: "done",
-        summary: `Creé la meta "${name}" (${formatMoney(targetAmount, goalCurrency as CurrencyCode)}${a.targetDate ? `, para ${a.targetDate}` : ", sin fecha fija"}).${committed} Confírmalo natural y, si no hay fecha/aporte, ofrece definirlos para armar el plan.`,
+        summary: `Creé la meta "${name}" (${formatMoney(targetAmount, goalCurrency as CurrencyCode)}${a.targetDate ? `, para ${a.targetDate}` : ", sin fecha fija"}).${committed}${fundingReference} Confírmalo natural y, si no hay fecha/aporte, ofrece definirlos para armar el plan.`,
         data: { goalId: res.id },
       };
 }
@@ -5475,7 +5849,8 @@ async function executePrioritizeGoals(ctx: AgentContext): Promise<ToolResult> {
 }
 
 async function executeUpdateGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
-  const goalId = typeof args.goalId === "string" ? args.goalId : "";
+  const updateGoalRef = resolveGoalRef(args.goalId, ctx);
+  const goalId = updateGoalRef.goal?.id ?? (typeof args.goalId === "string" ? args.goalId : "");
   if (!goalId) return { status: "needs_info", summary: "¿Cuál meta? Si hay varias parecidas, pregúntale al usuario cuál antes de cambiarla." };
   // The portfolio lists ACTIVE goals only; a paused goal being reactivated won't
   // appear there, so resolve a display name softly and proceed by id (the store
@@ -5512,6 +5887,47 @@ async function executeUpdateGoal(args: Record<string, unknown>, ctx: AgentContex
   }
   if (Number.isFinite(contribution) && contribution >= 0) patch.contribution_amount = contribution;
   if (["weekly", "biweekly", "monthly"].includes(args.cadence as string)) patch.cadence = args.cadence;
+  // «Con lo que haga falta» sobre una meta existente: el MOTOR deriva el aporte
+  // requerido para su fecha (o la fecha nueva del mismo patch) y lo compromete —
+  // simetría exacta con create_goal.
+  if (
+    args.commitRequiredContribution === true &&
+    args.contributionAmount === undefined &&
+    storedGoal
+  ) {
+    const effectiveDate = (patch.target_date as string | undefined) ?? storedGoal.targetDate ?? null;
+    if (!effectiveDate) {
+      return {
+        status: "needs_info",
+        summary: `Para comprometer el aporte que haga falta, la meta "${goalName}" necesita una fecha objetivo; dime la fecha y lo fijo.`,
+      };
+    }
+    const requiredPlan = simulateByDate(
+      {
+        targetAmount: storedGoal.targetAmount,
+        currentAmount: storedGoal.currentAmount ?? 0,
+        availableMonthly:
+          ctx.saldoAvailable === false
+            ? 0
+            : ctx.briefing.goalsIntel.availableMonthlyForNewGoal,
+        now: new Date(`${todayISO(ctx)}T12:00:00.000Z`),
+      },
+      effectiveDate,
+    );
+    if (requiredPlan.effectiveMonthly > 0) {
+      const chosenCadence =
+        (patch.cadence as GoalCadence | undefined) ??
+        (storedGoal.cadence as GoalCadence | undefined) ??
+        "monthly";
+      patch.cadence = chosenCadence;
+      patch.contribution_amount =
+        chosenCadence === "monthly"
+          ? requiredPlan.effectiveMonthly
+          : chosenCadence === "weekly"
+            ? Math.round(((requiredPlan.effectiveMonthly * 7) / 30) * 100) / 100
+            : Math.round(((requiredPlan.effectiveMonthly * 7) / 30) * 2 * 100) / 100;
+    }
+  }
   if (args.makePrimary === true) { patch.is_primary = true; patch.goal_type = "primary"; }
   if (args.flexibleDeadline === true) patch.flexible_deadline = true;
   const targetAmount = Number(args.targetAmount);
@@ -5570,13 +5986,34 @@ async function executeUpdateGoal(args: Record<string, unknown>, ctx: AgentContex
   const ok = await updateGoalRow(ctx.userId, goalId, patch);
   if (!ok) return { status: "needs_info", summary: `No encuentro esa meta para actualizar; muéstrale sus metas y que elija cuál.` };
   ctx.dirty = true;
-  const what =
-    patch.status === "paused" ? "la pausé (su dinero reservado queda libre para el resto)"
-    : patch.status === "cancelled" ? "la cancelé (sale de tu plan; su dinero reservado queda libre y su historial se conserva)"
-    : patch.status === "active" ? "la reactivé"
-    : patch.is_primary ? "ahora es tu meta principal"
-    : "la actualicé";
-  return { status: "done", summary: `Listo, "${goalName}": ${what}. Confírmalo natural y, si liberó o reservó plata, dilo simple.` };
+  // Receipt parity (clase batch-receipt-v25): el recibo declara CADA cambio con
+  // sus números — «la actualicé» sin cifras dejaba el aporte nuevo sin evidencia
+  // y la respuesta veraz moría en la barrera de grounding.
+  const goalCurrencyCode = (storedGoal?.currency ?? ctx.baseCurrency) as CurrencyCode;
+  const changes: string[] = [];
+  if (patch.status === "paused") changes.push("la pausé (su dinero reservado queda libre para el resto)");
+  if (patch.status === "cancelled") changes.push("la cancelé (sale de tu plan; su dinero reservado queda libre y su historial se conserva)");
+  if (patch.status === "active") changes.push("la reactivé");
+  if (patch.is_primary) changes.push("ahora es tu meta principal");
+  if (patch.flexible_deadline) changes.push("quedó con fecha flexible");
+  if (patch.target_date) changes.push(`nueva fecha ${patch.target_date}`);
+  if (patch.contribution_amount !== undefined || patch.cadence !== undefined) {
+    const appliedContribution =
+      patch.contribution_amount !== undefined
+        ? Number(patch.contribution_amount)
+        : storedGoal?.contributionAmount ?? null;
+    const appliedCadence =
+      (patch.cadence as GoalCadence | undefined) ?? (storedGoal?.cadence as GoalCadence | undefined) ?? null;
+    const cadenceLabel =
+      appliedCadence === "weekly" ? "sem" : appliedCadence === "biweekly" ? "quincena" : appliedCadence === "monthly" ? "mes" : null;
+    changes.push(
+      appliedContribution != null && appliedContribution > 0
+        ? `aporte comprometido de ${formatMoney(appliedContribution, goalCurrencyCode)}${cadenceLabel ? `/${cadenceLabel}` : ""} (reserva esa plata en tu plan)`
+        : "aporte comprometido en cero (deja de reservar plata)",
+    );
+  }
+  const what = changes.length > 0 ? changes.join("; ") : "la actualicé";
+  return { status: "done", summary: `Listo, "${goalName}": ${what}. Confírmalo natural NOMBRANDO las cifras exactas de este recibo (una respuesta sin el monto está incompleta) y, si liberó o reservó plata, dilo simple.` };
 }
 
 async function executeRegisterInvestment(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -7059,7 +7496,7 @@ export function planCardPaymentCapture(input: {
 // ledger writer via a debt_payment intent. La RPC estampa fecha + cobertura en la
 // MISMA transacción; un parcial deja statement_covered=false. Sin escritor de dos
 // deltas nativos, cuenta y tarjeta deben compartir moneda.
-async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+export async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const calendarGuard = guardUnavailableCalendarReplyWrite(ctx);
   if (calendarGuard) return calendarGuard;
   const cardRef = typeof args.cardName === "string" ? args.cardName.trim() : "";
@@ -7071,6 +7508,20 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
     return matches.length === 1 ? matches[0] : null;
   })();
   if (!card) {
+    // Un nombre que matchea una deuda NO-tarjeta (préstamo/crédito) no es una
+    // pregunta para el usuario: es la ruta equivocada. Redirect tipado al
+    // writer correcto, en el mismo turno, sin fricción.
+    const nonCardMatches = ctx.debtAccounts.filter((d) => {
+      if (d.type === "credit_card") return false;
+      const n = normName(d.name);
+      return n.includes(target) || target.includes(n);
+    });
+    if (nonCardMatches.length === 1) {
+      return {
+        status: "redirect",
+        summary: `"${nonCardMatches[0].name}" es un préstamo, no una tarjeta. Registra ese pago con log_movement (type "debt_payment", debtAccountId=${nonCardMatches[0].id}, la cuenta de origen que dijo el usuario). No le preguntes nada: re-llama con eso.`,
+      };
+    }
     const list = creditCards.map((d) => `"${d.name}"`).join(", ");
     return { status: "needs_info", summary: list ? `¿Cuál tarjeta pagaste? Tiene: ${list}. Pregúntale cuál.` : "No tiene tarjetas de crédito registradas para pagar." };
   }
@@ -15436,6 +15887,7 @@ export const READ_ONLY_AGENT_TOOLS = new Set<string>([
   "budget_suggestion",
   "recommend_cut",
   "evaluate_purchase_as_goal",
+  "plan_goal_funding",
   "prioritize_goals",
   "net_worth",
   "get_personalization_profile",
@@ -17792,6 +18244,8 @@ export async function executeTool(
       return executeLearnSpendingCorrection(args, ctx);
     case "evaluate_purchase_as_goal":
       return executeEvaluatePurchaseAsGoal(args, ctx);
+    case "plan_goal_funding":
+      return executePlanGoalFunding(args, ctx);
     case "create_goal":
       return executeCreateGoal(args, ctx);
     case "create_mini_goal":

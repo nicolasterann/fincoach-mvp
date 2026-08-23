@@ -20,6 +20,7 @@ import {
 } from "@/lib/capture/capture-matching";
 import { accountCurrency, movementCurrency, executeUpdateCardObligationsWith, planFixedExpenseCurrency, userAuthoredMemoryText, validISODate } from "@/lib/ai/agent/kipu-agent-tools";
 import {
+  emphasizedStatedAmounts,
   amountWasStated,
   batchMovementAmountAssociationsProven,
   monetaryClaimsFromToolArgs,
@@ -31,6 +32,7 @@ import {
 import { loopPreviousUserDeliveryMessages, loopQuoteAuthorizesAmount, repairLoopMessagesSequence } from "@/lib/ai/agent/kipu-agent-loop";
 import { collapseAdjacentDuplicateSentences, evidenceArithmeticSupports, replyMoneyFiguresAbsentFromEvidence } from "@/lib/ai/agent/kipu-agent";
 import {
+  SIMULATION_HYPOTHESIS_PATHS,
   MODEL_AUTHORITY_COUNTERS,
   MODEL_AUTHORITY_COUNTER_REASONS,
   emitModelAuthorityCounter,
@@ -448,6 +450,8 @@ import {
   guardUnavailableCalendarReplyWrite,
   guardMovementWritesWith,
   executeSumBalancesWith,
+  executePlanGoalFunding,
+  executeRegisterCardPayment,
   unrequestedDuplicateMovementNoopWith,
   installmentCloseDegradedSummary,
   installmentCreateDegradedSummary,
@@ -33037,6 +33041,252 @@ assert(
     "IR354 · la aritmética de totales es del motor (contexto + sum_balances) y registrar la deuda saldada por fuera jamás se rehúsa",
     ir354Checks.every(([, pass]) => pass),
     JSON.stringify(ir354Checks.filter(([, p]) => !p).map(([n]) => n)),
+  );
+
+  // ── IR355 — el asesor de metas: la matemática fecha⇄aporte es del MOTOR
+  // (plan_goal_funding), un numeral de nombre de producto («iPhone 18») jamás
+  // interroga contra un precio con marca de moneda, la meta re-narrada no se
+  // duplica y el recibo de update_goal declara sus números.
+  const ir355Ctx = {
+    userId: "u1",
+    baseCurrency: "USD",
+    timezone: "America/Guayaquil",
+    saldoAvailable: true,
+    goals: [
+      {
+        id: "g1", name: "iPhone 18", targetAmount: 900, currentAmount: 100,
+        currency: "USD", contributionAmount: 45, cadence: "weekly",
+        cashflowProtected: true,
+      },
+    ],
+    fxRates: [],
+    briefing: {
+      goalsIntel: {
+        availableMonthlyForNewGoal: 400,
+        newGoalCapacity: { monthlyIncome: 1500 },
+      },
+    },
+  } as unknown as AgentContext;
+  const ir355TodayISO = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Guayaquil",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const ir355MonthsTo = (iso: string) =>
+    Math.max(
+      (Date.parse(`${iso}T12:00:00.000Z`) - Date.parse(`${ir355TodayISO}T12:00:00.000Z`)) /
+        86_400_000 /
+        30.44,
+      1,
+    );
+  const ir355Round2 = (n: number) => Math.round(n * 100) / 100;
+  const ir355ExpectedMonthly = ir355Round2(900 / ir355MonthsTo("2027-02-23"));
+  const ir355ByDate = await executePlanGoalFunding(
+    { targetAmount: 900, targetDateISO: "2027-02-23" },
+    ir355Ctx,
+  );
+  const ir355ByDateData = ir355ByDate.data as {
+    byDate?: { monthly: number; weekly: number; months: number; reachDateISO: string };
+    frontier?: { earliestFeasibleDateISO: string | null; monthly: number };
+    remaining?: number;
+    availableMonthly?: number | null;
+    capacityKnown?: boolean;
+  };
+  const ir355Verdict = await executePlanGoalFunding(
+    { targetAmount: 900, targetDateISO: "2026-10-31", contributionAmount: 90, cadence: "weekly" },
+    ir355Ctx,
+  );
+  const ir355VerdictData = ir355Verdict.data as {
+    byContribution?: { monthlyEquivalent: number; reachDateISO: string };
+    proposalVerdict?: { fits: boolean; gapMonthly: number } | null;
+  };
+  const ir355Existing = await executePlanGoalFunding({ goalId: "g1", targetDateISO: "2027-02-23" }, ir355Ctx);
+  const ir355ExistingData = ir355Existing.data as { alreadySaved?: number; availableMonthly?: number | null };
+  const ir355Cuotas = await executePlanGoalFunding(
+    { targetAmount: 900, installmentMonths: 3 },
+    ir355Ctx,
+  );
+  const ir355CuotasData = ir355Cuotas.data as { installments?: { monthlyInstallment: number; fits: boolean | null } };
+  const ir355NoAmount = await executePlanGoalFunding({}, ir355Ctx);
+  const ir355NoCadence = await executePlanGoalFunding({ targetAmount: 900, contributionAmount: 90 }, ir355Ctx);
+  const ir355Blind = await executePlanGoalFunding(
+    { targetAmount: 900, targetDateISO: "2027-02-23" },
+    { ...ir355Ctx, saldoAvailable: false } as AgentContext,
+  );
+  const ir355BlindData = ir355Blind.data as { capacityKnown?: boolean; byDate?: { monthly: number } };
+  const ir355GuardSkip = serverMonetaryEvidenceRequirement(
+    "evaluate_purchase_as_goal",
+    { amount: 900 },
+    "Registremos una meta: quiero el iphone 18 nuevo, me va a costar $900",
+    { readOnly: true },
+  );
+  const ir355GuardKeeps = serverMonetaryEvidenceRequirement(
+    "evaluate_purchase_as_goal",
+    { amount: 900 },
+    "tengo $500 ahorrados y me va a costar $900",
+    { readOnly: true },
+  );
+  const ir355Checks: [string, boolean][] = [
+    [
+      "por fecha: división exacta del motor (900 ÷ meses reales a 30,44 días/mes) con equivalencias por cadencia",
+      ir355ByDate.status === "done" &&
+        Math.abs((ir355ByDateData.byDate?.monthly ?? 0) - ir355ExpectedMonthly) <= 1 &&
+        Math.abs(
+          (ir355ByDateData.byDate?.monthly ?? 0) * (ir355ByDateData.byDate?.months ?? 0) -
+            (ir355ByDateData.remaining ?? 0),
+        ) <= 1 &&
+        Math.abs(
+          (ir355ByDateData.byDate?.weekly ?? 0) -
+            ir355Round2(((ir355ByDateData.byDate?.monthly ?? 0) * 7) / 30),
+        ) <= 0.01 &&
+        ir355ByDateData.availableMonthly === 400 &&
+        ir355ByDateData.capacityKnown === true,
+    ],
+    [
+      "veredicto honesto de la propuesta: 90/sem para el 31-oct queda CORTO (el asesor lo dice con el faltante exacto)",
+      ir355Verdict.status === "done" &&
+        ir355VerdictData.proposalVerdict != null &&
+        ir355VerdictData.proposalVerdict.fits === false &&
+        ir355VerdictData.proposalVerdict.gapMonthly > 0 &&
+        typeof ir355VerdictData.byContribution?.reachDateISO === "string" &&
+        ir355VerdictData.byContribution.reachDateISO.length === 10 &&
+        /faltan/i.test(ir355Verdict.summary ?? ""),
+    ],
+    [
+      "meta existente: hereda lo ahorrado y devuelve su propio aporte a la capacidad libre",
+      ir355Existing.status === "done" &&
+        ir355ExistingData.alreadySaved === 100 &&
+        (ir355ExistingData.availableMonthly ?? 0) > 400,
+    ],
+    [
+      "cuotas sin intereses: cuota exacta del motor (900/3 = 300) y encaje declarado",
+      ir355Cuotas.status === "done" &&
+        ir355CuotasData.installments?.monthlyInstallment === 300 &&
+        ir355CuotasData.installments.fits === true,
+    ],
+    ["sin monto pide el objetivo", ir355NoAmount.status === "needs_info"],
+    ["aporte sin cadencia se rehúsa tipado", ir355NoCadence.status === "needs_info"],
+    [
+      "panorama no legible: la matemática va, la capacidad se declara no comprobable",
+      ir355Blind.status === "done" &&
+        ir355BlindData.capacityKnown === false &&
+        Math.abs((ir355BlindData.byDate?.monthly ?? 0) - ir355ExpectedMonthly) <= 1 &&
+        /no es legible este turno/.test(ir355Blind.summary ?? ""),
+    ],
+    [
+      "«iphone 18 … $900»: el numeral del nombre no interroga contra el precio marcado",
+      ir355GuardSkip === null &&
+        JSON.stringify(emphasizedStatedAmounts("quiero el iphone 18 nuevo, me va a costar $900")) === "[900]" &&
+        emphasizedStatedAmounts("el iphone 18 nuevo").length === 0,
+    ],
+    [
+      "dos montos con marca de moneda siguen siendo ambigüedad real",
+      ir355GuardKeeps !== null,
+    ],
+    [
+      "el motor expone la capacidad de una meta NUEVA restando compromisos existentes",
+      (() => {
+        const gi = buildGoalsIntelligence({
+          goals: [
+            {
+              id: "g9", name: "Meta X", targetAmount: 1000, currentAmount: 0,
+              currency: "USD", contributionAmount: 100, cadence: "monthly",
+              status: "active", isPrimary: true, cashflowProtected: true,
+            } as never,
+          ],
+          estimatedMonthlyIncome: 2000,
+          estimatedMonthlyFixedExpenses: 600,
+          monthlyDebtDue: 200,
+          flexibleSpending: 300,
+          debtPressureLevel: "low",
+          baseCurrency: "USD",
+          safeThisWeek: 120,
+          liquidAccountsBase: 1000,
+          totalDebtBase: 500,
+          monthlyInvestmentContribution: 100,
+          nowMs: Date.parse("2026-08-23T12:00:00.000Z"),
+        });
+        return (
+          gi.newGoalCapacity.monthlyIncome === 2000 &&
+          gi.availableMonthlyForNewGoal > 0 &&
+          gi.availableMonthlyForNewGoal < 1200 &&
+          Math.abs(
+            gi.newGoalCapacity.monthlyProtected.goals -
+              Math.round((gi.portfolio.committedWeeklyTotal * (30 / 7)) * 100) / 100,
+          ) <= 0.01
+        );
+      })(),
+    ],
+    [
+      "la meta re-narrada no se duplica y el recibo de update_goal declara aporte y fecha",
+      pmAgentTools.includes("ya quedó creada hace un momento en esta misma conversación; no la dupliqué") &&
+        pmAgentTools.includes("aporte comprometido de ${formatMoney(appliedContribution, goalCurrencyCode)}") &&
+        pmAgentTools.includes("nueva fecha ${patch.target_date}"),
+    ],
+    [
+      "una hipótesis de simulación es del asesor: la mitad derivada calcula; el mismo monto en un WRITE sigue bloqueado",
+      serverMonetaryEvidenceRequirement(
+        "plan_goal_funding",
+        { contributionAmount: 66.6 },
+        "puedo más o menos la mitad, ajústala",
+        { readOnly: true },
+      ) === null &&
+        serverMonetaryEvidenceRequirement(
+          "create_goal",
+          { name: "x", targetAmount: 66.6 },
+          "puedo más o menos la mitad",
+          {},
+        ) !== null &&
+        (SIMULATION_HYPOTHESIS_PATHS.plan_goal_funding ?? []).includes("contributionAmount"),
+    ],
+    [
+      "un nombre de préstamo en la tool de tarjetas redirige tipado a log_movement (jamás pregunta cuál tarjeta)",
+      await (async () => {
+        const redirect = await executeRegisterCardPayment(
+          { cardName: "crédito alpaca", amount: 100 },
+          {
+            userId: "u1",
+            baseCurrency: "USD",
+            timezone: "America/Guayaquil",
+            debtAccounts: [
+              { id: "d-loan", name: "Crédito Alpaca HD", type: "loan", currency: "USD" },
+              { id: "d-card", name: "Visa HD", type: "credit_card", currency: "USD", fullPaymentDue: 0 },
+            ],
+          } as unknown as AgentContext,
+        );
+        return (
+          redirect.status === "redirect" &&
+          /log_movement/.test(redirect.summary ?? "") &&
+          /d-loan/.test(redirect.summary ?? "")
+        );
+      })(),
+    ],
+    [
+      "el motor compromete el aporte requerido en la misma escritura (create y update) y los writers de metas resuelven por nombre único",
+      pmAgentTools.includes("commitRequiredContribution") &&
+        pmAgentTools.includes("engineCommittedContribution = true;") &&
+        pmAgentTools.includes("simetría exacta con create_goal") &&
+        pmAgentTools.includes("DILE estas cifras en esta misma respuesta") &&
+        pmAgentTools.includes("function resolveGoalRef(") &&
+        pmAgentTools.includes("es un préstamo, no una tarjeta. Registra ese pago con log_movement") &&
+        pmAgentTools.includes("Saldo post-registro:"),
+    ],
+    [
+      "el prompt fija la asesoría: recalcular con el motor, honestidad, etapas y cierre en una escritura",
+      ir328Loop.includes("recalculando con plan_goal_funding") &&
+        ir328Loop.includes("alcanza cómodo") &&
+        ir328Loop.includes("propone ETAPAS") &&
+        ir328Loop.includes("JAMÁS la re-crea") &&
+        ir328Loop.includes("orden ya dada es un error de asesor") &&
+        ir328Loop.includes("commitRequiredContribution:true") &&
+        ir328Loop.includes("create_goal con la fecha y\nel aporte acordados juntos"),
+    ],
+  ];
+  assert(
+    "IR355 · asesor de metas: matemática del motor, nombre-numeral inofensivo, meta sin duplicar y recibo con números",
+    ir355Checks.every(([, pass]) => pass),
+    JSON.stringify(ir355Checks.filter(([, p]) => !p).map(([n]) => n)),
   );
   assert(
     "IR351 · cualquier jerga autoriza por CITA literal del episodio — sin listas hardcodeadas; una cita fabricada jamás autoriza y un fallo de control jamás pide reformular",

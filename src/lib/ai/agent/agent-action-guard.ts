@@ -7,6 +7,7 @@ import {
 import {
   batchMovementAmountAssociationsProven,
   monetaryClaimsFromToolArgs,
+  emphasizedStatedAmounts,
   numericValueWasStated,
   statedAmounts,
   statedAmountsExcludingNamedStoredFacts,
@@ -241,6 +242,22 @@ function isConditionalDestructive(
  * challenge. This helper contains only numeric association/provenance checks;
  * capability sensitivity remains the message-free registry in
  * agent-operation-authority.ts. */
+/** Read-only simulation tools whose listed numeric arguments are HYPOTHESES:
+ * the advisor explores "what if" values (half the quoted plan, a shorter date,
+ * an installment count). A hypothesis is never written and is answered as
+ * conditional math ("si aportas X, llegas el Y"), so demanding the user have
+ * literally said the number dead-locks the advisory — the founder's session
+ * died exactly there (contributionAmount=66.6 refused on a READ). Writes and
+ * every other tool keep the full evidence barrier. */
+export const SIMULATION_HYPOTHESIS_PATHS: Record<string, readonly string[]> = {
+  plan_goal_funding: [
+    "contributionAmount",
+    "targetAmount",
+    "alreadySaved",
+    "installmentMonths",
+  ],
+};
+
 export function serverMonetaryEvidenceRequirement(
   toolName: string,
   args: Record<string, unknown>,
@@ -266,7 +283,10 @@ export function serverMonetaryEvidenceRequirement(
   );
   const operationStatedValue = (value: number): boolean =>
     operationMessages.some((message) => numericValueWasStated(message, value));
-  const monetaryClaims = monetaryClaimsFromToolArgs(args);
+  const hypothesisPaths = new Set(SIMULATION_HYPOTHESIS_PATHS[toolName] ?? []);
+  const monetaryClaims = monetaryClaimsFromToolArgs(args).filter(
+    (claim) => !hypothesisPaths.has(claim.path),
+  );
   const isBatchMovement = toolName === "log_movements_batch";
   const currentDeliveryProvesEveryAssociation =
     isBatchMovement &&
@@ -285,7 +305,23 @@ export function serverMonetaryEvidenceRequirement(
         options.serverVerifiedDeclaredStoredFacts,
       )
     : statedAmounts(rawMessage);
-  if (monetaryClaims.length === 1 && deliveryAmounts.length >= 2) {
+  // A currency-marked or price-marked amount is the user's own emphasis; a
+  // bare numeral inside a product name ("iPhone 18") is not money evidence
+  // against it. When the single claim matches an EMPHASIZED stated amount and
+  // every other stated number is bare, the association is proven — the guard
+  // only interrogates genuine multi-money utterances.
+  const emphasized = emphasizedStatedAmounts(rawMessage);
+  const claimMatchesEmphasized =
+    monetaryClaims.length === 1 &&
+    emphasized.some((value) => Math.abs(value - monetaryClaims[0].amount) <= 0.005);
+  const otherEmphasizedExists =
+    monetaryClaims.length === 1 &&
+    emphasized.some((value) => Math.abs(value - monetaryClaims[0].amount) > 0.005);
+  if (
+    monetaryClaims.length === 1 &&
+    deliveryAmounts.length >= 2 &&
+    !(claimMatchesEmphasized && !otherEmphasizedExists)
+  ) {
     reason ??= "sensitive_create";
     prompts.push(
       `Tu mensaje contiene varios montos (${deliveryAmounts.join(", ")}), pero esta propuesta usaría ` +
@@ -301,6 +337,7 @@ export function serverMonetaryEvidenceRequirement(
   const unstated = unstatedMonetaryClaims(rawMessage, args).filter(
     (claim) =>
       !(toolName === "register_card_payment" && claim.path === "amount") &&
+      !hypothesisPaths.has(claim.path) &&
       !serverVerified.has(claim.path) &&
       !operationStatedValue(claim.amount),
   );
@@ -520,9 +557,13 @@ export function serverConfirmationRequirement(
   const serverVerifiedMonetaryClaimPaths = new Set(
     options.serverVerifiedMonetaryClaimPaths ?? [],
   );
+  const legacyHypothesisPaths = new Set(
+    SIMULATION_HYPOTHESIS_PATHS[toolName] ?? [],
+  );
   const unstated = unstatedMonetaryClaims(rawMessage, args).filter(
     (claim) =>
       !(cardExecutorProvesAmount && claim.path === "amount") &&
+      !legacyHypothesisPaths.has(claim.path) &&
       !serverVerifiedMonetaryClaimPaths.has(claim.path) &&
       !operationStatedValue(claim.amount),
   );

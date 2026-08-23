@@ -4507,3 +4507,127 @@ terceros intactos; J-2 corrección intacta (la red corre después); modo
 legacy `on` byte-idéntico; cero rutas por frase nuevas (las reglas de
 prompt son semántica general: método de pago, geografía monetaria,
 responder≠escribir).
+
+# ADENDA 60 — 2026-08-23 — El asesor de metas: sesión multivuelta con la matemática del motor, y la batería GA de asesoría humana
+
+Estado: **AUTORITATIVA.** Mandato del founder: Kipu como asesor financiero de
+primer nivel para metas y decisiones grandes — sesión de asesoría y discusión,
+no una respuesta suelta; propone, evalúa lo ambicioso, se adapta al feedback,
+arma por etapas cuando la meta lo pide, financia con cuotas sin intereses, y
+es honesto cuando alcanza comprarlo ya. Cero hardcodeo; inteligencia general.
+
+## A60-1. Los cuatro defectos del transcript de metas (telemetría primero)
+
+1. **«iPhone 18» interrogado contra «$900»**: `evaluate_purchase_as_goal`
+   murió en needs_info «tu mensaje contiene varios montos (18, 900)» — el
+   numeral del NOMBRE del producto contado como monto. Ese fue el primer
+   «fallo interno» confesado.
+2. **Meta duplicada REAL**: `create_goal` corrió en el turno de creación y
+   OTRA VEZ en el turno-pregunta «¿qué día se harían los aportes?» — dos
+   «iPhone 18» de 900$ en la cuenta del founder (la clase re-narración de la
+   ADENDA 59, ahora en metas). El duplicado vacío (95432770) quedó cancelado
+   por liberación puntual autorizada; la meta buena conserva su aporte.
+3. **La matemática del aporte era del modelo**: 241,93/sem y 90/sem (900÷10)
+   calculados de cabeza — división que la clausura aritmética no cubre.
+4. **«Fallo al guardar la respuesta final»**: `update_goal` escribió bien pero
+   su recibo decía «la actualicé» SIN cifras → el 90 quedó sin evidencia → la
+   publicación lo rechazó → recomposición confesando el fallo (clase paridad
+   de recibos, otra vez).
+
+## A60-2. La arquitectura del asesor (motor calcula, modelo asesora)
+
+- **`plan_goal_funding`** (tool #124, read-only): la CALCULADORA de la
+  asesoría. Reutiliza el simulador bidireccional del Stage 33: por fecha →
+  aporte requerido (mes/quincena/semana); por aporte → fecha de llegada;
+  frontera factible (fecha más pronta a tope, máximo por cadencia); VEREDICTO
+  de la propuesta del usuario (entra/corta y por cuánto); opción de cuotas
+  sin intereses (cuota mensual + encaje). Sin fecha ni aporte → frontera.
+  Panorama ilegible o sin ingreso → la matemática va, la capacidad se declara
+  no comprobable (fail-honest, jamás fail-useless).
+- **`availableMonthlyForNewGoal` + `newGoalCapacity`** en goals-intelligence:
+  la capacidad para UNA meta más (flujo conservador − compromisos de
+  inversión − aportes comprometidos de metas existentes, 30/7), del MISMO
+  motor que el dashboard.
+- **`commitRequiredContribution`** en create_goal Y update_goal: «con los
+  aportes que hagan falta» ⇒ el motor deriva el aporte exacto para la fecha y
+  lo COMPROMETE en la misma escritura (cadencia del usuario o mensual). Mata
+  el huevo-gallina (el número llegaba recién en el recibo) y la meta hueca
+  tras un «dale».
+- **`SIMULATION_HYPOTHESIS_PATHS`**: los argumentos de una tool de simulación
+  read-only son HIPÓTESIS del asesor por diseño («¿y si aporto la mitad?» ⇒
+  contributionAmount derivado). La sesión real moría exactamente ahí: el
+  guard de monto-no-declarado rehusó contributionAmount=66.6 EN UNA LECTURA
+  («no voy a calcular sobre valores elegidos por el modelo») y el modelo
+  aprendió a preguntar «¿cuánto exactamente?» ante todo derivado. La
+  exención cubre solo plan_goal_funding (4 paths); todo WRITE conserva la
+  barrera completa (probado en ambos sentidos).
+- **`emphasizedStatedAmounts`** (dominancia de evidencia marcada): un monto
+  con moneda explícita o verbo de precio ($900, «cuesta 900») vence a un
+  numeral pelado de nombre de producto (iPhone 18, PlayStation 5); si el
+  claim coincide con el ÚNICO monto marcado, no hay ambigüedad que
+  interrogar. Dos montos marcados distintos siguen preguntando.
+- **Recibos que cargan la cifra**: create_goal con fecha y sin aporte trae la
+  referencia del motor (X/mes = Y/sem) con la orden de decirla; update_goal
+  enumera CADA cambio con números (aporte, cadencia, fecha, estado);
+  log_movement trae el SALDO POST-WRITE de las cuentas tocadas («¿con cuánto
+  quedo?» cita el número nuevo, jamás el viejo del contexto).
+- **Candidato único en metas** (`resolveGoalRef`): goalId acepta id o nombre
+  con match único (mismo helper que cuentas); ambiguo → candidatos.
+- **Redirect préstamo→writer correcto**: un nombre que matchea una deuda
+  NO-tarjeta en register_card_payment ya no pregunta «¿cuál tarjeta?» —
+  redirige tipado a log_movement debt_payment con el id.
+- **Anti-re-narración de metas**: meta idéntica (nombre normalizado o
+  monto+moneda) creada hace <15 min ⇒ NOOP veraz con escape «otra».
+- **Prompt del asesor** (~45 líneas, todas generales): sesión construida en
+  vueltas con recálculo del motor; honestidad primero (si alcanza cómodo,
+  cómpralo; plan que no entra ⇒ veredicto y alternativa en la misma
+  respuesta); etapas cuando hay hitos (crear TODAS al aprobar, fecha natural
+  de fin de mes); cuotas sin intereses = create_installment_plan y el aporte
+  se vuelve pago de tarjeta; cierre en UNA escritura; orden ya cotizada =
+  ejecutar (jamás «si quieres te lo dejo»); opciones sin elegir ⇒ armar la
+  recomendada con fecha+compromiso; ajuste relativo («la mitad») = calcular
+  en la cadencia citada; $ sin señal = moneda base; resta obvia del propio
+  pedido es del asesor; candidato único aplica a metas.
+
+## A60-3. La batería GA (asesoría humana, modelo real)
+
+9 escenarios `GA_*` en `--real-sample` (persona con ingreso 1500/mes + fijo
+400/mes para capacidad real; aserciones por FILAS de metas en PostgreSQL +
+presupuesto de preguntas + jerga prohibida — nunca por frase):
+desde cero sin plazo ni aporte · fecha ambiciosa evaluada y renegociada ·
+propuesta bien calibrada confirmada y creada · alcanza cómodo (honestidad,
+CERO metas reflejas) · viaje por ETAPAS (pasajes nov + resto mar, total
+exacto 2000, ambas comprometidas) · feedback vivo («la mitad» ⇒ 51,80/sem y
+fecha recalculada) · iPhone 18 con $900 sin interrogatorio y sin duplicar
+(93,15/sem exacto del motor) · cuotas sin intereses (600/3 = 200 citado) ·
+decisión grande no-meta (préstamo de carro, read-only).
+La jerga prohibida suma «inconsistencia interna» y «fallo interno».
+`KEEP_PERSONA=1` conserva la persona para diagnóstico (herramienta QA).
+
+**Muestra completa (11 HR + 12 HD + 9 GA): 32/32 duros verdes · 4,56/5 ·
+$1.47 · exit 0.** Corridas de camino 29→29→31→30→32; cada rojo con causa
+tipada: dos eran producto (hipótesis rehusada, goalId por nombre), el resto
+sobre-especificación de MIS aserciones corregida con acta (la fecha de un
+ajuste puede acercarse legítimamente si la cifra citada era el reparto
+agregado; crear-y-avisar es tan válido como proponer-y-crear).
+
+## A60-4. Números del árbol final
+
+capture **887/887** · mutaciones **586/586** SOLAS (M0M582–M0M592: matemática
+por fecha, veredicto, dominancia enfatizada, dup de meta, recibo con cifras,
+capacidad nueva, prompt, hipótesis, compromiso del motor, redirect préstamo)
+· PostgreSQL **82/82** + **M116–M123** · DRY **32/32** · OLA0 **16/16** ·
+calibración **2/2** · tsc/lint/build limpios · muestra real **32/32**.
+Sin migraciones nuevas (la 123 sigue siendo la última; la liberación del
+duplicado fue una operación puntual documentada). Costo de la ventana ≈ $12.
+
+## A60-5. Lecciones
+
+- La 7ª y 8ª repetición de la aserción débil se cazaron ANTES de correr
+  (mutante en rama muerta; caso con dos salidas «otros 500»).
+- Un guard pensado para writes aplicado a una SIMULACIÓN convierte al asesor
+  en un bot: la hipótesis es la herramienta de trabajo del asesor.
+- La palanca que el modelo SIEMPRE obedece es estructural (tool nueva, recibo
+  con la cifra, derivación server-side), no una línea más de prompt.
+- Sobre-especificar la FORMA de una conversación válida es el mismo error que
+  el test de Wise: se asierta el dinero exacto y la física, no la coreografía.
