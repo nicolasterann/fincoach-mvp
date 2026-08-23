@@ -4351,3 +4351,159 @@ Estado: **AUTORITATIVA.** Diagnóstico 100% desde telemetría de producción
 dry **32/32** · Ola 0 **16/16** · calibración **2/2** · muestra real
 **11/11** · capture **884/884** · mutaciones **560/560** SOLAS (M0M565 sobrevivió una ronda porque IR352 probaba el helper y no su CONSUMO — cuarta repetición de la lección de la aserción débil; ahora muerde el caso literal de Ecuador) ·
 PostgreSQL **82/82** · M117–M122 verdes.
+
+# ADENDA 59 — 2026-08-23 — El ultimátum: arquitectura de totales del motor, realidad de deudas sin rehusar, batería humana HD y migración 123 aplicada bajo autorización del founder
+
+Estado: **AUTORITATIVA — la respuesta al ultimátum del founder.** Instrucción
+textual: «hazlo a nivel de arquitectura, no lo hagas solo para pasar mis
+tests… tienes permiso de aplicar la migración 123 tú mismo… no te detengas
+hasta que esté listo el modelo final que pueda probar con lo que sea».
+
+## A59-1. Las tres raíces de ARQUITECTURA (no parches por frase)
+
+1. **Los totales rehusados eran aritmética del MODELO.** La clausura
+   aritmética (A58) validaba subconjuntos pero el pool cortaba en las 8
+   mayores de 16 por magnitud: los componentes chicos (-110, 172.73) quedaban
+   fuera y el total legítimo moría como `unsupported_figure`; y aún
+   permitida, la suma mental del LLM se equivocó en vivo (enumeró
+   220.000+400+50.000 y publicó 270.340). La respuesta es la doctrina Kipu
+   de siempre: **el motor es la fuente de todo número.**
+   - `liveTotalsByCurrency` en el contexto: totales por moneda de cuentas y
+     deudas, calculados en centavos por `computeLiveTotalsByCurrency`
+     (kipu-agent.ts) sobre las MISMAS filas serializadas.
+   - Tool nueva **`sum_balances`** (read-only, #123 del catálogo): el modelo
+     elige QUÉ entidades forman el grupo (país, banco, subconjunto) — la
+     semántica; el motor lee los saldos VIVOS de la DB (incluye writes del
+     mismo turno) y suma exacto por moneda con la aritmética deletreada en el
+     summary. Ids ajenos rehúsan nombrándolos; lectura rota falla cerrado
+     («no calcules el total a mano»); jamás cruza monedas sin conversión.
+   - Prompt: la aritmética es del motor; nunca sumas de cabeza 3+ cifras; el
+     total va en la moneda de sus componentes (nativo primero); PROHIBIDO
+     rehusar/aplazar totales. Reglas generales de agrupación: país evidente
+     del banco por marca; efectivo en moneda de un solo país pertenece a ese
+     país (ARS→Argentina); fintech global (Wise/PayPal) o efectivo multi-país
+     (USD) sin ubicación conocida → grupo «internacional/digital» salvo
+     memoria/usuario (y eso se aprende con remember_fact).
+
+2. **«Marca mis deudas de tarjetas como pagadas» rehusaba por un puntero
+   MUERTO.** El NOOP de ciclo cubierto dirigía a `update_debt_snapshot` —
+   una tool QUE NO EXISTE en el registro (el writer existe en
+   commitments-store; el agente no lo expone). El modelo, sin capacidad
+   visible, rehusaba honesto («no puedo sin registrar el pago real») — la
+   violación exacta de M0-AM. Fixes:
+   - Puntero corregido a la capacidad real: `update_card_obligations` con
+     `statementBalance` (que desde chat SÍ escribe el saldo vivo con CAS).
+   - Su descripción declara el uso: registrar el saldo REAL cuando el
+     usuario dice que ya la pagó por fuera no es un pago nuevo y jamás exige
+     una fila de pago.
+   - Prompt: «el usuario es la autoridad sobre la realidad de sus deudas…
+     JAMÁS se rehúsa»; `register_card_payment` es sólo para plata que se
+     mueve hoy de una cuenta registrada.
+   - Bug real de datos: con moneda de tarjeta ≠ base, poner saldo 0 dejaba
+     `current_balance_base` viejo (deuda fantasma en base). **Cero no
+     necesita FX**: ahora 0 nativo ⇒ 0 base.
+   - El contexto ahora serializa **`kind`** (credit_card/loan) por deuda: sin
+     el tipo, «deudas de tarjetas» barrió también un préstamo en la primera
+     corrida; con el tipo, el modelo distinguió solo.
+
+3. **La re-narración duplicaba dinero (la clase del miedo #1 del founder).**
+   Un turno-pregunta re-registró un ingreso idéntico (dos filas de 500), y
+   en el catálogo legacy una aclaración re-ejecutó pagos parciales y una
+   devolución de capital (los dedupe existentes son POR ENTREGA por diseño
+   K13: entrega nueva = orden nueva; la re-narración cruza turnos y es capa
+   semántica). Respuesta coherente con M0-AM y con la 123: **un write
+   idéntico a uno recién asentado, sin mandato fresco del usuario, es física
+   ya escrita ⇒ NOOP veraz** (cero writes, cero recibos — exactamente lo que
+   la 123 verifica), jamás un bloqueo ni una re-pregunta:
+   - `unrequestedDuplicateMovementNoopWith` (pura, testeada): identidad
+     tipo+monto+moneda+patas de cuenta en ventana de 15 min; escape
+     explícito «otro/de nuevo/otra vez»; lectura rota = fail-open (la red
+     extra jamás bloquea registrar); manifiesto autorizado y confirmedNew
+     conservan el write.
+   - `log_movement`: con warrant numeral (un numeral del monto en el
+     delivery conserva el write — «gasté 5 en pan» dos veces es legítimo);
+     corre DESPUÉS del guard J-2 para no preemptar la corrección legacy.
+   - `register_card_payment` (parciales) y `capital_return_unrecorded`: SIN
+     warrant numeral («sí, pagué los 22.14 de la Visa» re-narra el mismo
+     evento aunque repita cifras); draft de captura abierto conserva el
+     flujo; identidad por tarjeta exacta / external_ref de capital.
+   - Prompt: «una pregunta sobre totales o saldos JAMÁS re-registra un
+     movimiento anterior: responder no es escribir»; y «débito» señala
+     cuenta bancaria (jamás efectivo) — semántica de método de pago general.
+
+## A59-2. Migración 123 — APLICADA POR CLAUDE con autorización textual
+
+`kipu_verify_agent_loop_step`: un step económico con `noop:true` declarado,
+cero recibos y sin reclamo de write **verifica** (física consistente: nada
+esperado y nada encontrado). Cualquier otra combinación sigue rehusando
+`KIPU_EFFECT_MISSING`. Aplicada vía MCP `apply_migration`
+(`m0_coherent_noop_verification_123`); sondas M123 4/4 (verifica noop ·
+económico sin noop sigue rehusando · noop que reclama write rehúsa · replay
+idempotente). La operación real atascada del founder (`ce717b42`,
+`verifying`) fue liberada a `abandoned` vía la RPC de la 121 con cero
+movimiento de dinero. Esto cierra el crash de 3 turnos de «marca las
+tarjetas como pagadas» del transcript del ultimátum.
+
+## A59-3. La batería humana HD (la que el founder pidió inventar)
+
+12 escenarios `HD_*` en `--real-sample` (fixture `seedHumanDay`: 9 cuentas
+en 3 países/2 monedas con base ARS real a tasa sembrada 1000, 2 tarjetas
+viejas cubiertas con saldo histórico, 1 crédito vivo; regla de oro:
+**geometría real, incluidas las bases** — la primera versión con
+base=original hacía a Wells «más pobre» que Supervielle):
+
+total por país tras un gasto (270.400) · desglose por país con subtotales ·
+saldo de un banco tras un gasto (122.73) · marcar tarjetas viejas como
+pagadas (snapshot, cero pagos, préstamo INTACTO) · deuda total (1.207,03
+nativo) · suma de dos cuentas (62.73) · registrar y responder saldo en el
+mismo turno (167.73) · transferir y citar ambos saldos · ingreso y total al
+instante (4.576,93) · deuda específica (201.25) · cuenta con más plata
+(cross-moneda por base) · abono parcial a préstamo. Prohibición transversal
+`HD_FORBIDDEN` (jamás «no puedo darte el total», «reformúlame», etc.),
+presupuesto de preguntas, escrituras exactas contra PostgreSQL y totales
+citados por `statedAmounts`.
+
+Aserciones corregidas por evidencia (no para «pasar»): el income aterriza en
+`destination_account_id` (el check aceptaba sólo source — clase
+reversed_by); los subtotales exigidos son los INEQUÍVOCOS (62.73 EC /
+300.400 AR / 3.914,20 Wells) — dónde vive Wise/PayPal es juicio del modelo,
+no del test; `cardsZeroed` exige original Y base en cero; `loanUntouched`
+prueba que el barrido de tarjetas no toca el crédito.
+
+## A59-4. Números del árbol final
+
+- Muestra real completa **23/23 duros verdes** (11 HR + 12 HD) — DOS
+  corridas completas en verde: 23/23·4.72/5·$1.05 y la certificación del
+  árbol CONGELADO final 23/23·4.67/5·$1.02. (Corridas de camino: 20/23 y
+  21/23 — cada rojo con causa tipada y fix de arquitectura, jamás ajuste
+  por frase.)
+- capture **886/886** · mutaciones **575/575** SOLAS (M0M569–M0M581: motor
+  de totales, sum_balances fail-closed, prompt, puntero NOOP, base-cero,
+  kind de deuda, red anti-re-narración ×3) · PostgreSQL **82/82** + sondas
+  **M116–M123 verdes** · DRY **32/32** · OLA0 **16/16** · calibración
+  **2/2** · tsc/lint/build limpios.
+- Costo de la ventana ≈ $8.7 (4 corridas completas ≈$4.3 + carriles
+  sueltos ≈$1.3 + catálogo legacy accidental $3.08).
+
+## A59-5. El catálogo legacy de 50 y el acta M0-AM
+
+Un flag inexistente (`--calibration` sobre el e2e; la calibración real es
+`m0-ola0-calibration.mjs`) lanzó por accidente el catálogo histórico de 50
+escenarios ($3.08): 38/50. Triage completo: los rojos exigen el contrato
+PRE-M0-AM («cero writes antes de la confirmación», manifiestos para
+capturas ordinarias, awaiting_input para preguntas) que el acta firmada de
+ADENDAS 51-52 retiró explícitamente («registrar la realidad jamás se
+confirma»; autoriza retirar los tests de esos guards). Ese catálogo queda
+como ARCHIVO del programa A7-3 (cerrado verde en ADENDA 29 bajo su
+contrato); la vara VIVA es HR+HD+DRY+OLA0+capture+mutaciones+PG. El único
+hallazgo REAL de esa corrida — la re-narración duplicando dinero — quedó
+cerrado con la red de A59-1.3 (el valor de los $3: encontró la clase).
+
+## A59-6. Qué NO cambió
+
+Física PostgreSQL 001–123 intacta (la 123 es un branch de coherencia del
+verify, no un writer); manifiesto/segunda entrega para destruir historia y
+terceros intactos; J-2 corrección intacta (la red corre después); modo
+legacy `on` byte-idéntico; cero rutas por frase nuevas (las reglas de
+prompt son semántica general: método de pago, geografía monetaria,
+responder≠escribir).

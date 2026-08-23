@@ -302,6 +302,51 @@ function contextText(value: string | null | undefined, max = 160): string {
  * acquiring system authority merely because it was interpolated into the
  * system prompt.
  */
+export function computeLiveTotalsByCurrency(
+  accounts: ReadonlyArray<{ currency: string; currentBalanceOriginal: number | null }>,
+  debts: ReadonlyArray<{ currency: string; currentBalanceOriginal: number | null }>,
+): Array<{
+  currency: string;
+  accountsTotal: number;
+  accountCount: number;
+  debtsTotal: number;
+  debtCount: number;
+}> {
+  const cents = (value: number | null | undefined): number =>
+    Math.round((Number.isFinite(value as number) ? (value as number) : 0) * 100);
+  const byCurrency = new Map<
+    string,
+    { accountsCents: number; accountCount: number; debtsCents: number; debtCount: number }
+  >();
+  const bucket = (currency: string) => {
+    const key = currency.trim().toUpperCase();
+    const existing = byCurrency.get(key);
+    if (existing) return existing;
+    const created = { accountsCents: 0, accountCount: 0, debtsCents: 0, debtCount: 0 };
+    byCurrency.set(key, created);
+    return created;
+  };
+  for (const row of accounts) {
+    const entry = bucket(row.currency);
+    entry.accountsCents += cents(row.currentBalanceOriginal);
+    entry.accountCount += 1;
+  }
+  for (const row of debts) {
+    const entry = bucket(row.currency);
+    entry.debtsCents += cents(row.currentBalanceOriginal);
+    entry.debtCount += 1;
+  }
+  return [...byCurrency.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([currency, entry]) => ({
+      currency,
+      accountsTotal: entry.accountsCents / 100,
+      accountCount: entry.accountCount,
+      debtsTotal: entry.debtsCents / 100,
+      debtCount: entry.debtCount,
+    }));
+}
+
 export function buildAgentContextDataMessage(
   ctx: Awaited<ReturnType<typeof buildUserFinancialContext>>,
   defaultSourceRead: { ok: boolean; name: string | null },
@@ -348,6 +393,9 @@ export function buildAgentContextDataMessage(
     debtAccounts: ctx.debtAccounts.map((debt) => ({
       id: debt.id,
       name: contextText(debt.name, 120),
+      // "mis deudas de tarjetas" must never sweep a loan: without the kind the
+      // model can only guess from names which liabilities are cards.
+      kind: debt.type,
       debtNative: debt.currentBalanceOriginal,
       debtBase: ctx.wealthFxReliable ? debt.currentBalanceBase : null,
       nativeCurrency: debt.currency,
@@ -369,6 +417,14 @@ export function buildAgentContextDataMessage(
       debtPaymentPlanPaused: debt.debtPaymentPlanPaused ?? false,
       note: contextText(debt.notes),
     })),
+    // Engine-owned arithmetic: per-currency totals over the SAME rows serialized
+    // above, so "cuánto tengo en total / cuánto debo" is a fact the model quotes,
+    // never a sum it performs. Group totals (country, bank, subset) go through
+    // the sum_balances tool for the same reason.
+    liveTotalsByCurrency: computeLiveTotalsByCurrency(
+      ctx.accounts.filter((account) => !account.isGoalAccount),
+      ctx.debtAccounts,
+    ),
     goals: ctx.goals.map((goal) => ({
       id: goal.id,
       name: contextText(goal.name, 120),
@@ -1343,14 +1399,13 @@ export function evidenceArithmeticSupports(
   tolerance = 0.005,
 ): boolean {
   const pool = [...new Set(evidenceValues.map((row) => Math.round(row * 100)))]
-    .sort((left, right) => Math.abs(right) - Math.abs(left))
-    .slice(0, 16);
+    .slice(0, 18);
   const target = Math.round(value * 100);
   const cents = Math.round(tolerance * 100 * 2) || 1;
   let sums = new Set<number>([0]);
   let used = 0;
   for (const item of pool) {
-    if (used >= 8) break;
+    if (used >= 18) break;
     used += 1;
     const next = new Set<number>(sums);
     for (const partial of sums) {
@@ -1371,10 +1426,28 @@ export function replyMoneyFiguresAbsentFromEvidence(
   evidence: string,
   tolerance = 0.005,
 ): number[] {
-  const evidenceValues = statedAmounts(evidence);
+  const claims = extractNormalizedReplyMoneyClaims(reply);
+  // El pool aritmético prioriza las cifras PROBADAS de esta misma respuesta:
+  // un total siempre lista sus componentes al lado («Pichincha -110,
+  // Produbanco 172.73 … total 62.73»). Con evidencia gigante (todo el
+  // contexto financiero), un pool por magnitud descartaba justo los
+  // componentes chicos — el caso real «Ecuador 62.73» rehusado cinco veces.
+  const replySupported = [
+    ...new Set(
+      claims
+        .filter((claim) => amountWasStated(evidence, claim.value, tolerance))
+        .map((claim) => claim.value),
+    ),
+  ].slice(0, 12);
+  const evidenceValues = [
+    ...replySupported,
+    ...statedAmounts(evidence).sort(
+      (left, right) => Math.abs(right) - Math.abs(left),
+    ),
+  ];
   return [
     ...new Set(
-      extractNormalizedReplyMoneyClaims(reply)
+      claims
         .filter(
           (claim) =>
             !amountWasStated(evidence, claim.value, tolerance) &&

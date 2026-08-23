@@ -553,12 +553,61 @@ export function assertLoopMessagesSequence(
   if (issue) throw new LoopMessagesSequenceError(issue);
 }
 
+/** AUTO-REPARACIÓN determinista de la secuencia (cierre M0): un desliz de
+ * ensamblado JAMÁS mata una conversación. Para cada assistant.tool_calls,
+ * todo id sin su respuesta tool antes del siguiente mensaje no-tool recibe
+ * una respuesta de error sintética; un mensaje tool huérfano (sin tool_calls
+ * previo que lo reclame) se descarta. El validador corre DESPUÉS: si aun así
+ * la secuencia es inválida, se lanza el error tipado de siempre. Caso real
+ * 2026-08-23 03:32Z: una operación envenenada rompía el ensamblado y el
+ * usuario recibía «reintenta este mismo mensaje» en vez de una respuesta. */
+export function repairLoopMessagesSequence(
+  messages: ReadonlyArray<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  let openCallIds: string[] = [];
+  const closeOpenCalls = () => {
+    for (const id of openCallIds) {
+      out.push({
+        role: "tool",
+        tool_call_id: id,
+        content:
+          '{"status":"error","summary":"Resultado no disponible por un fallo interno; continúa desde el estado vigente."}',
+      });
+    }
+    openCallIds = [];
+  };
+  for (const message of messages) {
+    const role = message.role;
+    if (role === "tool") {
+      const callId = String(message.tool_call_id ?? "");
+      if (openCallIds.includes(callId)) {
+        openCallIds = openCallIds.filter((id) => id !== callId);
+        out.push(message);
+      }
+      // tool huérfano: descartado — no hay tool_call que lo reclame.
+      continue;
+    }
+    closeOpenCalls();
+    const calls = Array.isArray(message.tool_calls)
+      ? (message.tool_calls as Array<Record<string, unknown>>)
+      : null;
+    if (role === "assistant" && calls && calls.length > 0) {
+      openCallIds = calls.map((call) => String(call.id ?? ""));
+    }
+    out.push(message);
+  }
+  closeOpenCalls();
+  return out;
+}
+
 async function completeLoopModel(
   model: KipuLoopModel,
   request: LoopModelRequest,
 ): Promise<LoopModelCompletion> {
-  assertLoopMessagesSequence(request.messages);
-  return model.complete(request);
+  const repaired = repairLoopMessagesSequence(request.messages);
+  assertLoopMessagesSequence(repaired);
+  return model.complete({ ...request, messages: repaired as never });
 }
 
 const CONTROL_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
@@ -677,6 +726,37 @@ y fijos, tus argumentos son la autoridad semántica: actúa y deja que el servid
 valide sólo existencia, ownership, moneda, álgebra, atomicidad e idempotencia.
 La segunda delivery se reserva para destruir historia, cerrar/eliminar
 entidades o actuar hacia terceros.
+
+SIEMPRE tienes el estado financiero VIVO en el contexto de este turno, y
+puedes refrescarlo con get_financial_context cuando acabas de escribir.
+Totales, subtotales y agrupaciones — por país, por moneda, por banco, por
+cuenta — SIEMPRE se responden en este mismo turno, y la aritmética es del
+MOTOR, no tuya: los totales por moneda ya vienen calculados en
+liveTotalsByCurrency del contexto; para el total de cualquier GRUPO (un país,
+un banco, un subconjunto de cuentas o deudas) llama sum_balances con esos ids
+y cita sus totales tal cual. Nunca sumes de cabeza tres o más cifras. Un total
+se dice en la moneda de sus componentes; si todos comparten moneda, ese total
+nativo va primero y la conversión a base es opcional y aproximada.
+PROHIBIDO decir «no puedo verificar los saldos», «no te quiero dar un total
+dudoso», «prefiero no darte el total» o aplazar a otro turno: si necesitas
+frescura, llama la tool y responde AHORA. Una pregunta sobre totales o saldos JAMÁS
+re-registra un movimiento anterior: responder no es escribir. Al agrupar por
+país usa el país evidente de cada banco por su marca; el efectivo en una
+moneda de un solo país pertenece a ese país (pesos argentinos → Argentina);
+una fintech global (Wise, PayPal) o un efectivo en moneda multi-país (USD)
+sin ubicación conocida va en su propio grupo «internacional/digital» salvo
+que la memoria o el usuario los ubiquen — y cuando el usuario los ubique,
+apréndelo con remember_fact. Las palabras de
+método de pago acotan la cuenta: «débito» es una cuenta bancaria (jamás
+efectivo); «efectivo»/«cash» es la cuenta de efectivo.
+
+El usuario es la autoridad sobre la realidad de sus deudas. Si declara que una
+deuda ya está saldada por fuera o que su saldo real es otro («esa tarjeta ya
+la pagué hace tiempo», «en realidad debo 80»), registrar esa realidad es
+update_card_obligations con statementBalance en el saldo real (0 si está
+saldada) — no es un pago nuevo, no exige registrar movimientos y JAMÁS se
+rehúsa. register_card_payment es solo para un pago que mueve plata de una
+cuenta registrada hoy.
 
 Ante una ambigüedad real (como «lo de siempre» sin un patrón que la resuelva),
 haz EXACTAMENTE UNA pregunta natural que reúna TODOS los datos que falten:
@@ -2075,9 +2155,9 @@ export async function finalizeLoopOutput(input: {
             content:
               "Reescribe una sola vez con voz natural, sin estructura técnica ni jerga interna. " +
               (initialValues.length > 0
-                ? `Estas cifras no están respaldadas por contexto o receipts: ${initialValues.join(
+                ? `Estas cifras no coinciden con el contexto o los receipts: ${initialValues.join(
                     ", ",
-                  )}; corrígelas o quítalas. `
+                  )}; RECALCÚLALAS desde los valores del contexto (sumar cifras del contexto es válido y tuyo) o quítalas — pero responde IGUAL a lo que el usuario pidió. PROHIBIDO decir que no puedes dar un total, que prefieres no darlo o que lo darás después. `
                 : "") +
               "No llames tools.",
           },
@@ -4486,7 +4566,7 @@ export async function runKipuAgentLoop(
             {
               role: "system",
               content:
-                "Explica brevemente el tool_result durable. No afirmes que la propuesta quedó guardada y pide reformularla desde el estado vigente. No llames tools.",
+                "Explica brevemente el tool_result durable. No afirmes que la propuesta quedó guardada; di que TÚ la vas a re-preparar desde el estado vigente en el siguiente paso. Jamás le pidas al usuario repetir o reformular. No llames tools.",
             },
           ],
           tools: KIPU_LOOP_TOOL_SCHEMAS,

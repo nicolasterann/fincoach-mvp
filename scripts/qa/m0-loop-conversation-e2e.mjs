@@ -8,6 +8,32 @@
 //   node --env-file=.env.local scripts/qa/m0-loop-conversation-e2e.mjs --mode=loop --smoke
 //   node --env-file=.env.local scripts/qa/m0-loop-conversation-e2e.mjs --mode=on
 
+import fsHooks from "node:fs";
+import pathHooks from "node:path";
+import { registerHooks as registerSrcHooks } from "node:module";
+import { pathToFileURL as srcPathToFileURL } from "node:url";
+registerSrcHooks({
+  resolve(specifier, context, nextResolve) {
+    const base = specifier.startsWith("@/")
+      ? pathHooks.resolve("src", specifier.slice(2))
+      : specifier.startsWith(".") &&
+          context.parentURL?.startsWith("file:") &&
+          new URL(context.parentURL).pathname.includes("/src/")
+        ? pathHooks.resolve(
+            pathHooks.dirname(new URL(context.parentURL).pathname),
+            specifier,
+          )
+        : null;
+    if (!base) return nextResolve(specifier, context);
+    const target = fsHooks.existsSync(`${base}.ts`)
+      ? `${base}.ts`
+      : fsHooks.existsSync(`${base}.tsx`)
+        ? `${base}.tsx`
+        : base;
+    return nextResolve(srcPathToFileURL(target).href, context);
+  },
+});
+const { statedAmounts } = await import("@/lib/capture/amount-evidence");
 import { randomUUID } from "node:crypto";
 import { renameSync, writeFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
@@ -410,6 +436,186 @@ const OLA0_SCENARIOS = [
  * cuenta nombrada, typos, diminutivos+jerga, ambigüedad legítima, referencia
  * indirecta, voz en palabras. La vara: lo que Claude entendería, Kipu debe
  * entenderlo. Corre SOLO con --real-sample (modelo y juez reales). */
+/** BATERÍA HUMANA (contrato del founder, ADENDA 59): lo que una persona
+ * normal le pide a su agente — totales por país y por moneda, saldo tras un
+ * gasto, marcar deudas viejas como pagadas, cuánto debo, qué gasté, qué me
+ * toca pagar. Vara: PROHIBIDO en toda la conversación cualquier rechazo de
+ * aritmética o aplazamiento; los totales se verifican por VALOR EXACTO. */
+const HD_FORBIDDEN =
+  /no (?:te )?puedo (?:dar|verificar)|prefiero no (?:darte|dar)|total dudoso|cuando pueda revisar|apenas pueda revisar|reintenta este mismo mensaje|reformul|env[ií]amelo otra vez/iu;
+const HD_SCENARIOS = [
+  {
+    id: "HD_COUNTRY_TOTAL",
+    title: "total por país después de mover plata",
+    group: "hd",
+    currency: "ARS",
+    accountName: "Supervielle",
+    seedHumanDay: true,
+    turnsScript: [
+      "Compré un asado por 30 mil desde supervielle",
+      "¿Cuánto tengo en total en mis cuentas de argentina?",
+    ],
+    expect: {
+      writes: [{ amount: 30_000, accountName: "Banco Supervielle", type: "expense" }],
+      maxQuestions: 0,
+      finalReplyTotals: [270_400],
+    },
+  },
+  {
+    id: "HD_BREAKDOWN",
+    title: "total general y desglose por país con números",
+    group: "hd",
+    currency: "ARS",
+    accountName: "Supervielle",
+    seedHumanDay: true,
+    turnsScript: [
+      "¿Cuánto tengo en todas mis cuentas?",
+      "sepáramelo por país porfa, con subtotales",
+    ],
+    expect: {
+      maxQuestions: 0,
+      finalReplyTotals: [62.73, 300_400, 3_914.2],
+    },
+  },
+  {
+    id: "HD_BALANCE_AFTER",
+    title: "saldo de un banco después de registrar un gasto",
+    group: "hd",
+    currency: "ARS",
+    accountName: "Supervielle",
+    seedHumanDay: true,
+    turnsScript: [
+      "Gasté 50 dólares en ropa desde produbanco",
+      "¿Con cuánto quedé en produbanco?",
+    ],
+    expect: {
+      writes: [{ amount: 50, accountName: "Produbanco", type: "expense" }],
+      maxQuestions: 0,
+      finalReplyTotals: [122.73],
+    },
+  },
+  {
+    id: "HD_MARK_CARDS_PAID",
+    title: "marcar deudas viejas de tarjetas como pagadas",
+    group: "hd",
+    currency: "ARS",
+    accountName: "Supervielle",
+    seedHumanDay: true,
+    turnsScript: [
+      "Marca mis deudas de tarjetas como pagadas, ya las pagué por fuera hace tiempo",
+    ],
+    expect: {
+      requireNoWrite: true,
+      maxQuestions: 1,
+      cardsZeroed: true,
+      loanUntouched: 1_000,
+    },
+  },
+  {
+    id: "HD_TOTAL_DEBT",
+    title: "cuánto debo en total",
+    group: "hd",
+    currency: "ARS",
+    accountName: "Supervielle",
+    seedHumanDay: true,
+    turnsScript: ["¿Cuánto debo en total?"],
+    expect: { maxQuestions: 0, finalReplyTotals: [1_207.03] },
+  },
+  {
+    id: "HD_TWO_ACCOUNTS",
+    title: "suma de dos cuentas nombradas",
+    group: "hd",
+    currency: "ARS",
+    accountName: "Supervielle",
+    seedHumanDay: true,
+    turnsScript: ["¿Cuánto tengo entre pichincha y produbanco?"],
+    expect: { maxQuestions: 0, finalReplyTotals: [62.73] },
+  },
+  {
+    id: "HD_WRITE_AND_BALANCE",
+    title: "registrar y responder el saldo en el mismo turno",
+    group: "hd",
+    currency: "ARS",
+    accountName: "Supervielle",
+    seedHumanDay: true,
+    turnsScript: [
+      "Registra un café de 5 dólares desde produbanco y dime cuánto me queda ahí",
+    ],
+    expect: {
+      writes: [{ amount: 5, accountName: "Produbanco", type: "expense" }],
+      maxQuestions: 0,
+      finalReplyTotals: [167.73],
+    },
+  },
+  {
+    id: "HD_TRANSFER_BALANCES",
+    title: "transferir y preguntar cómo quedaron ambas",
+    group: "hd",
+    currency: "ARS",
+    accountName: "Supervielle",
+    seedHumanDay: true,
+    turnsScript: [
+      "Pasa 100 dólares de wells fargo a produbanco",
+      "¿Cómo quedaron las dos cuentas?",
+    ],
+    expect: {
+      writes: [{ amount: 100, type: "transfer" }],
+      maxQuestions: 0,
+      finalReplyTotals: [3_814.2, 272.73],
+    },
+  },
+  {
+    id: "HD_INCOME_TOTAL",
+    title: "ingreso y total de la moneda al instante",
+    group: "hd",
+    currency: "ARS",
+    accountName: "Supervielle",
+    seedHumanDay: true,
+    turnsScript: [
+      "Me pagaron 500 dólares de un freelance, entraron a wells fargo",
+      "¿Cuánto tengo ahora en total en dólares?",
+    ],
+    expect: {
+      writes: [{ amount: 500, accountName: "Wells Fargo", type: "income" }],
+      maxQuestions: 0,
+      finalReplyTotals: [4_576.93],
+    },
+  },
+  {
+    id: "HD_DEBT_SPECIFIC",
+    title: "cuánto debo de una deuda específica",
+    group: "hd",
+    currency: "ARS",
+    accountName: "Supervielle",
+    seedHumanDay: true,
+    turnsScript: ["¿Cuánto debo de la visa?"],
+    expect: { maxQuestions: 0, finalReplyTotals: [201.25] },
+  },
+  {
+    id: "HD_RICHEST_ACCOUNT",
+    title: "cuál es mi cuenta con más plata",
+    group: "hd",
+    currency: "ARS",
+    accountName: "Supervielle",
+    seedHumanDay: true,
+    turnsScript: ["¿Cuál es mi cuenta con más plata?"],
+    expect: { maxQuestions: 0, replyMustMatch: "Wells Fargo" },
+  },
+  {
+    id: "HD_LOAN_PARTIAL",
+    title: "abono parcial a un préstamo no-tarjeta",
+    group: "hd",
+    currency: "ARS",
+    accountName: "Supervielle",
+    seedHumanDay: true,
+    turnsScript: ["Pagué 100 dólares de mi crédito alpaca desde produbanco"],
+    expect: {
+      writes: [{ amount: 100, type: "debt_payment" }],
+      maxQuestions: 0,
+    },
+  },
+];
+
 const HR_SCENARIOS = [
   {
     id: "HR_FOLLOWUP",
@@ -548,7 +754,7 @@ if (listOnly) {
 }
 for (const id of requestedScenarios) {
   const selectable = realSample
-    ? HR_SCENARIOS
+    ? [...HR_SCENARIOS, ...HD_SCENARIOS]
     : ola0
       ? OLA0_SCENARIOS
       : dryRun
@@ -694,7 +900,7 @@ async function assertNoMarkedPersonas() {
 
 async function seedPersona(scenario) {
   const rent = scenario.id === "REAL_RENT";
-  const ola0Scenario = scenario.group === "ola0" || scenario.group === "hr";
+  const ola0Scenario = scenario.group === "ola0" || scenario.group === "hr" || scenario.group === "hd";
   const ola2AssetScenario = [
     "DRY_INVESTMENT_PROPOSAL",
     "DRY_UPDATE_ASSET_TRUTH",
@@ -2004,7 +2210,114 @@ function ola0FrictionFailures(result, manifests, operations) {
  * el estado PostgreSQL final + presupuesto de preguntas + prohibición de
  * plantilla + cero manifiesto/atasco. El transcript completo queda en la
  * evidencia para lectura humana de la voz. */
+function amountWasStatedInReply(reply, expected) {
+  const normalized = reply.replace(/\*\*/gu, " ");
+  return statedAmounts(normalized).some(
+    (value) => Math.abs(value - expected) <= 0.01,
+  );
+}
+
 async function runHumanRealismScenario(scenario, persona) {
+  if (scenario.seedHumanDay) {
+    // Balances EXACTOS para totales verificables:
+    // EC(USD): Pichincha -110 · Produbanco 172.73 · Efectivo USD 0  → 62.73
+    // US(USD): Wells 3914.20 · PayPal 0 · Wise 100                  → 4014.20
+    // AR(ARS): Supervielle 250.000 · Efectivo 400 · Galicia 50.000  → 300.400
+    // Geometría real: base ARS a la tasa sembrada 1000 ARS/USD — jamás
+    // base=original para una cuenta USD (haría a Wells «más pobre» que
+    // Supervielle y rompería cualquier comparación patrimonial).
+    const HD_ARS_PER_USD = 1_000;
+    const fix = async (name, balance) => {
+      const row = persona.accounts.find((r) => r.name === name);
+      if (!row) throw new Error(`HD fixture: falta cuenta ${name}`);
+      const base = row.currency === "USD" ? balance * HD_ARS_PER_USD : balance;
+      const upd = await admin
+        .from("accounts")
+        .update({ current_balance_original: balance, current_balance_base: base })
+        .eq("id", row.id);
+      if (upd.error) throw new Error(`HD fixture ${name}: ${upd.error.message}`);
+    };
+    await fix("Banco Pichincha", -110);
+    await fix("Produbanco", 172.73);
+    await fix("Efectivo USD", 0);
+    await fix("Wells Fargo", 3_914.2);
+    await fix("PayPal", 0);
+    const wise = await admin
+      .from("accounts")
+      .insert({
+        user_id: persona.userId,
+        name: "Wise",
+        type: "bank",
+        currency: "USD",
+        current_balance_original: 100,
+        current_balance_base: 100 * HD_ARS_PER_USD,
+      })
+      .select("id,name,currency")
+      .single();
+    if (wise.error) throw new Error(`HD Wise: ${wise.error.message}`);
+    persona.accounts.push(wise.data);
+    await fix("Banco Supervielle", 250_000);
+    await fix("Efectivo", 400);
+    const galicia = await admin
+      .from("accounts")
+      .insert({
+        user_id: persona.userId,
+        name: "Galicia",
+        type: "bank",
+        currency: "ARS",
+        current_balance_original: 50_000,
+        current_balance_base: 50_000,
+      })
+      .select("id,name,currency")
+      .single();
+    if (galicia.error) throw new Error(`HD Galicia: ${galicia.error.message}`);
+    persona.accounts.push(galicia.data);
+    // Deudas: 2 tarjetas VIEJAS con ciclo cubierto (saldo histórico, due 0) +
+    // 1 crédito vivo. Total deuda = 5.78 + 201.25 + 1000 = 1207.03
+    const debts = await admin
+      .from("debt_accounts")
+      .insert([
+        {
+          user_id: persona.userId,
+          name: "Diners HD",
+          type: "credit_card",
+          currency: "USD",
+          current_balance_original: 5.78,
+          current_balance_base: 5_780,
+          full_payment_due: 0,
+          statement_total_due: 0,
+          statement_covered: true,
+        },
+        {
+          user_id: persona.userId,
+          name: "Visa HD",
+          type: "credit_card",
+          currency: "USD",
+          current_balance_original: 201.25,
+          current_balance_base: 201_250,
+          full_payment_due: 0,
+          statement_total_due: 0,
+          statement_covered: true,
+        },
+        {
+          user_id: persona.userId,
+          name: "Crédito Alpaca HD",
+          type: "loan",
+          currency: "USD",
+          current_balance_original: 1_000,
+          current_balance_base: 1_000_000,
+          full_payment_due: 200,
+          statement_covered: false,
+        },
+      ])
+      .select("id,name");
+    if (debts.error) throw new Error(`HD debts: ${debts.error.message}`);
+    persona.cards = [...(persona.cards ?? []), ...debts.data.filter((d) => d.name !== "Crédito Alpaca HD")];
+    persona.hdCardIds = debts.data
+      .filter((d) => d.name !== "Crédito Alpaca HD")
+      .map((d) => d.id);
+    persona.hdLoanId = debts.data.find((d) => d.name === "Crédito Alpaca HD")?.id ?? null;
+  }
   if (scenario.seedEtoroTemptation) {
     const temptBase = Date.now() - 3 * 86_400_000;
     const temptAt = (offsetSeconds) =>
@@ -2121,7 +2434,10 @@ async function runHumanRealismScenario(scenario, persona) {
         (row) =>
           row.type === expected.type &&
           rounded(row.original_amount) === rounded(expected.amount) &&
-          (expected.accountName ? row.source_account_id === accountId : true) &&
+          (expected.accountName
+            ? row.source_account_id === accountId ||
+              row.destination_account_id === accountId
+            : true) &&
           (expected.cardName ? row.debt_account_id === cardId : true),
       ),
     });
@@ -2155,6 +2471,55 @@ async function runHumanRealismScenario(scenario, persona) {
         (row) => row.result?.assistantMetadata?.agentOutcome?.hadError !== true,
       ),
   });
+  if (scenario.group === "hd") {
+    checks.push({
+      name: "HD forbidden refusal/deferral language never appears",
+      ok: turns.every((row) => !HD_FORBIDDEN.test(String(row.reply ?? ""))),
+    });
+  }
+  const finalReply = String(turns.at(-1)?.reply ?? "");
+  for (const total of expect.finalReplyTotals ?? []) {
+    checks.push({
+      name: `HD final reply states the exact total ${total}`,
+      ok: amountWasStatedInReply(finalReply, total),
+    });
+  }
+  if (expect.replyMustMatch) {
+    checks.push({
+      name: `HD reply mentions ${expect.replyMustMatch}`,
+      ok: new RegExp(expect.replyMustMatch, "iu").test(finalReply),
+    });
+  }
+  if (expect.cardsZeroed) {
+    const zeroed = await admin
+      .from("debt_accounts")
+      .select("id,name,current_balance_original,current_balance_base")
+      .in("id", persona.hdCardIds ?? []);
+    checks.push({
+      name: "HD old card balances were zeroed via snapshot (no payment rows)",
+      ok:
+        !zeroed.error &&
+        (zeroed.data ?? []).length === 2 &&
+        (zeroed.data ?? []).every(
+          (row) =>
+            Math.abs(Number(row.current_balance_original)) <= 0.005 &&
+            Math.abs(Number(row.current_balance_base)) <= 0.005,
+        ),
+    });
+  }
+  if (expect.loanUntouched != null) {
+    const loan = await admin
+      .from("debt_accounts")
+      .select("current_balance_original")
+      .eq("id", persona.hdLoanId ?? "")
+      .maybeSingle();
+    checks.push({
+      name: "HD a card-scoped request never sweeps the loan",
+      ok:
+        !loan.error &&
+        Math.abs(Number(loan.data?.current_balance_original) - expect.loanUntouched) <= 0.005,
+    });
+  }
   return {
     turns,
     money: moneyResult(checks, {
@@ -6691,7 +7056,7 @@ async function executeScenario(scenario, persona, paraphrases) {
   if (scenario.id === "O0_CLARIFIED_CAPTURE") {
     return runOla0ClarifiedCaptureScenario(scenario, persona);
   }
-  if (scenario.group === "hr") {
+  if (scenario.group === "hr" || scenario.group === "hd") {
     return runHumanRealismScenario(scenario, persona);
   }
   if (scenario.group === "ola0") {
@@ -6919,13 +7284,15 @@ if (
   OLA0_FRICTION_SCENARIOS.length !== 8 ||
   OLA0_SCENARIOS.length !== 16 ||
   HR_SCENARIOS.length !== 11 ||
-  new Set(HR_SCENARIOS.map((scenario) => scenario.id)).size !== 11
+  new Set(HR_SCENARIOS.map((scenario) => scenario.id)).size !== 11 ||
+  HD_SCENARIOS.length !== 12 ||
+  new Set(HD_SCENARIOS.map((scenario) => scenario.id)).size !== 12
 ) {
   throw new Error("Ola0 catalog topology is incomplete or duplicated");
 }
 
 const selected = realSample
-  ? HR_SCENARIOS.filter(
+  ? [...HR_SCENARIOS, ...HD_SCENARIOS].filter(
       (scenario) =>
         requestedScenarios.size === 0 || requestedScenarios.has(scenario.id),
     )

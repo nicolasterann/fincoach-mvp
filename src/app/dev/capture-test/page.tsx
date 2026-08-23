@@ -28,7 +28,7 @@ import {
   statedAmountsExcludingNamedStoredFacts,
   unstatedMonetaryClaims,
 } from "@/lib/capture/amount-evidence";
-import { loopPreviousUserDeliveryMessages, loopQuoteAuthorizesAmount } from "@/lib/ai/agent/kipu-agent-loop";
+import { loopPreviousUserDeliveryMessages, loopQuoteAuthorizesAmount, repairLoopMessagesSequence } from "@/lib/ai/agent/kipu-agent-loop";
 import { collapseAdjacentDuplicateSentences, evidenceArithmeticSupports, replyMoneyFiguresAbsentFromEvidence } from "@/lib/ai/agent/kipu-agent";
 import {
   MODEL_AUTHORITY_COUNTERS,
@@ -174,6 +174,7 @@ import {
   buildAgentContextDataMessage,
   executeBareConfirmationWith,
   findBareConfirmationActionWith,
+  computeLiveTotalsByCurrency,
 } from "@/lib/ai/agent/kipu-agent";
 import {
   agentLoopManifestRejectionShape,
@@ -446,6 +447,8 @@ import {
   PURCHASE_CATEGORY_ENUM,
   guardUnavailableCalendarReplyWrite,
   guardMovementWritesWith,
+  executeSumBalancesWith,
+  unrequestedDuplicateMovementNoopWith,
   installmentCloseDegradedSummary,
   installmentCreateDegradedSummary,
   isSaldoDependentTool,
@@ -8115,7 +8118,7 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir52_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
   const ir52_prompt = readFileSync("src/lib/ai/agent/kipu-agent.ts", "utf8");
   const ir52_wiring: [string, boolean][] = [
-    ["log_movement conserva el guard legacy y el loop lo degrada a contador, sin reinterpretar la frase como veto", ir52_tools.includes("const oldMovementGuard = ctx.operationManifestAuthorized === true") && ir52_tools.includes("oldMovementGuard && loopModelAuthorityRegistration") && ir52_tools.includes('counter: "duplicate_movement"') && ir52_tools.includes("    return movementGuard;\n  }\n  attachDedupeKey(built.entry, ctx);")],
+    ["log_movement conserva el guard legacy y el loop lo degrada a contador, sin reinterpretar la frase como veto", ir52_tools.includes("const oldMovementGuard = ctx.operationManifestAuthorized === true") && ir52_tools.includes("oldMovementGuard && loopModelAuthorityRegistration") && ir52_tools.includes('counter: "duplicate_movement"') && ir52_tools.includes("    const dupNoop = await unrequestedDuplicateMovementNoop(built.entry, ctx);\n    if (dupNoop) return dupNoop;\n  }\n  attachDedupeKey(built.entry, ctx);")],
     ["el lote ejecuta el mismo guard; manifiesto autorizado o autoridad del modelo impiden que la heurística bloquee el write", ir52_tools.includes("const oldBatchGuard =") && ir52_tools.includes("ctx.operationManifestAuthorized === true && ctx.loopDispatcherAuthorized === true") && ir52_tools.includes("oldBatchGuard &&") && ir52_tools.includes("loopModelAuthorityRegistration(ctx, \"log_movements_batch\", args)") && ir52_tools.includes("    return batchGuard;\n  }\n\n  // 2. All valid")],
     ["confirmedNew solo apaga el duplicado común, no el bloque correctivo", ir52_tools.includes("  if (correcting) {\n    for (const entry of input.entries)") && ir52_tools.includes("  if (input.evidenceId || input.confirmedNew) return null;")],
     ["una evidencia pendiente NO apaga una corrección", ir52_tools.includes("  if (!correcting && input.evidenceId) return null;")],
@@ -32035,7 +32038,7 @@ assert(
         "KIPU_LOOP_MESSAGE_SEQUENCE_INVALID index=1 role=system" &&
       ir340CompletionCalls.length === 8 &&
       ir328Loop.includes(
-        "  assertLoopMessagesSequence(request.messages);\n  return model.complete(request);",
+        "  const repaired = repairLoopMessagesSequence(request.messages);\n  assertLoopMessagesSequence(repaired);\n  return model.complete({ ...request, messages: repaired as never });",
       ) &&
       ir328Loop.includes(
         "          manifestRefreshAfterCompletion = true;\n          manifestTerminalStepsAfterCompletion = currentManifestSteps;",
@@ -32776,6 +32779,53 @@ assert(
       pmAgentTools.includes("...(ctx.monetaryAuthorityMessages ?? []),"),
     JSON.stringify({ previous: ir347Previous }),
   );
+  const ir353Broken = [
+    { role: "system", content: "s" },
+    { role: "user", content: "u" },
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "c1", type: "function", function: { name: "x", arguments: "{}" } }],
+    },
+    { role: "system", content: "veneno intercalado" },
+    { role: "user", content: "siguiente" },
+  ];
+  const ir353Repaired = repairLoopMessagesSequence(ir353Broken);
+  const ir353Orphan = repairLoopMessagesSequence([
+    { role: "system", content: "s" },
+    { role: "tool", tool_call_id: "huerfano", content: "{}" },
+    { role: "user", content: "u" },
+  ]);
+  const ir353GiantEvidence = `Saldos: 2,081,720.19 · 4,566.91 · 3,914.20 · 2,852.65 · 2,822.79 · 2,703.34 · 2,554.59 · 3,004.98 · 512.81 · 312.81 · 192.75 · 172.73 · -110 · 0 · 100 · 180000 · 1901320.19 · 400`;
+  assert(
+    "IR353 · la secuencia se auto-repara (jamás mata el turno), el total sobrevive a evidencia gigante y la reescritura no puede ordenar rehusar",
+    loopMessagesSequenceValid(ir353Repaired) === true &&
+      ir353Repaired.some(
+        (row) =>
+          row.role === "tool" &&
+          (row as { tool_call_id?: string }).tool_call_id === "c1",
+      ) &&
+      loopMessagesSequenceValid(ir353Orphan) === true &&
+      ir353Orphan.every((row) => row.role !== "tool") &&
+      replyMoneyFiguresAbsentFromEvidence(
+        "Pichincha -110$, Produbanco 172.73$, Efectivo 0$: total 62.73$ en Ecuador.",
+        ir353GiantEvidence,
+      ).length === 0 &&
+      ir328Loop.includes(
+        "const repaired = repairLoopMessagesSequence(request.messages);",
+      ) &&
+      ir328Loop.includes("PROHIBIDO decir que no puedes dar un total") &&
+      ir328Loop.includes("PROHIBIDO decir «no puedo verificar los saldos»") &&
+      ir328Loop.includes("Jamás le pidas al usuario repetir o reformular. No llames tools.") &&
+      pmAgentTools.includes(
+        "usa update_card_obligations con statementBalance en el saldo real",
+      ) &&
+      // La clase del defecto HD_MARK_CARDS_PAID: un summary que dirige al modelo
+      // hacia una tool DEBE nombrar una tool registrada. El puntero viejo
+      // (update_debt_snapshot) no existía en el registro y el modelo rehusaba.
+      !pmAgentTools.includes("usa update_debt_snapshot"),
+    "sequence-repair + giant-evidence total + no-refusal orders",
+  );
   assert(
     "IR352 · una pregunta jamás apila operaciones; el total es aritmética probada; el duplicado adyacente colapsa; un fallo sin writes recompone con voz",
     ir328Loop.includes("awaiting_input queda RESERVADO") &&
@@ -32798,6 +32848,195 @@ assert(
       ) === "¿Cuánto fue por los 2 choripanes?" &&
       collapseAdjacentDuplicateSentences("Sí. Sí, confirmado.") === "Sí. Sí, confirmado.",
     "question-no-stack + arithmetic + collapse + recompose",
+  );
+
+  // ── IR354 — la aritmética es del MOTOR: totales por moneda en el contexto,
+  // grupos arbitrarios por sum_balances, y la realidad de una deuda declarada
+  // saldada se registra con statementBalance (base 0 sin FX). La clase del
+  // fallo HD: el modelo enumeró 220.000 + 400 + 50.000 y publicó 270.340.
+  const ir354Totals = computeLiveTotalsByCurrency(
+    [
+      { currency: "USD", currentBalanceOriginal: -110 },
+      { currency: "USD", currentBalanceOriginal: 172.73 },
+      { currency: "usd", currentBalanceOriginal: 0.1 },
+      { currency: "ARS", currentBalanceOriginal: 250_000 },
+    ],
+    [
+      { currency: "USD", currentBalanceOriginal: 201.25 },
+      { currency: "USD", currentBalanceOriginal: null },
+    ],
+  );
+  const ir354Usd = ir354Totals.find((row) => row.currency === "USD");
+  const ir354Ars = ir354Totals.find((row) => row.currency === "ARS");
+  const ir354Read =
+    (rows: Record<string, Array<{ id: string; name: string; currency: string; current_balance_original: number | null }>>) =>
+    async (table: "accounts" | "debt_accounts", ids: string[]) => ({
+      data: (rows[table] ?? []).filter((row) => ids.includes(row.id)),
+      error: null,
+    });
+  const ir354Ctx = { userId: "u1" } as unknown as AgentContext;
+  const ir354Sum = await executeSumBalancesWith(
+    { accountIds: ["a1", "a2", "a3"] },
+    ir354Ctx,
+    ir354Read({
+      accounts: [
+        { id: "a1", name: "Supervielle", currency: "ARS", current_balance_original: 220_000 },
+        { id: "a2", name: "Efectivo", currency: "ARS", current_balance_original: 400 },
+        { id: "a3", name: "Galicia", currency: "ARS", current_balance_original: 50_000 },
+      ],
+    }),
+  );
+  const ir354Missing = await executeSumBalancesWith(
+    { accountIds: ["a1", "zz"] },
+    ir354Ctx,
+    ir354Read({
+      accounts: [{ id: "a1", name: "Supervielle", currency: "ARS", current_balance_original: 220_000 }],
+    }),
+  );
+  const ir354Err = await executeSumBalancesWith(
+    { debtAccountIds: ["d1"] },
+    ir354Ctx,
+    async () => ({ data: null, error: { message: "boom" } }),
+  );
+  const ir354Empty = await executeSumBalancesWith({}, ir354Ctx, ir354Read({}));
+  const ir354Mixed = await executeSumBalancesWith(
+    { accountIds: ["a1"], debtAccountIds: ["d1"] },
+    ir354Ctx,
+    ir354Read({
+      accounts: [{ id: "a1", name: "Wells Fargo", currency: "USD", current_balance_original: 3_914.2 }],
+      debt_accounts: [{ id: "d1", name: "Visa HD", currency: "USD", current_balance_original: 201.25 }],
+    }),
+  );
+  const ir354MixedTotals = (ir354Mixed.data as { totals?: Array<{ currency: string; accountsTotal: number; debtsTotal: number }> } | undefined)?.totals ?? [];
+  let ir354ZeroPatch: Record<string, number | string> | null = null;
+  const ir354Zero = await executeUpdateCardObligationsWith(
+    { debtAccountId: "visa-hd", statementBalance: 0 },
+    { ...({ userId: "u1", baseCurrency: "ARS", debtAccounts: [
+      {
+        id: "visa-hd", name: "Visa HD", type: "credit_card", currency: "USD",
+        currentBalanceOriginal: 201.25, currentBalanceBase: 201.25,
+        fullPaymentDue: 0, fullPaymentDueOriginal: 0, statementDate: null,
+      },
+    ] } as unknown as AgentContext) },
+    {
+      setStatement: async () => ({ ok: false }) as Awaited<ReturnType<typeof setCardStatementDueWith>>,
+      overrideDue: async () => ({ ok: true, remainingDue: 0, statementCovered: true, occurrenceResolution: "none", occurrenceId: null }),
+      applyPatch: async ({ patch }) => {
+        ir354ZeroPatch = patch;
+        return { ok: true, rows: 1 };
+      },
+      recordAudit: async () => true,
+    },
+  );
+  const ir354Entry = {
+    effectType: "income",
+    originalAmount: 500,
+    originalCurrency: "USD",
+    sourceAccountId: null,
+    destinationAccountId: "wells",
+    debtAccountId: null,
+  };
+  const ir354DupHit = async () => ({ id: "txn-1" });
+  const ir354NoopFires = await unrequestedDuplicateMovementNoopWith(
+    ir354Entry,
+    "¿Cuánto tengo ahora en total en dólares?",
+    ir354DupHit,
+  );
+  const ir354NumeralFlows = await unrequestedDuplicateMovementNoopWith(
+    ir354Entry,
+    "Me pagaron 500 del freelance",
+    ir354DupHit,
+  );
+  const ir354RepeatFlows = await unrequestedDuplicateMovementNoopWith(
+    ir354Entry,
+    "registra otro igual",
+    ir354DupHit,
+  );
+  const ir354NoRecent = await unrequestedDuplicateMovementNoopWith(
+    ir354Entry,
+    "¿Cuánto tengo?",
+    async () => null,
+  );
+  const ir354ReadBroken = await unrequestedDuplicateMovementNoopWith(
+    ir354Entry,
+    "¿Cuánto tengo?",
+    async () => {
+      throw new Error("boom");
+    },
+  );
+  const ir354Checks: [string, boolean][] = [
+    [
+      "duplicado idéntico sin mandato fresco = NOOP veraz (cero writes) que nombra la transacción",
+      ir354NoopFires?.status === "done" &&
+        (ir354NoopFires?.data as { noop?: boolean; duplicateOfTransactionId?: string } | undefined)?.noop === true &&
+        (ir354NoopFires?.data as { duplicateOfTransactionId?: string } | undefined)?.duplicateOfTransactionId === "txn-1" &&
+        /no lo dupliqué/iu.test(ir354NoopFires?.summary ?? ""),
+    ],
+    ["un numeral del monto en el delivery conserva el write", ir354NumeralFlows === null],
+    [
+      "sin warrant numeral (pagos de tarjeta/persona) la re-narración con cifras sigue siendo NOOP",
+      (await unrequestedDuplicateMovementNoopWith(
+        ir354Entry,
+        "sí, me devolvieron los 500 del freelance",
+        ir354DupHit,
+        { numeralWarrant: false },
+      ))?.status === "done" &&
+        (await unrequestedDuplicateMovementNoopWith(
+          ir354Entry,
+          "hubo otro pago igual de 500",
+          ir354DupHit,
+          { numeralWarrant: false },
+        )) === null,
+    ],
+    [
+      "los writers de tarjeta y devolución de capital consultan la red anti-re-narración",
+      pmAgentTools.includes('originalCurrency: String(card.currency),') &&
+        pmAgentTools.includes('.eq("debt_account_id", card.id)') &&
+        pmAgentTools.includes('.like("external_ref", "capital_return_unrecorded:%")'),
+    ],
+    ["un pedido explícito de repetición conserva el write", ir354RepeatFlows === null],
+    ["sin duplicado reciente no interfiere", ir354NoRecent === null],
+    ["lectura rota = fail-open (la red extra jamás bloquea registrar)", ir354ReadBroken === null],
+    [
+      "el executor consulta el guard tras J-2 y antes del dedupe",
+      pmAgentTools.includes("const dupNoop = await unrequestedDuplicateMovementNoop(built.entry, ctx);"),
+    ],
+    [
+      "el prompt fija responder≠escribir, el grupo internacional y la semántica de «débito»",
+      ir328Loop.includes("responder no es escribir") &&
+        ir328Loop.includes("«internacional/digital»") &&
+        ir328Loop.includes("«débito» es una cuenta bancaria"),
+    ],
+    ["totales por moneda del motor: USD en centavos exactos y case-insensitive", ir354Usd?.accountsTotal === 62.83 && ir354Usd?.accountCount === 3 && ir354Usd?.debtsTotal === 201.25 && ir354Usd?.debtCount === 2],
+    ["ARS separado, jamás cruzado", ir354Ars?.accountsTotal === 250_000 && ir354Ars?.debtsTotal === 0],
+    ["sum_balances: 220.000 + 400 + 50.000 = 270.400 exacto y citable", ir354Sum.status === "done" && /270,400/.test(ir354Sum.summary ?? "") && (ir354Sum.data as { totals?: Array<{ accountsTotal: number }> } | undefined)?.totals?.[0]?.accountsTotal === 270_400],
+    ["un id ajeno o inexistente rehúsa nombrándolo (no suma parcial silenciosa)", ir354Missing.status === "needs_info" && /zz/.test(ir354Missing.summary ?? "")],
+    ["error de lectura falla cerrado: jamás autoriza calcular a mano", ir354Err.status === "error" && /no calcules el total a mano/i.test(ir354Err.summary ?? "")],
+    ["sin ids pide los ids del contexto", ir354Empty.status === "needs_info"],
+    ["cuentas y deudas se totalizan por separado en la misma moneda", ir354MixedTotals[0]?.accountsTotal === 3_914.2 && ir354MixedTotals[0]?.debtsTotal === 201.25],
+    ["saldo 0 declarado por fuera: base también 0 sin FX (moneda tarjeta ≠ base)", ir354Zero.status === "done" && (ir354ZeroPatch as Record<string, number | string> | null)?.current_balance_original === 0 && (ir354ZeroPatch as Record<string, number | string> | null)?.current_balance_base === 0],
+    ["sum_balances es read-only con modo de efecto único", READ_ONLY_AGENT_TOOLS.has("sum_balances") && agentToolEffectMode("sum_balances") === "read"],
+    ["el schema existe en el catálogo", KIPU_TOOL_SCHEMAS.some((tool) => tool.type === "function" && tool.function.name === "sum_balances")],
+    ["el prompt del loop manda la aritmética al motor y prohíbe sumas de cabeza", ir328Loop.includes("liveTotalsByCurrency del contexto") && ir328Loop.includes("llama sum_balances con esos ids") && ir328Loop.includes("Nunca sumes de cabeza tres o más cifras")],
+    ["el prompt declara la autoridad del usuario sobre la deuda saldada por fuera", ir328Loop.includes("update_card_obligations con statementBalance") && ir328Loop.includes("registrar esa realidad es")],
+    [
+      "el contexto serializa liveTotalsByCurrency del motor y el tipo de cada deuda",
+      (() => {
+        const agentSrc = readFileSync(
+          `${process.cwd()}/src/lib/ai/agent/kipu-agent.ts`,
+          "utf8",
+        );
+        return (
+          agentSrc.includes("liveTotalsByCurrency: computeLiveTotalsByCurrency(") &&
+          agentSrc.includes("kind: debt.type,")
+        );
+      })(),
+    ],
+  ];
+  assert(
+    "IR354 · la aritmética de totales es del motor (contexto + sum_balances) y registrar la deuda saldada por fuera jamás se rehúsa",
+    ir354Checks.every(([, pass]) => pass),
+    JSON.stringify(ir354Checks.filter(([, p]) => !p).map(([n]) => n)),
   );
   assert(
     "IR351 · cualquier jerga autoriza por CITA literal del episodio — sin listas hardcodeadas; una cita fabricada jamás autoriza y un fallo de control jamás pide reformular",

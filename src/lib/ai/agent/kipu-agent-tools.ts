@@ -622,7 +622,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_card_obligations",
       description:
-        "Update a card/debt's REAL terms: minimum payment, TOTAL payment due this period (the key Saldo input), statement balance (total owed), due day, cutoff day, and/or annual interest rate. Use it from a statement OR from chat (\"esta tarjeta cierra el 6 y vence el 21\", \"la tasa es 15.6%\"). Pass ONLY the fields the evidence/user gave. If this comes from a statement, ALWAYS pass statementDate (the statement's emission date): Kipu refuses to overwrite newer obligations with an OLDER statement, and tells the user it kept the current ones. This keeps Saldo Kipu and debt protection honest.",
+        "Update a card/debt's REAL terms: minimum payment, TOTAL payment due this period (the key Saldo input), statement balance (total owed), due day, cutoff day, and/or annual interest rate. Use it from a statement OR from chat (\"esta tarjeta cierra el 6 y vence el 21\", \"la tasa es 15.6%\"). Also the way to record a debt's REAL current balance when the user declares it settled or different outside Kipu (\"esa tarjeta ya la pagué por fuera\", \"en realidad debo 80\"): pass statementBalance with the real balance (0 if settled) — recording reality is not a new payment and never requires a payment row. Pass ONLY the fields the evidence/user gave. If this comes from a statement, ALWAYS pass statementDate (the statement's emission date): Kipu refuses to overwrite newer obligations with an OLDER statement, and tells the user it kept the current ones. This keeps Saldo Kipu and debt protection honest.",
       parameters: {
         type: "object",
         properties: {
@@ -1545,6 +1545,30 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         type: "object",
         properties: { amount: { type: "number" }, from: { type: "string" }, to: { type: "string" } },
         required: ["amount", "from", "to"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "sum_balances",
+      description:
+        "Engine-exact totals over LIVE balances. Pass the exact ids of ANY group the user asks about — a country, a bank, two named accounts, all debts, any subset — and Kipu reads the CURRENT balances and returns the exact per-currency totals with the addition spelled out. Read-only, always fresh (reads the database now, so it already reflects writes from this same turn). ALWAYS use this instead of adding three or more figures yourself; quote its totals verbatim.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountIds: {
+            type: "array",
+            items: { type: "string" },
+            description: "Account ids (from context) whose balances to sum.",
+          },
+          debtAccountIds: {
+            type: "array",
+            items: { type: "string" },
+            description: "Card/debt ids (from context) whose balances to sum.",
+          },
+        },
         additionalProperties: false,
       },
     },
@@ -4016,6 +4040,15 @@ async function executeLogMovement(
     }
     return movementGuard;
   }
+  // M0-AM: un duplicado exacto reciente SIN mandato fresco del usuario (ni
+  // numeral ni pedido de repetición en este delivery) es un NOOP veraz, no un
+  // segundo asiento ni una pregunta. Corre DESPUÉS del guard J-2 para no
+  // preemptar la semántica de corrección legacy; confirmedNew y el manifiesto
+  // autorizado conservan el write.
+  if (ctx.operationManifestAuthorized !== true && args.confirmedNew !== true) {
+    const dupNoop = await unrequestedDuplicateMovementNoop(built.entry, ctx);
+    if (dupNoop) return dupNoop;
+  }
   attachDedupeKey(built.entry, ctx);
   try {
     // Pasada 5 (punto 2) — un debt_payment a una TARJETA con estado de cuenta
@@ -4508,6 +4541,10 @@ export async function executeUpdateCardObligationsWith(
     else {
       patch.current_balance_original = v;
       if ((debt.currency as string) === ctx.baseCurrency) patch.current_balance_base = v;
+      // Zero needs no FX: a settled debt is zero in every currency. Leaving the
+      // stale base here kept a phantom base-side debt after the user declared
+      // the card paid off outside Kipu.
+      else if (v === 0) patch.current_balance_base = 0;
       else baseUntouched = true; // no trusted FX here → don't fabricate a base value
       applied.push(`saldo ${v} ${debt.currency}`);
     }
@@ -7048,7 +7085,7 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
     return {
       status: "done",
       effect: "noop",
-      summary: `El estado vigente de ${card.name} ya figura cubierto. No registré otro pago ni volví a mover dinero.`,
+      summary: `El estado vigente de ${card.name} ya figura cubierto. No registré otro pago ni volví a mover dinero. Si el usuario quiere dejar en cero un SALDO viejo de esta tarjeta (deuda ya pagada por fuera), eso no es un pago nuevo: usa update_card_obligations con statementBalance en el saldo real.`,
       data: { noop: true, statementAlreadyCovered: true },
     };
   }
@@ -7092,6 +7129,47 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
       ctx,
     );
     if (corrective) return corrective;
+  }
+  // Cross-turn re-narration net for PARTIAL payments: a covered statement
+  // already noops above, but an identical partial payment to the same card
+  // minutes later ("sí, pagué los 22.14 de la Visa") re-landed real money —
+  // the delivery-scoped dedupe is new on every turn by design (K13). An open
+  // capture draft or an authorized manifest keeps the write flowing.
+  if (ctx.operationManifestAuthorized !== true && !captureDraft) {
+    const dupNoop = await unrequestedDuplicateMovementNoopWith(
+      {
+        effectType: "debt_payment",
+        originalAmount: amount,
+        originalCurrency: String(card.currency),
+        debtAccountId: card.id,
+      },
+      rawTurn,
+      async () => {
+        try {
+          const supabase = createSupabaseAdminClient();
+          const { data, error } = await supabase
+            .from("transactions")
+            .select("id")
+            .eq("user_id", ctx.userId)
+            .eq("type", "debt_payment")
+            .eq("original_amount", amount)
+            .eq("debt_account_id", card.id)
+            .gte("created_at", new Date(Date.now() - 15 * 60_000).toISOString())
+            .limit(1);
+          if (error) return null;
+          return data?.[0] ?? null;
+        } catch {
+          return null;
+        }
+      },
+      { numeralWarrant: false },
+    );
+    if (dupNoop) {
+      return {
+        ...dupNoop,
+        summary: `El pago de ${money(amount, String(card.currency))} a ${card.name} ya quedó registrado hace un momento en esta misma conversación; no lo dupliqué. Si de verdad hubo OTRO pago igual, que lo diga («otro pago igual») y lo registro.`,
+      };
+    }
   }
   const retractingCaptureDraft =
     captureDraft?.multiSourceRequired === true && retractsMultiSource(rawTurn);
@@ -9611,6 +9689,206 @@ async function executeConvertCurrency(args: Record<string, unknown>, ctx: AgentC
   return { status: "done", summary: `${amount} ${from} = ${res.baseAmount} ${to}${kind ? ` (${kind})` : ""}. Dilo simple y corto; no expliques de más ni la presentes como garantizada.` };
 }
 
+// M0-AM refinement: model authority writes the reality the USER declared. A
+// movement identical to one just landed for this user, proposed by a delivery
+// that neither states the amount nor asks to repeat it, has no user mandate —
+// it is physics already written. Coherent answer: a truthful NOOP (zero writes,
+// zero receipts — exactly what migration 123 verifies), never a block and never
+// a re-ask. A numeral for the amount or an explicit repeat request keeps the
+// write flowing untouched (fail-open: this net only catches the no-warrant dup).
+export async function unrequestedDuplicateMovementNoopWith(
+  entry: {
+    effectType: string;
+    originalAmount: number;
+    originalCurrency: string;
+    sourceAccountId?: string | null;
+    destinationAccountId?: string | null;
+    debtAccountId?: string | null;
+  },
+  rawMessage: string,
+  findRecentIdentical: () => Promise<{ id: string } | null>,
+  options?: { numeralWarrant?: boolean },
+): Promise<ToolResult | null> {
+  const message = rawMessage ?? "";
+  // Ordinary purchases repeat naturally ("gasté 5 en pan" twice), so a stated
+  // numeral keeps log_movement flowing. A person payment or a card payment
+  // re-narrated with its numbers is still the SAME event ("sí, pagué los 22.14
+  // de la Visa"), so those writers disable the numeral warrant and rely on the
+  // explicit repeat escape only.
+  if (
+    options?.numeralWarrant !== false &&
+    statedAmounts(message).some(
+      (value) => Math.abs(value - entry.originalAmount) <= 0.01,
+    )
+  ) {
+    return null;
+  }
+  if (/\b(otr[oa]s?|de nuevo|otra vez|nuevamente|again|doble|repet\p{L}*)\b/iu.test(message)) {
+    return null;
+  }
+  let recent: { id: string } | null = null;
+  try {
+    recent = await findRecentIdentical();
+  } catch {
+    return null;
+  }
+  if (!recent) return null;
+  return {
+    status: "done",
+    summary:
+      `Ese movimiento (${entry.effectType} de ${money(entry.originalAmount, entry.originalCurrency)}) ya quedó registrado hace un momento en esta misma conversación; no lo dupliqué. Si es OTRO movimiento igual de verdad, que lo diga («otro igual») y lo registro.`,
+    data: { noop: true, duplicateOfTransactionId: recent.id },
+  };
+}
+
+async function unrequestedDuplicateMovementNoop(
+  entry: Parameters<typeof unrequestedDuplicateMovementNoopWith>[0],
+  ctx: AgentContext,
+): Promise<ToolResult | null> {
+  return unrequestedDuplicateMovementNoopWith(entry, ctx.rawMessage ?? "", async () => {
+    const supabase = createSupabaseAdminClient();
+    let query = supabase
+      .from("transactions")
+      .select("id")
+      .eq("user_id", ctx.userId)
+      .eq("type", entry.effectType)
+      .eq("original_amount", entry.originalAmount)
+      .eq("original_currency", entry.originalCurrency)
+      .gte("created_at", new Date(Date.now() - 15 * 60_000).toISOString())
+      .order("created_at", { ascending: false })
+      .limit(1);
+    query = entry.sourceAccountId
+      ? query.eq("source_account_id", entry.sourceAccountId)
+      : query.is("source_account_id", null);
+    query = entry.destinationAccountId
+      ? query.eq("destination_account_id", entry.destinationAccountId)
+      : query.is("destination_account_id", null);
+    query = entry.debtAccountId
+      ? query.eq("debt_account_id", entry.debtAccountId)
+      : query.is("debt_account_id", null);
+    const { data, error } = await query;
+    if (error) return null;
+    return data?.[0] ?? null;
+  });
+}
+
+// Semantics belong to the model, arithmetic belongs to the engine: the model
+// picks WHICH entities form the group ("mis cuentas de Argentina"), the engine
+// reads their live balances and does the addition. Reads the DB directly (not
+// the turn snapshot) so a write earlier in this same turn is already included.
+export async function executeSumBalancesWith(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+  read: (
+    table: "accounts" | "debt_accounts",
+    ids: string[],
+  ) => Promise<{
+    data: Array<{ id: string; name: string; currency: string; current_balance_original: number | null }> | null;
+    error: { message?: string } | null;
+  }>,
+): Promise<ToolResult> {
+  const idList = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? [...new Set(value.filter((v): v is string => typeof v === "string" && v.trim().length > 0).map((v) => v.trim()))]
+      : [];
+  const accountIds = idList(args.accountIds);
+  const debtAccountIds = idList(args.debtAccountIds);
+  if (accountIds.length + debtAccountIds.length === 0) {
+    return {
+      status: "needs_info",
+      summary: "Pásame los ids exactos del grupo (accountIds y/o debtAccountIds); están en el contexto de este turno.",
+    };
+  }
+  const [acc, debt] = await Promise.all([
+    accountIds.length > 0 ? read("accounts", accountIds) : Promise.resolve({ data: [], error: null }),
+    debtAccountIds.length > 0 ? read("debt_accounts", debtAccountIds) : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (acc.error || debt.error || acc.data == null || debt.data == null) {
+    return {
+      status: "error",
+      summary: "No pude leer esos saldos ahora mismo; no calcules el total a mano — reintenta sum_balances.",
+    };
+  }
+  const missing = [
+    ...accountIds.filter((id) => !acc.data!.some((row) => row.id === id)),
+    ...debtAccountIds.filter((id) => !debt.data!.some((row) => row.id === id)),
+  ];
+  if (missing.length > 0) {
+    return {
+      status: "needs_info",
+      summary: `Id(s) que no existen para este usuario: ${missing.join(", ")}. Usa los ids exactos del contexto.`,
+    };
+  }
+  const cents = (value: number | null): number =>
+    Math.round((Number.isFinite(value as number) ? (value as number) : 0) * 100);
+  type Bucket = {
+    accounts: Array<{ name: string; amount: number }>;
+    debts: Array<{ name: string; amount: number }>;
+    accountsCents: number;
+    debtsCents: number;
+  };
+  const byCurrency = new Map<string, Bucket>();
+  const bucket = (currency: string): Bucket => {
+    const key = currency.trim().toUpperCase();
+    const existing = byCurrency.get(key);
+    if (existing) return existing;
+    const created: Bucket = { accounts: [], debts: [], accountsCents: 0, debtsCents: 0 };
+    byCurrency.set(key, created);
+    return created;
+  };
+  for (const row of acc.data) {
+    const entry = bucket(row.currency);
+    entry.accounts.push({ name: row.name, amount: cents(row.current_balance_original) / 100 });
+    entry.accountsCents += cents(row.current_balance_original);
+  }
+  for (const row of debt.data) {
+    const entry = bucket(row.currency);
+    entry.debts.push({ name: row.name, amount: cents(row.current_balance_original) / 100 });
+    entry.debtsCents += cents(row.current_balance_original);
+  }
+  const totals = [...byCurrency.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([currency, entry]) => ({
+      currency,
+      accountsTotal: entry.accountsCents / 100,
+      debtsTotal: entry.debtsCents / 100,
+      accounts: entry.accounts,
+      debts: entry.debts,
+    }));
+  const lines = totals.map((row) => {
+    const parts: string[] = [];
+    if (row.accounts.length > 0) {
+      const sum = row.accounts.map((item) => `${item.name} ${money(item.amount, row.currency)}`).join(" + ");
+      parts.push(`cuentas: ${sum} = ${money(row.accountsTotal, row.currency)}`);
+    }
+    if (row.debts.length > 0) {
+      const sum = row.debts.map((item) => `${item.name} ${money(item.amount, row.currency)}`).join(" + ");
+      parts.push(`deudas: ${sum} = ${money(row.debtsTotal, row.currency)}`);
+    }
+    return `${row.currency} → ${parts.join(" · ")}`;
+  });
+  return {
+    status: "done",
+    summary: `Totales exactos del motor (saldos vivos):\n${lines.join("\n")}\nCita estos totales tal cual; si hay más de una moneda, no los sumes entre sí sin conversión.`,
+    data: { totals },
+  };
+}
+
+async function executeSumBalances(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  return executeSumBalancesWith(args, ctx, async (table, ids) => {
+    try {
+      const supabase = createSupabaseAdminClient();
+      return await supabase
+        .from(table)
+        .select("id,name,currency,current_balance_original")
+        .eq("user_id", ctx.userId)
+        .in("id", ids);
+    } catch (error) {
+      return { data: null, error: { message: error instanceof Error ? error.message : "read failed" } };
+    }
+  });
+}
+
 // Register a NEW card/debt from chat (e.g. a statement for an unregistered card),
 // only after the user confirms. The created card is pushed into the live context
 // so the SAME turn can update its obligations and import its movements by id —
@@ -11241,6 +11519,42 @@ async function executePersonPayment(
     const currency = crIn.resolution.original;
     const who = person ? ` de ${person}` : "";
     if (inflowKind === "capital_return_unrecorded") {
+      // Cross-turn re-narration net: the delivery-scoped dedupe key is NEW on
+      // every turn by design (K13), so an identical unrecorded capital return
+      // minutes later is the same event told twice, not new money.
+      if (ctx.operationManifestAuthorized !== true) {
+        const dupNoop = await unrequestedDuplicateMovementNoopWith(
+          {
+            effectType: "adjustment",
+            originalAmount: amount,
+            originalCurrency: currency,
+            destinationAccountId: account.id,
+          },
+          ctx.rawMessage ?? "",
+          async () => {
+            try {
+              const supabase = createSupabaseAdminClient();
+              const { data, error } = await supabase
+                .from("transactions")
+                .select("id")
+                .eq("user_id", ctx.userId)
+                .eq("type", "adjustment")
+                .eq("original_amount", amount)
+                .eq("original_currency", currency)
+                .eq("destination_account_id", account.id)
+                .like("external_ref", "capital_return_unrecorded:%")
+                .gte("created_at", new Date(Date.now() - 15 * 60_000).toISOString())
+                .limit(1);
+              if (error) return null;
+              return data?.[0] ?? null;
+            } catch {
+              return null;
+            }
+          },
+          { numeralWarrant: false },
+        );
+        if (dupNoop) return dupNoop;
+      }
       const actionId = ctx.activePlannedAction?.id ?? "capital-return";
       const dedupe =
         dedupeKeyFor(ctx, {
@@ -15131,6 +15445,7 @@ export const READ_ONLY_AGENT_TOOLS = new Set<string>([
   "get_personality_test",
   "personality_test_result",
   "convert_currency",
+  "sum_balances",
   "plan_reserve_withdrawal",
   "list_open_receivables",
   "search_learned_memory",
@@ -17573,6 +17888,8 @@ export async function executeTool(
       return executeSetExchangeRate(args, ctx);
     case "convert_currency":
       return executeConvertCurrency(args, ctx);
+    case "sum_balances":
+      return executeSumBalances(args, ctx);
     case "create_card":
       return executeCreateCard(args, ctx);
     case "create_account":
