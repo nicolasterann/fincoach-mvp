@@ -1087,6 +1087,27 @@ function mutationStateIsGrounded(
   });
 }
 
+/** The INVERSE truth barrier of mutationClaimNeedsActionReceipt: a turn whose
+ * writes LANDED (receipts in hand) must never tell the user the save failed.
+ * The founder's PlayStation turn wrote the goal perfectly (`wrote:true`, clean
+ * receipt) and the model still narrated «falló el guardado» — self-copying its
+ * own historical failure confessions from the conversation (the "Te falta un
+ * dato exacto" class). Bounded past-tense save-failure grammar over write
+ * verbs only; hypotheticals in present/subjunctive do not match. */
+const SAVE_FAILURE_CLAIM =
+  /(?:fall[oó](?:\s+(?:el|la|al))?\s+(?:guardad[oa]|guardar|creaci[oó]n|crear|registro|registrar)|(?:no|tampoco)\s+(?:se\s+|te\s+|me\s+)?(?:l[oa]\s+)?pud[eo]\s+(?:crear|guardar|registrar|dejar)|no\s+se\s+(?:guard[oó]|cre[oó]|registr[oó])\b|intent[eé]\s+(?:crear|guardar|registrar|dejar)\w*[^.]{0,60}?(?:pero|fall[oó]|no\s+se)|(?:esta|otra)\s+vez\s+fall[oó])/iu;
+
+export function writeDeniedWithReceipt(
+  text: string,
+  hasWriteReceipts: boolean,
+): boolean {
+  if (!hasWriteReceipts) return false;
+  const normalized = (text ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+  return SAVE_FAILURE_CLAIM.test(normalized) || SAVE_FAILURE_CLAIM.test(text ?? "");
+}
+
 export function mutationClaimNeedsActionReceipt(
   text: string,
   deterministicEvidence: string,

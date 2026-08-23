@@ -177,6 +177,7 @@ import {
   executeBareConfirmationWith,
   findBareConfirmationActionWith,
   computeLiveTotalsByCurrency,
+  writeDeniedWithReceipt,
 } from "@/lib/ai/agent/kipu-agent";
 import {
   agentLoopManifestRejectionShape,
@@ -32040,7 +32041,7 @@ assert(
       ir340TypedError.role === "system" &&
       ir340TypedError.message ===
         "KIPU_LOOP_MESSAGE_SEQUENCE_INVALID index=1 role=system" &&
-      ir340CompletionCalls.length === 8 &&
+      ir340CompletionCalls.length === 9 &&
       ir328Loop.includes(
         "  const repaired = repairLoopMessagesSequence(request.messages);\n  assertLoopMessagesSequence(repaired);\n  return model.complete({ ...request, messages: repaired as never });",
       ) &&
@@ -33299,6 +33300,43 @@ assert(
     "IR355 · asesor de metas: matemática del motor, nombre-numeral inofensivo, meta sin duplicar y recibo con números",
     ir355Checks.every(([, pass]) => pass),
     JSON.stringify(ir355Checks.filter(([, p]) => !p).map(([n]) => n)),
+  );
+
+  // ── IR356 — la barrera INVERSA de verdad: un turno cuyos writes ATERRIZARON
+  // jamás narra «falló el guardado» (el caso PlayStation: wrote:true, recibo
+  // limpio, y el modelo copió su confesión histórica). El dup-noop declara el
+  // plan completo de la meta existente.
+  const ir356Checks: [string, boolean][] = [
+    [
+      "el caso literal del founder es un claim de fallo con recibo",
+      writeDeniedWithReceipt(
+        "Dale: con 40 USD por semana la alcanzarías aprox. el 8 de diciembre. Intenté dejarla creada así para PlayStation 5, pero esta vez falló el guardado; si quieres la vuelvo a crear.",
+        true,
+      ) === true,
+    ],
+    ["«no la pude guardar» y «no se guardó» son claims de fallo", writeDeniedWithReceipt("No la pude guardar.", true) === true && writeDeniedWithReceipt("Al final no se guardó la meta.", true) === true],
+    ["narrar el éxito jamás matchea", writeDeniedWithReceipt("Listo: quedó creada la meta PlayStation 5 con 40$/sem.", true) === false],
+    ["un condicional en presente no es un claim de fallo", writeDeniedWithReceipt("Si falla el guardado más adelante, te aviso al toque.", true) === false],
+    ["un verbo de lectura no es un fallo de guardado", writeDeniedWithReceipt("No pude leer tus tasas vigentes; el resto quedó igual.", true) === false],
+    ["sin recibos de write la barrera no aplica", writeDeniedWithReceipt("falló el guardado", false) === false],
+    [
+      "la publicación reescribe con los recibos y cae a los recibos si persiste",
+      ir328Loop.includes(
+        "    if (\n      outcome.wrote &&\n      successfulWriteReceipts.length > 0 &&\n      writeDeniedWithReceipt(finalized.text, true)\n    ) {",
+      ) &&
+        ir328Loop.includes("Las escrituras de ESTE turno SÍ aterrizaron") &&
+        ir328Loop.includes("PROHIBIDO decir que falló, que no se guardó"),
+    ],
+    [
+      "el dup-noop de metas declara el plan completo y prohíbe ofrecer ajustar lo ya puesto",
+      pmAgentTools.includes("no ofrezcas ajustar lo que ya está así") &&
+        pmAgentTools.includes("aporte ${formatMoney(Number(recentDup.contribution_amount), goalCurrency as CurrencyCode)}/${dupCadenceLabel}"),
+    ],
+  ];
+  assert(
+    "IR356 · negar un write con recibo es tan falso como afirmarlo sin recibo — la publicación lo repara con los recibos",
+    ir356Checks.every(([, pass]) => pass),
+    JSON.stringify(ir356Checks.filter(([, p]) => !p).map(([n]) => n)),
   );
   assert(
     "IR351 · cualquier jerga autoriza por CITA literal del episodio — sin listas hardcodeadas; una cita fabricada jamás autoriza y un fallo de control jamás pide reformular",

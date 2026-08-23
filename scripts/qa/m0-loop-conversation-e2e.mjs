@@ -34,6 +34,7 @@ registerSrcHooks({
   },
 });
 const { statedAmounts } = await import("@/lib/capture/amount-evidence");
+const { writeDeniedWithReceipt } = await import("@/lib/ai/agent/kipu-agent");
 import { randomUUID } from "node:crypto";
 import { renameSync, writeFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
@@ -2730,6 +2731,16 @@ async function runHumanRealismScenario(scenario, persona) {
       ok: new Set(normalizedQuestions).size === normalizedQuestions.length,
     });
   }
+  checks.push({
+    name: "HR a turn never denies its own landed write",
+    ok: turns.every(
+      (row) =>
+        !(
+          row.result?.assistantMetadata?.agentOutcome?.wrote === true &&
+          writeDeniedWithReceipt(String(row.reply ?? ""), true)
+        ),
+    ),
+  });
   checks.push({
     name: "HR no template prefix, no manifest, no stuck op, no error",
     ok:

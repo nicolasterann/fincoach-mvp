@@ -4024,8 +4024,8 @@ const cases = [
   {
     name: "M0M585 a re-narrated goal creates a second identical goal again",
     file: "src/lib/ai/agent/kipu-agent-tools.ts",
-    from: "    if (recentDup) {\n      return {\n        status: \"done\",\n        effect: \"noop\",\n        summary: `La meta \"${recentDup.name}\" (${formatMoney(Number(recentDup.target_amount), goalCurrency as CurrencyCode)}) ya quedó creada hace un momento en esta misma conversación; no la dupliqué. Si de verdad quiere OTRA meta igual, que lo diga y la creo.`,\n        data: { goalId: recentDup.id, noop: true },\n      };\n    }",
-    to: "    void recentDup; // mutation: goal re-narration net removed",
+    from: "ya quedó creada hace un momento en esta misma conversación; no la dupliqué. Confírmale ESE estado tal cual",
+    to: "no la dupliqué",
     detector: "IR355",
   },
   {
@@ -4083,6 +4083,20 @@ const cases = [
     from: "  const confirmationHypothesisPaths = new Set(\n    SIMULATION_HYPOTHESIS_PATHS[toolName] ?? [],\n  );\n  const monetaryClaims = monetaryClaimsFromToolArgs(args).filter(\n    (claim) => !confirmationHypothesisPaths.has(claim.path),\n  );\n  const currentDeliveryProvesEveryAssociation =\n    toolName === \"log_movements_batch\" &&",
     to: "  const monetaryClaims = monetaryClaimsFromToolArgs(args);\n  const currentDeliveryProvesEveryAssociation =\n    toolName === \"log_movements_batch\" &&",
     detector: "IR355",
+  },
+  {
+    name: "M0M594 a landed write can be denied to the user again",
+    file: "src/lib/ai/agent/kipu-agent-loop.ts",
+    from: "    if (\n      outcome.wrote &&\n      successfulWriteReceipts.length > 0 &&\n      writeDeniedWithReceipt(finalized.text, true)\n    ) {",
+    to: "    if (\n      false &&\n      outcome.wrote &&\n      successfulWriteReceipts.length > 0 &&\n      writeDeniedWithReceipt(finalized.text, true)\n    ) {",
+    detector: "IR356",
+  },
+  {
+    name: "M0M595 the save-failure grammar goes blind",
+    file: "src/lib/ai/agent/kipu-agent.ts",
+    from: "const SAVE_FAILURE_CLAIM =\n  /(?:fall[oó](?:\\s+(?:el|la|al))?\\s+(?:guardad[oa]|guardar|creaci[oó]n|crear|registro|registrar)|(?:no|tampoco)\\s+(?:se\\s+|te\\s+|me\\s+)?(?:l[oa]\\s+)?pud[eo]\\s+(?:crear|guardar|registrar|dejar)|no\\s+se\\s+(?:guard[oó]|cre[oó]|registr[oó])\\b|intent[eé]\\s+(?:crear|guardar|registrar|dejar)\\w*[^.]{0,60}?(?:pero|fall[oó]|no\\s+se)|(?:esta|otra)\\s+vez\\s+fall[oó])/iu;",
+    to: "const SAVE_FAILURE_CLAIM = /$^/u; // mutation: blind grammar",
+    detector: "IR356",
   },
   {
     name: "M0M560 degraded authority guards stop emitting their bounded telemetry counter",

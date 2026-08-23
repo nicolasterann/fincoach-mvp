@@ -5684,7 +5684,7 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
         const supabase = createSupabaseAdminClient();
         const { data, error } = await supabase
           .from("goals")
-          .select("id,name,target_amount,currency,created_at,status")
+          .select("id,name,target_amount,currency,created_at,status,cadence,contribution_amount,target_date")
           .eq("user_id", ctx.userId)
           .gte("created_at", new Date(Date.now() - 15 * 60_000).toISOString())
           .neq("status", "cancelled")
@@ -5703,10 +5703,20 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
       }
     })();
     if (recentDup) {
+      // El estado COMPLETO de la existente viaja en el noop: sin el plan, el
+      // modelo ofrecía «ajustarla a 40/sem» cuando ya estaba en 40/sem.
+      const dupCadenceLabel =
+        recentDup.cadence === "weekly" ? "sem" : recentDup.cadence === "biweekly" ? "quincena" : recentDup.cadence === "monthly" ? "mes" : null;
+      const dupPlan = [
+        recentDup.contribution_amount != null && Number(recentDup.contribution_amount) > 0 && dupCadenceLabel
+          ? `aporte ${formatMoney(Number(recentDup.contribution_amount), goalCurrency as CurrencyCode)}/${dupCadenceLabel}`
+          : null,
+        recentDup.target_date ? `fecha ${recentDup.target_date}` : null,
+      ].filter(Boolean).join(", ");
       return {
         status: "done",
         effect: "noop",
-        summary: `La meta "${recentDup.name}" (${formatMoney(Number(recentDup.target_amount), goalCurrency as CurrencyCode)}) ya quedó creada hace un momento en esta misma conversación; no la dupliqué. Si de verdad quiere OTRA meta igual, que lo diga y la creo.`,
+        summary: `La meta "${recentDup.name}" (${formatMoney(Number(recentDup.target_amount), goalCurrency as CurrencyCode)}${dupPlan ? `, ${dupPlan}` : ""}) ya quedó creada hace un momento en esta misma conversación; no la dupliqué. Confírmale ESE estado tal cual (no ofrezcas ajustar lo que ya está así); si de verdad quiere OTRA meta igual, que lo diga y la creo.`,
         data: { goalId: recentDup.id, noop: true },
       };
     }

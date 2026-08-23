@@ -9,6 +9,7 @@ import {
   buildUnavailableBriefingPlaceholder,
   isReplyToRecurringNotification,
   mutationClaimNeedsActionReceipt,
+  writeDeniedWithReceipt,
   refreshAgentStateBeforeModel,
   replyMoneyFiguresAbsentFromEvidence,
   sameTurnMutationReplay,
@@ -4487,6 +4488,55 @@ export async function runKipuAgentLoop(
           text: "No registré ningún cambio en este turno. Cuéntame exactamente qué querías y lo hago.",
           advisories: finalized.advisories,
         };
+      }
+    }
+    // Barrera INVERSA de verdad: los writes de este turno ATERRIZARON y la
+    // respuesta no puede negarlo. Un «falló el guardado» con recibo en mano es
+    // tan falso como un «quedó creada» sin recibo. Una reescritura dirigida con
+    // los recibos exactos; si persiste, la respuesta se compone de los recibos.
+    if (
+      outcome.wrote &&
+      successfulWriteReceipts.length > 0 &&
+      writeDeniedWithReceipt(finalized.text, true)
+    ) {
+      activeTurnFailureSite = "forced_completion";
+      const receiptsText = successfulWriteReceipts.join("\n");
+      try {
+        const repairedDenial = await completeLoopModel(model, {
+          messages: [
+            ...messages,
+            { role: "assistant", content: finalized.text },
+            {
+              role: "system",
+              content:
+                `Las escrituras de ESTE turno SÍ aterrizaron — estos son los recibos exactos:\n${receiptsText}\nTu borrador dice que algo falló o no se pudo guardar: eso es FALSO. Reescribe narrando el éxito con las cifras de los recibos. PROHIBIDO decir que falló, que no se guardó o que lo intentarás de nuevo. No llames tools.`,
+            },
+          ],
+          tools: KIPU_LOOP_TOOL_SCHEMAS,
+          toolChoice: "none",
+          temperature: 0.4,
+        });
+        addUsage(usage, repairedDenial.usage);
+        const repaired = sanitizeAgentReply(repairedDenial.content ?? "");
+        if (repaired && !writeDeniedWithReceipt(repaired, true)) {
+          finalized = { text: repaired, advisories: finalized.advisories };
+        } else {
+          const receiptsReply = loopPostWriteReceiptContinuity(
+            successfulWriteReceipts,
+            agentCtx.saldoAvailable !== false,
+          );
+          if (receiptsReply) {
+            finalized = { text: receiptsReply, advisories: finalized.advisories };
+          }
+        }
+      } catch {
+        const receiptsReply = loopPostWriteReceiptContinuity(
+          successfulWriteReceipts,
+          agentCtx.saldoAvailable !== false,
+        );
+        if (receiptsReply) {
+          finalized = { text: receiptsReply, advisories: finalized.advisories };
+        }
       }
     }
     if (pendingProposalRequirements) {

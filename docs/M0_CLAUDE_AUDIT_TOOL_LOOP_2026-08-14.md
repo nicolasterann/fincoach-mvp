@@ -4688,3 +4688,62 @@ SOLAS · PostgreSQL **82/82** + **M116–M123** · DRY **32/32** · OLA0
 Una exención de doctrina se aplica en TODAS las funciones paralelas que
 implementan la misma barrera, y se prueba en CADA una con el caso real —
 eximir solo la mitad deja el mismo bot con otro prefijo.
+
+# ADENDA 62 — 2026-08-24 — Negar un write con recibo es tan falso como afirmarlo sin recibo
+
+Estado: **AUTORITATIVA.** Transcript PlayStation del founder: «Hagamos 40 por
+semana» → el modelo respondió «Intenté dejarla creada… pero esta vez falló el
+guardado» y al «Sí, créala» siguiente respondió «ya quedó creada; no la
+dupliqué… si quieres te la ajusto con aporte de 40».
+
+## A62-1. La verdad de la telemetría
+
+El turno de los 40 fue PERFECTO por dentro: `plan_goal_funding` dio la fecha
+exacta (2026-12-08), `create_goal` escribió la meta completa (600$, 40$/sem,
+fecha) con recibo limpio, `wrote:true, hadError:false`, cero diagnósticos. El
+«falló el guardado» fue prosa del MODELO con el recibo de éxito en la mano —
+auto-copiándose sus confesiones de fallo de turnos VIEJOS del historial (la
+clase «Te falta un dato exacto» de la ADENDA 51: la frase «esta vez» delata
+la referencia al fallo anterior de Sonos, ya corregido). Y el dup-noop del
+turno siguiente fue física CORRECTA (la meta sí existía), pero al no declarar
+el plan de la existente, el modelo ofreció «ajustarla a 40» cuando YA estaba
+en 40.
+
+## A62-2. La barrera INVERSA de verdad (arquitectura)
+
+Existía `mutationClaimNeedsActionReceipt` (afirmar un write sin recibo =
+bloqueado). Faltaba la inversa: **`writeDeniedWithReceipt`** — un turno con
+writes verificados y recibos jamás publica un claim de fallo de guardado.
+Gramática acotada en pasado sobre verbos de escritura («falló el guardado»,
+«no la pude crear/guardar/registrar», «no se guardó», «intenté crear… pero»,
+«esta/otra vez falló»); condicionales en presente y verbos de lectura no
+matchean. En la publicación del loop: reescritura dirigida con los recibos
+exactos («las escrituras SÍ aterrizaron: …») → recheck → si persiste, la
+respuesta se compone de los recibos (`loopPostWriteReceiptContinuity`, que ya
+existía). El dup-noop de metas ahora declara el PLAN completo de la existente
+(aporte, cadencia, fecha) y prohíbe ofrecer ajustar lo que ya está así.
+
+## A62-3. Red
+
+IR356 (caso literal del founder + gramática en ambos sentidos + wiring del
+`if` contiguo + pin del dup-noop enriquecido); red TRANSVERSAL en el runner
+de la muestra real (ningún turno con `wrote:true` puede matchear el detector
+— corre en TODAS las lanes HR/HD/GA); M0M594/595 muertas (la 594 requirió el
+pin del `if` contiguo — 9ª/10ª repetición de la aserción débil: un mutante
+que INSERTA texto deja intactas las subcadenas; el pin ancla la forma
+completa). M0M585 re-anclada al summary nuevo.
+
+## A62-4. Números
+
+Muestra completa **33/33 duros verdes** (4.55/5, $1.56; un RUN_ABORT previo
+fue el paraphraser del harness, cero turnos pagados) · capture **888/888**
+(IR340 8→9 call sites de completeLoopModel) · mutaciones **589/589** SOLAS ·
+PG **82/82** + **M116–M123** · DRY 32/32 · OLA0 16/16 · calibración 2/2 ·
+tsc/lint/build limpios. Sin migraciones.
+
+## A62-5. Lección
+
+El historial de una conversación larga con fallos VIEJOS induce falsos
+fallos nuevos por auto-copia; la respuesta no es limpiar historia (es real)
+sino la barrera de verdad en la dirección que faltaba. Verdad tiene DOS
+direcciones y cada una necesita su barrera.
