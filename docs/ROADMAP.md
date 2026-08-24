@@ -1902,7 +1902,7 @@ las tools, el manifiesto 112–115, los builders, MoneyRead, el motor financiero
 PostgreSQL y el fallback `off` permanecen.
 
 **Vara final cumplida:** muestra conversacional real de 35 carriles **35/35**;
-capture y mutaciones con toda garantía viva conservada; PostgreSQL **82/82** más
+capture **826/826** y mutaciones **324/324** con toda garantía viva conservada; PostgreSQL **82/82** más
 M116–M124; DRY **32/32**; OLA0 **16/16**; CAL **2/2**; typecheck, lint y build
 limpios. Nueve o más clases de defecto descubiertas por founder y auditorías
 independientes quedaron como red permanente: identidad/replay, procedencia y

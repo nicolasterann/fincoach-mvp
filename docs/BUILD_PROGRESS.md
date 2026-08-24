@@ -6,14 +6,14 @@
 > original de 13 fases y no se ejecuta.
 
 > **Cierre M0 (2026-08-24) — loop nativo único + limpieza del envelope**
-> · rama `m0-closure-cleanup` · commit `COMMIT_PLACEHOLDER_M0_CLOSURE`.
+> · rama `m0-closure-cleanup` · commit funcional `77fd1f9`.
 > Producción conserva como único cerebro AI el tool-calling loop y como rollback
 > explícito el pipeline legacy `off`. Se eliminaron por alcanzabilidad el planner
 > envelope, validadores/compiladores y barreras de publicación v29–v44, recovery
 > de intake de ese camino, challenges 088 no alcanzables y su harness de modelo.
 > `AgentMode` quedó en `off | loop` (`on`/`shadow` son aliases con warning).
-> Balance de la limpieza antes del reporte: `+2.134 / -28.108` líneas, neto
-> `-25.974` (`código+harness -23.115`; documentación `-2.859`). Toda garantía viva
+> Balance de la limpieza antes del reporte: `+2.135 / -28.108` líneas, neto
+> `-25.973` (`código+harness -23.115`; documentación `-2.858`). Toda garantía viva
 > del loop, tools, manifiesto durable, builders, MoneyRead, motor, PostgreSQL y
 > fallback `off` permanece fijada por capture, mutaciones, sondas y E2E. Vara de
 > cierre: muestra real 35/35, nueve+ clases de defecto con red permanente y gates
@@ -513,7 +513,8 @@
 > moneda usa las tasas del usuario (no re-pregunta), prompt prohíbe conversión por el
 > modelo, correcciones cross-moneda piden en vez de corromper, create_card/account con
 > base honesto. Gates: capture-test 164/164, wizard-test 81/81, onboarding-loop 21/21,
-> lint+build verdes. Postura beta: `KIPU_AGENT_MODE=on` + `TRANSACTION_PARSER_MODE=
+> lint+build verdes. Postura beta histórica: `KIPU_AGENT_MODE=on` (hoy alias
+> compatible de `loop`; rollback actual = `off`) + `TRANSACTION_PARSER_MODE=
 > ai_with_basic_fallback` + `NEXT_PUBLIC_SITE_URL`/`KIPU_APP_BASE_URL` en Vercel
 > (ver docs/FOUNDER_BETA_GUIDE.md v2, que también trae la receta "casa como empresa"
 > para el caso real del founder y los scripts de Milena/mamá/primo).
@@ -1227,7 +1228,7 @@
 
 #### Stage 12 — COMPLETE (production-validated and closed, 2026-06-16)
 
-- [x] **Stage 12 — Low-friction data capture: COMPLETE.** Committed to main (5ebec36 statement-card resolution; 803f1a7 resumable statement import + adversarial-review hardening) and deployed to Vercel Production (deployment commit 803f1a7, READY). Supabase migrations 017–021 applied in production; `KIPU_AGENT_MODE=on`.
+- [x] **Stage 12 — Low-friction data capture: COMPLETE.** Committed to main (5ebec36 statement-card resolution; 803f1a7 resumable statement import + adversarial-review hardening) and deployed to Vercel Production (deployment commit 803f1a7, READY). Supabase migrations 017–021 applied in production; `KIPU_AGENT_MODE=on` en ese momento (hoy alias compatible de `loop`; rollback actual = `off`).
 - [x] Stage 12 production validation (real Telegram bot + production Supabase): web text capture; Telegram text; Telegram voice (real transcription); Telegram image/photo (real receipt extraction); Telegram PDF/card statement; statement card resolution (network-aware — a Mastercard statement is never confidently matched to a same-bank Visa); new-card creation/linking from chat (`create_card`/`create_account`, idempotent by name); card-obligation import (full payment / minimum / due day / cutoff day kept distinct); debt/card payment from a statement using the ORIGINAL statement row date (`occurred_at`, not the chat timestamp); statement rows written under ONE `evidence_id` with `ev:<evidence_id>#<fingerprint>#<occurrence>` dedupe keys; long/resumable statement import (durable session in `clarification_context`; a chat answer AND a re-upload both resume idempotently; ≤15-row atomic batches under one evidence id; truthful detected/imported/pending counts; honest truncation beyond the 120-row ceiling); exact-replay safety; conservative semantic-duplicate protection; multi-movement batch atomicity; deterministic ledger RPCs (019) + atomic correction/reconcile (020) + Telegram reservation-release grant (021); currency safety (no invented FX); AI-first contextual responses with no raw IDs/JSON/tool summaries leaked.
 - [x] Stage 12 final production retest: statement "Banco Pichincha Mastercard" emitted 2026-04-06 → 8 detected / 8 registered (7 expenses + 1 debt_payment), all targeting Mastercard Banco Pichincha; payment 614.57 from account Pichincha dated 2026-03-20; obligations full 331.42 / minimum 52.17 / due 21 / cutoff 6; Mastercard Produbanco untouched.
 - [x] Stage 12 adversarial pre-mortem (30 real-user scenarios + 4-lens money-safety review): HIGH findings fixed — batch validation no longer pre-consumes dedupe occurrence indices; `create_card`/`create_account` are idempotent; card resolution is network-aware; a partial statement write keeps the durable session open; truncation is reported truthfully via an explicit signal; `maxDuration=300` on the capture entry routes; a re-upload claims the evidence row before resuming. Deterministic gate 52/52; live DB sims green (ledger 15/15, workflows 18/18, reconcile-security 7/7, channel-idempotency 7/7, lifecycle 4/4, claims 5/5, dedup 3/3, matcher 3/3, telegram-http 4/4); archivos 5/5, voz 2/2; lint + build green.
