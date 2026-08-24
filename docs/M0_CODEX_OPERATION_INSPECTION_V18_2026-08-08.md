@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 — consultas de estado observan; no fragmentan operaciones (v18)
 
 Fecha: 2026-08-08  

@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Relevo externo M0 — receipts de operación abierta y contrato de autoridad
 
 **Fecha:** 2026-08-03  

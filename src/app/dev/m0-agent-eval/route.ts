@@ -120,9 +120,7 @@ export async function POST(request: Request) {
     const requestId = typeof body.requestId === "string" ? body.requestId : "";
     const chatId = typeof body.chatId === "string" ? body.chatId : "m0-model-eval";
     const channel = body.channel === "web" ? "web" : "telegram";
-    const requestedMode = body.mode === "loop" || body.mode === "on"
-      ? body.mode
-      : null;
+    const requestedMode = body.mode === "loop" ? body.mode : null;
     const liveMode = agentMode();
     if (requestedMode && requestedMode !== liveMode) {
       return NextResponse.json(

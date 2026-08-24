@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 — Etapa 3H / ronda 1Z — Redirect durable de re-emisiones económicas
 
 Fecha: 2026-08-16  

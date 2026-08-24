@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 Loop — Reporte Etapa 3B / ronda 1T — 2026-08-15
 
 Estado: implementación completa, sin DDL, lista para auditoría de Claude. No se ejecutó ninguna muestra pagada en esta ronda. El gasto real acumulado de Etapa 3 permanece en aproximadamente USD 13.13.

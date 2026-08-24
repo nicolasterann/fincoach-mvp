@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 v22 — semantic planner, deterministic mechanical compiler
 
 Fecha: 2026-08-09

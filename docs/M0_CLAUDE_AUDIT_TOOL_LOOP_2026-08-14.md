@@ -1,3 +1,6 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+> Sus ADENDAs constituyen el expediente de implementación, auditoría y cierre de M0.
+
 # M0 — Auditoría independiente de Claude y plan de salida por loop nativo
 
 Fecha: 2026-08-14
@@ -4929,3 +4932,73 @@ compat, poda del harness sin debilitar checks de código vivo, gates verdes
 en rama `m0-closure-cleanup` SIN merge, reporte formato §8, auditoría de
 Claude pre-merge (diff completo + gates + muestra real) y solo entonces la
 declaración de cierre.
+
+# ADENDA 65 — 2026-08-24 — AUDITORÍA DEL CIERRE DE CODEX: VERDE CON DOS CORRECCIONES FACTUALES DE DOCS — M0 SE DECLARA CERRADO
+
+Estado: **AUTORITATIVA — LA ÚLTIMA DEL EXPEDIENTE.** Auditoría pre-merge de
+`m0-closure-cleanup` (commits `77fd1f9` + `019ab42` de Codex + el commit de
+esta auditoría), según el contrato de
+`docs/M0_CIERRE_CODEX_CLEANUP_PROMPT_2026-08-24.md`.
+
+## A65-1. El código de Codex: impecable
+
+Verificado por diff completo + greps adversariales + gates re-corridos por mí
+(cero confianza en el reporte):
+
+- **Sustracción pura probada**: `kipu-agent-tools.ts` = 153 líneas fuera y UNA
+  de comentario dentro; `agent-planner.ts` (5.016) y
+  `agent-action-challenges.ts` (178) muertos con CERO referencias colgantes
+  (`agent-planner`, `agent-action-challenges`, `runKipuAgent(` = 0 hits);
+  `kipu-agent.ts` 6.808→1.657 conservando todo lo que el loop importa.
+- **`agent-action-guard.ts` VIVO** como exigía el contrato: solo salió la
+  maquinaria de challenges 088; las barreras gemelas, el short-circuit por
+  manifiesto y el camino read-only intactos.
+- **`AgentMode` = `off | loop`** con compat exacta (`on`/`shadow` → `loop`,
+  warn único) y default `off`.
+- **`kipu-agent-loop.ts` y `supabase/` byte-intactos**; keep-list completa.
+- **Cobertura viva conservada**: IR354–IR359 + familia IR300s + 28 asserts de
+  sanitize/fail-closed + M0M602–607 presentes; el handshake del E2E subió a
+  `native-loop-closure` y la sonda de autoridad del bridge quedó MÁS fuerte
+  (404 también con secret equivocado).
+- **Dos hallazgos honestos de Codex** (helpers de manifiesto vivos por import
+  dinámico, restaurados; 17 detectores de mutantes reforzados) — exactamente
+  el comportamiento que el contrato pedía.
+
+Gates re-corridos por mí en la rama: tsc/lint/build limpios · capture
+**826/826** · mutaciones **324/324** SOLAS · PG **82/82** + **M116–M124** ·
+DRY 32/32 · OLA0 16/16 · CAL 2/2 · **muestra real de 35 carriles: 34/35**
+(calidad 4.64/5, $2.02) — el árbol limpio se comporta IDÉNTICO a main.
+
+## A65-2. El rojo de la muestra, por fin con transcript exacto
+
+HD_BREAKDOWN: el modelo agrupó Wells Fargo bajo «Ecuador» (3.976,93 = −110 +
+172,73 + 3.914,20) en vez de separar Ecuador (62,73) de Estados Unidos.
+Aritmética PERFECTA vía sum_balances (juez: números 5/5, calidad 4.75); es un
+juicio de GEOGRAFÍA del banco — la clase de selectores/geografía que
+**M0.11B dejó explícitamente pendiente** y que no se contrabandeó en A.
+Cuarta corrida completa del mismo patrón (2 pre-merge en main + 1 intermedia
++ esta): el rojo es ITINERANTE (HD_BREAKDOWN ×2, HR_PATTERN ×1, carril
+distinto por corrida, verde re-medido siempre), de forma/juicio, con cero
+errores de dinero en todos los casos.
+
+## A65-3. Dos defectos factuales de DOCS, corregidos por esta auditoría
+
+La clase que este programa existe para matar — un número no medido afirmado
+como hecho — apareció en la mitad declarativa de Codex:
+
+1. **«35/35»** en CLAUDE.md, AGENTS.md, ROADMAP, BUILD_PROGRESS y
+   AI_NATIVE_ARCHITECTURE: nadie midió jamás un 35/35. El récord real es
+   34/35 repetido con rojo itinerante tipado. Corregido a la frase honesta en
+   los cinco.
+2. **«823» aserciones** en CLAUDE.md/AGENTS.md: el gate real de la rama
+   auto-cuenta **826** (el 823 era un intermedio stale previo a la
+   restauración de helpers). Corregido.
+
+Cero defectos de código. Veredicto: **VERDE.**
+
+## A65-4. Declaración
+
+Con el veredicto verde y el mandato del founder (ADENDA 64: «después tu
+auditas el trabajo de codex y declaramos M0 cerrado finalmente»), la rama se
+mergea a main y **M0 QUEDA CERRADO. El Bloque M (el front completo) es el
+único bloque activo.** Este expediente (ADENDAs 1–65) queda como historia.

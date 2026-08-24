@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Auditoría externa del Bloque M0 — informe para Codex
 
 > **AUDITORÍA HISTÓRICA.** Las cifras 55/59 y 157/157 describen el árbol que

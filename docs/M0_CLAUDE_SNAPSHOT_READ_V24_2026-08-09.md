@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Relevo v24→v29 — snapshot-read · batch-receipt · search-miss · archive-snapshot · undo-observability · **response-completeness**: informe para el re-audit de Codex
 
 **Fecha:** 2026-08-09 · **Autor:** Claude (sesión de reparación autorizada por el

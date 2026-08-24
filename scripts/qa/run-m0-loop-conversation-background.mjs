@@ -1,6 +1,5 @@
-// Launch one paid M0 loop/on three-lane run outside a short-lived audit command.
+// Launch one paid M0 loop run outside a short-lived audit command.
 //
-//   node --env-file=.env.local ./scripts/qa/run-m0-loop-conversation-background.mjs on-1 --mode=on
 //   node --env-file=.env.local ./scripts/qa/run-m0-loop-conversation-background.mjs loop-1 --mode=loop
 //
 // The matching Next dev server must already be alive in the requested mode.
@@ -28,8 +27,8 @@ function safeLabel(value) {
 function modeFrom(argv) {
   const raw = argv.find((value) => value.startsWith("--mode="));
   const value = raw?.slice("--mode=".length);
-  if (value !== "loop" && value !== "on") {
-    throw new Error("--mode=loop|on is required");
+  if (value !== "loop") {
+    throw new Error("--mode=loop is required");
   }
   return value;
 }

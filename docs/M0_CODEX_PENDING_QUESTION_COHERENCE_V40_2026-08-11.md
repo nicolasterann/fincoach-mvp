@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Bloque M0 — coherencia de preguntas pendientes v40
 
 Fecha: 2026-08-11  

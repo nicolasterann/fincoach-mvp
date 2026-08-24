@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Informe para auditoría externa — correcciones de Codex después de la ejecución de Claude
 
 **Fecha:** 2026-08-03  

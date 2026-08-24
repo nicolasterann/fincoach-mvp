@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0.11A — propiedad única del receipt y harness de manifiesto
 
 Fecha: 2026-08-12  

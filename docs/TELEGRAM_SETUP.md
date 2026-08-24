@@ -111,6 +111,6 @@ me pagaron 50 freelance a pichincha
 El bot real está **en producción**: webhook registrado contra
 `https://www.soykipu.com/api/telegram/webhook` (secret validado, dedupe activo)
 y vinculación self-serve desde Ajustes → Conectar Telegram (§6). Con
-`KIPU_AGENT_MODE=on` (postura de producción), el agente entiende lenguaje libre
+`KIPU_AGENT_MODE=loop` (postura de producción), el agente entiende lenguaje libre
 por Telegram — los ejemplos de §7 son el mínimo que cubre el fallback
 determinista, no el techo de lo soportado.

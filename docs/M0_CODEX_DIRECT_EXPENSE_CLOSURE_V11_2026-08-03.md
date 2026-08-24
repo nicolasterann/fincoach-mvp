@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Informe para Claude — M0 v11: cierre determinista de ME7/ME10a/ME10aa
 
 Fecha: 2026-08-03  

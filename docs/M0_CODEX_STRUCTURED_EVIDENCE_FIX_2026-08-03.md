@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Informe para Claude — reparación de ME2 sobre evidencia financiera estructurada
 
 Fecha: 2026-08-03  

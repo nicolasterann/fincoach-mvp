@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 Loop — Reporte Etapa 3C / ronda 1U — 2026-08-15
 
 Estado: implementación completa, sin DDL y sin muestras pagadas, lista para auditoría de Claude. La corrida loop final pre-autorizada por A7-4 NO se ejecutó: corresponde después de la verificación de este delta. El gasto pagado de esta ronda fue USD 0 y el acumulado real de Etapa 3 permanece en aproximadamente USD 17.82.

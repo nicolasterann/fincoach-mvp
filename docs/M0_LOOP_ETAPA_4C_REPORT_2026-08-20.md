@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 loop — Reporte Etapa 4C / contrato 1AH
 
 Fecha: 2026-08-20  

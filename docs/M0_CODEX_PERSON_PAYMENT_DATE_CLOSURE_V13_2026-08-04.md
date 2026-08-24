@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Informe para auditoría externa — M0 v13: fecha de pagos entre personas y errores de payload
 
 **Fecha:** 2026-08-04  

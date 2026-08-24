@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Relevo de implementación y auditoría — Bloque M0
 
 > **CHECKPOINT HISTÓRICO, NO ESTADO ACTUAL.** Este archivo conserva el relevo

@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 Tool Loop — Etapa 1B — reporte de bloqueo post-adenda
 
 Fecha: 2026-08-14  

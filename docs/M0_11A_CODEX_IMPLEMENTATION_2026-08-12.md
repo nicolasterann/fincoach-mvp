@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0.11A — informe de implementación de Codex para auditoría de Claude
 
 > **HISTÓRICO, SUPERADO POR EL RE-AUDIT.** Claude aplicó la 112 y su primera

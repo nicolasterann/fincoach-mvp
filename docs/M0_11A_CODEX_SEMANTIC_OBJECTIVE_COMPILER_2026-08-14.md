@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0.11A — compilador de objetivo semántico y cierre anti-bot
 
 > **HISTÓRICO, SUPERADO POR LA PASADA SUSTRACTIVA.** La auditoría de este

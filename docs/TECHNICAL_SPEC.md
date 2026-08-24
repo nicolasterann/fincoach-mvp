@@ -45,9 +45,9 @@ Channel adapters must be separate from the financial engine.
 
 > NOTA: este pipeline lineal es el FALLBACK determinista. La ruta primaria es
 > el loop de tool-calling del agente LLM — ver docs/AI_NATIVE_ARCHITECTURE.md.
-> `KIPU_AGENT_MODE` (`off` | `shadow` | `on`) selecciona la ruta; producción corre
-> `on` (beta founder/familia): el agente es el primario y el legacy corre solo
-> como fallback de emergencia (los gates que el agente ya posee se saltan).
+> `KIPU_AGENT_MODE` (`off` | `loop`) selecciona la ruta; producción corre
+> `loop` (beta founder/familia). `off` es el rollback explícito al pipeline
+> legacy congelado; `on`/`shadow` sólo sobreviven como aliases de compatibilidad.
 
 Flow:
 Channel -> Message Normalizer -> Intent Parser -> Financial Engine -> Coach Response Generator -> Channel

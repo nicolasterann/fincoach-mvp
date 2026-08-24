@@ -715,10 +715,10 @@ The system is multichannel from day one.
 future channel. Telegram, WhatsApp, and internal app chat are channel
 adapters only. The financial engine must remain independent.
 
-Flow (production, KIPU_AGENT_MODE=on):
-Channel -> Kipu Agent (LLM + live financial memory) -> typed tools (122, incl. plan_reserve_withdrawal) -> Financial Engine -> natural coach reply -> Channel
+Flow (production, KIPU_AGENT_MODE=loop):
+Channel -> Kipu Agent native loop (LLM + live financial memory) -> typed tools (~124, incl. plan_reserve_withdrawal) -> Financial Engine -> natural coach reply -> Channel
 
-With `KIPU_AGENT_MODE=on`, the deterministic legacy pipeline never reinterprets
+With `KIPU_AGENT_MODE=loop`, the deterministic legacy pipeline never reinterprets
 an agent delivery. A failure cannot silently switch the user from an intelligent
 financial assistant to a route-based bot.
 

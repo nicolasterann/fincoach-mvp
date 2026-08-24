@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 — Etapa 3E / ronda 1W — Reporte pre-aplicación de migración 117
 
 Fecha: 2026-08-15  

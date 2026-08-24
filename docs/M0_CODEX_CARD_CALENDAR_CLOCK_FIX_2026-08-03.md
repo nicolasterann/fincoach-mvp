@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Informe para auditoría externa — M0, tarjeta/calendario y reloj durable
 
 Fecha: 2026-08-03  

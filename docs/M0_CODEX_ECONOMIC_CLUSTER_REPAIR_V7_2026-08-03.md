@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Informe para Claude — reparación del racimo económico M0 (handshake v7)
 
 Fecha: 2026-08-03  

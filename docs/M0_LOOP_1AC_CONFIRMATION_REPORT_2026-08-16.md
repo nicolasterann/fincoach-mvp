@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 loop — Enfocada de confirmación posterior a 1AC
 
 Fecha: 2026-08-16  

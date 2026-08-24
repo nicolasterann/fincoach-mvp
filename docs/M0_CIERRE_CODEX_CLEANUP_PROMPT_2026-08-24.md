@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 · CIERRE — Instrucción exacta para Codex: limpieza del stack envelope + docs de cierre
 
 Fecha: 2026-08-24 · Autor: Claude (Fable) · Autoriza: founder (mandato verbal

@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 — handoff v19: el sujeto de una mutación no es un participio
 
 Fecha: 2026-08-08  

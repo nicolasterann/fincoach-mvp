@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0.11A — provenance de valores materializados por el servidor
 
 Fecha: 2026-08-13  
