@@ -5,6 +5,21 @@
 > CONSTRUIDO (newest-first). `docs/ROADMAP_MVP.md` es arqueología del plan
 > original de 13 fases y no se ejecuta.
 
+> **Cierre M0 (2026-08-24) — loop nativo único + limpieza del envelope**
+> · rama `m0-closure-cleanup` · commit `COMMIT_PLACEHOLDER_M0_CLOSURE`.
+> Producción conserva como único cerebro AI el tool-calling loop y como rollback
+> explícito el pipeline legacy `off`. Se eliminaron por alcanzabilidad el planner
+> envelope, validadores/compiladores y barreras de publicación v29–v44, recovery
+> de intake de ese camino, challenges 088 no alcanzables y su harness de modelo.
+> `AgentMode` quedó en `off | loop` (`on`/`shadow` son aliases con warning).
+> Balance de la limpieza antes del reporte: `+2.134 / -28.108` líneas, neto
+> `-25.974` (`código+harness -23.115`; documentación `-2.859`). Toda garantía viva
+> del loop, tools, manifiesto durable, builders, MoneyRead, motor, PostgreSQL y
+> fallback `off` permanece fijada por capture, mutaciones, sondas y E2E. Vara de
+> cierre: muestra real 35/35, nueve+ clases de defecto con red permanente y gates
+> completos verdes. Bloque M queda activo y desbloqueado; migraciones 001–124
+> aplicadas, próxima 125.
+
 > **Bloque I (2026-07-19) — Que ningún número pueda inflarse solo (migraciones
 > 056–065, commit final `7a575cf`).** Un barrido de 6 agentes con refutador
 > dedicado encontró **21 fail-opens confirmados** de 32 reportados; las cuotas
@@ -1356,8 +1371,8 @@ Todo production-live en www.soykipu.com. **Siguiente: [docs/ROADMAP.md](./ROADMA
 — el roadmap VIVO y la única fuente del orden de trabajo.** Hoy: Bloque I (que ningún
 número pueda inflarse solo) EN CURSO.
 
-- **Agent:** `KIPU_AGENT_MODE=on` in production — the AI-native agent is the primary
-  brain; the legacy deterministic pipeline is fallback-only. `TRANSACTION_PARSER_MODE=
+- **Agent:** `KIPU_AGENT_MODE=loop` in production — the native tool-calling loop is
+  the primary brain; `off` is the frozen legacy rollback. `TRANSACTION_PARSER_MODE=
   ai_with_basic_fallback`. Model default `gpt-5.4` (`OPENAI_COACH_MODEL`). 115 typed
   tools (últimas: resolución del calendario universal en Bloque C;
   `plan_reserve_withdrawal` en Bloque F; `create_installment_plan`/

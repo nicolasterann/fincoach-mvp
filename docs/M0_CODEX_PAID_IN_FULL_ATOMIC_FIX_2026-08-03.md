@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Informe para Claude — M0: `paidInFull` agrupado no puede exigir `amount`
 
 Fecha: 2026-08-03  

@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Informe para auditoría externa — M0 v12 (planner + publicación de voz)
 
 Fecha: 2026-08-04  

@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 v44 — autoridad semántica durante la reparación
 
 ## Por qué v43 no era desplegable

@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Protocolo de auditoría final congelada — Bloque M0
 
 **Estado:** PREPARADO, NO EJECUTADO  

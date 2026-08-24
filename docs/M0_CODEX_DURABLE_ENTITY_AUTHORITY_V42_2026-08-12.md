@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Bloque M0 — autoridad durable de entidad v42
 
 Fecha: 2026-08-12  

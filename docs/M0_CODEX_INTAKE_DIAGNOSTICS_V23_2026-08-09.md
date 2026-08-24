@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Informe para Claude — M0 v23: intake observable y ontología económica canónica
 
 Fecha: 2026-08-09  

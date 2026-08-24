@@ -1,7 +1,6 @@
 import {
   agentMode,
   antiBotContinuityReply,
-  runKipuAgent,
   type RunKipuAgentResult,
 } from "@/lib/ai/agent/kipu-agent";
 import { runKipuAgentLoop } from "@/lib/ai/agent/kipu-agent-loop";
@@ -81,14 +80,13 @@ const FRIENDLY_FAIL =
   "No pude leer eso bien. ¿Me lo reenvías o me lo cuentas en una frase? Con eso lo dejo registrado.";
 
 function evidenceAgentModeEnabled(): boolean {
-  const mode = agentMode();
-  return mode === "on" || mode === "loop";
+  return agentMode() === "loop";
 }
 
 function runEvidenceAgent(
-  input: Parameters<typeof runKipuAgent>[0],
+  input: Parameters<typeof runKipuAgentLoop>[0],
 ): Promise<RunKipuAgentResult> {
-  return agentMode() === "loop" ? runKipuAgentLoop(input) : runKipuAgent(input);
+  return runKipuAgentLoop(input);
 }
 const RETRY_LATER =
   "Tuve un problema momentáneo procesando tu envío. Reenvíamelo en un momento y lo registro.";

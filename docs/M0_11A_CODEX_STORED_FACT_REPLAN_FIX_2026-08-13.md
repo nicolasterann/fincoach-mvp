@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0.11A — registro de hechos persistidos y contrato read/replan
 
 Fecha: 2026-08-13  

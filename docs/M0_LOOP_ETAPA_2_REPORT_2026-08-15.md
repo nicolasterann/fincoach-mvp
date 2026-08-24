@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 Tool Loop — Etapa 2 — batería de tres carriles
 
 Fecha: 2026-08-15  

@@ -1,3 +1,6 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+> Sus ADENDAs constituyen el expediente de implementación, auditoría y cierre de M0.
+
 # M0 — Auditoría independiente de Claude y plan de salida por loop nativo
 
 Fecha: 2026-08-14

@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 — pending por capacidad objetivo, no por autor (v16)
 
 Fecha: 2026-08-08  

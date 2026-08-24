@@ -1,10 +1,4 @@
 import {
-  agentActionPayloadHash,
-  liveAgentActionChallengeDeps,
-  type AgentActionChallengeDeps,
-  type AgentActionChallengeReason,
-} from "@/lib/ai/agent/agent-action-challenges";
-import {
   batchMovementAmountAssociationsProven,
   monetaryClaimsFromToolArgs,
   emphasizedStatedAmounts,
@@ -18,13 +12,17 @@ import { correctivePhrasing } from "@/lib/capture/capture-matching";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import { loopActionSecondDeliveryReasons } from "@/lib/ai/agent/agent-operation-authority";
 
+export type AgentActionChallengeReason =
+  | "destructive"
+  | "sensitive_create"
+  | "unstated_amount";
+
 export interface AgentActionGuardContext {
   userId: string;
   channel?: ChatChannel;
   chatId?: string | null;
   operationId?: string | null;
   rawMessage: string;
-  challengeDeps?: AgentActionChallengeDeps;
   /** Operation-level authority from PostgreSQL. When present, the current
    * exact plan/action was already authorized as part of one manifest. */
   operationManifestAuthorized?: boolean;
@@ -159,22 +157,6 @@ const SENSITIVE_SOCIAL_TOOLS = new Set([
   "invite_household_member",
   "respond_household_invite",
 ]);
-const TOOLS_WITH_CONFIRM_FIELD = new Set([
-  "cancel_shared_expense",
-  "cancel_scheduled_payment",
-  "change_base_currency",
-  "close_account",
-  "close_card",
-  "remove_asset",
-  "remove_household_member",
-  "remove_recurring_shared_expense",
-  "schedule_change",
-  "unshare_movement",
-  "update_fixed_expense",
-  "update_goal",
-  "update_income",
-]);
-
 function socialActionReadyForConfirmation(
   toolName: string,
   args: Record<string, unknown>,
@@ -687,9 +669,8 @@ export interface GuardServerConfirmedActionResult {
   serverAuthorized: boolean;
 }
 
-/** A model-provided `confirm:true` is never proof. The first delivery can only
- * issue a durable challenge. A later, independently identified delivery claims
- * it; the DB rejects self-confirmation and double consumption. */
+/** The native loop may pass only an exact manifest-authorized action, or ask
+ * the dispatcher to include the staged action in a durable manifest. */
 export async function guardServerConfirmedActionWith(
   toolName: string,
   args: Record<string, unknown>,
@@ -747,8 +728,6 @@ export async function guardServerConfirmedActionWith(
         }
       : { result: null, authorizedArgs: args, serverAuthorized: false };
   }
-  const asksToConfirm =
-    options.readOnly !== true && explicitActionConfirmation(ctx.rawMessage);
   // Read-only calculations still need user-authored amounts/rates. They do not
   // need (and must not create) a durable write challenge: ask for the missing
   // input directly, then recompute. Otherwise the model can invent a purchase
@@ -761,80 +740,8 @@ export async function guardServerConfirmedActionWith(
       serverAuthorized: false,
     };
   }
-  if (!requirement && !asksToConfirm) {
-    return { result: null, authorizedArgs: args, serverAuthorized: false };
-  }
-
-  if (!ctx.channel || !ctx.operationId) {
-    return {
-      result: {
-        status: "error",
-        summary:
-          "No pude probar la identidad de esta entrega, así que no ejecuté la acción sensible ni escribí montos no declarados.",
-      },
-      authorizedArgs: args,
-      serverAuthorized: false,
-    };
-  }
-
-  const deps = ctx.challengeDeps ?? liveAgentActionChallengeDeps;
-  const payloadHash = agentActionPayloadHash(toolName, args);
-  const scope = {
-    userId: ctx.userId,
-    channel: ctx.channel,
-    chatId: ctx.chatId,
-    toolName,
-    payloadHash,
-    operationId: ctx.operationId,
-  };
-  const claimedPayload = asksToConfirm ? await deps.claim(scope) : null;
-  if (claimedPayload) {
-    return {
-      result: null,
-      authorizedArgs: {
-        ...claimedPayload,
-        ...(TOOLS_WITH_CONFIRM_FIELD.has(toolName)
-          ? { confirm: true }
-          : {}),
-        ...(Object.hasOwn(claimedPayload, "confirmDefaultSource")
-          ? { confirmDefaultSource: true }
-          : {}),
-      },
-      serverAuthorized: true,
-    };
-  }
-  // A bare confirmation may arrive with incomplete/different model args. We
-  // attempted the claim by trusted conversation+tool identity; if there was no
-  // pending proposal and the current args do not themselves require a challenge,
-  // there is nothing to issue or authorize.
   if (!requirement) {
-    return {
-      result: {
-        status: "needs_info",
-        summary:
-          "Ese sí no coincide con una propuesta pendiente guardada por el servidor. No ejecuté una acción reconstruida; vuelve a decir qué quieres hacer.",
-      },
-      authorizedArgs: args,
-      serverAuthorized: false,
-    };
-  }
-
-  const issued = await deps.issue({
-    ...scope,
-    reason: requirement.reason,
-    prompt: requirement.prompt,
-    payload: args,
-  });
-  if (!issued) {
-    return {
-      result: {
-        status: "error",
-        summary:
-          "No pude guardar una confirmación durable para esta acción. No ejecuté nada; reintenta.",
-      },
-      authorizedArgs: args,
-      serverAuthorized: false,
-    };
+    return { result: null, authorizedArgs: args, serverAuthorized: false };
   }
   return {
     result: { status: "needs_info", summary: requirement.prompt },

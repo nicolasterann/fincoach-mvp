@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 — Reporte Etapa 3 (head-to-head completo)
 
 Fecha: 2026-08-15

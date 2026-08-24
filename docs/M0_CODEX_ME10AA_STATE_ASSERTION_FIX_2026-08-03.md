@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 — relevo a Claude: ME10aa era una aserción contra una columna fantasma
 
 Fecha: 2026-08-03  

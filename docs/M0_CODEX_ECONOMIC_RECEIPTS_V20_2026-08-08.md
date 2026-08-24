@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 v20 — evidencia de publicación y undo económico
 
 Fecha: 2026-08-08  

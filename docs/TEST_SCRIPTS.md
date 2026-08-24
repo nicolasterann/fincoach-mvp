@@ -28,9 +28,9 @@ for what it covers and, more importantly, what it does NOT.
 
 Convention: ✅ = expected, ❌ = bug. Note known limitations inline.
 
-> **Production posture (2026-07).** `KIPU_AGENT_MODE=on`: the agent is the
-> primary brain (~115 typed tools, incl. `plan_reserve_withdrawal`); the
-> legacy pipeline runs ONLY as the emergency fallback. Scripts 5–29 document
+> **Production posture (2026-08).** `KIPU_AGENT_MODE=loop`: the native agent is
+> the primary brain (~124 typed tools, incl. `plan_reserve_withdrawal`); the
+> frozen legacy pipeline is an explicit rollback with `off`. Scripts 5–29 document
 > that fallback (`KIPU_AGENT_MODE=off`) unless noted; Scripts 30+ document
 > the agent. Chat, ambient nudges and the fallback all quote the SAME Saldo
 > Kipu the dashboard shows.
@@ -1830,8 +1830,8 @@ amount prompt). User sends "25" or "$25" out of the blue.
 ## Script 23 — Universal AI Message Router (personal financial ChatGPT)
 
 > **Scope note (posture-dependent).** Script 23 documents the **legacy
-> deterministic pipeline** (`KIPU_AGENT_MODE=off`, or the emergency fallback when
-> the agent fails). In production the agent is primary (`KIPU_AGENT_MODE=on`), and
+> deterministic pipeline** (`KIPU_AGENT_MODE=off`, the explicit emergency rollback).
+> In production the native loop is primary (`KIPU_AGENT_MODE=loop`), and
 > it owns capabilities the router only stubs — e.g. undo/correction (23.17) and
 > transfers (23.18) are **fully supported by the agent**, not "coming soon". Read
 > the "coming-soon" / "unsupported" copy below as *fallback-only* behavior, not as
@@ -2725,7 +2725,7 @@ exact phrasing. The agent must handle messages we never pre-coded. A test that
 asserts a literal sentence is a smell; assert *what happened* (the movement, the
 reversal, the question asked, the fact remembered) and *the tone*.
 
-**Preconditions.** `KIPU_AGENT_MODE=on`, `OPENAI_API_KEY` set,
+**Preconditions.** `KIPU_AGENT_MODE=loop`, `OPENAI_API_KEY` set,
 `OPENAI_COACH_MODEL` capable of tool-calling. With `off` (the `.env.example`
 default; production runs `on`) the legacy pipeline runs and Scripts 1–29 hold
 unchanged. On any agent failure, the legacy
@@ -2812,7 +2812,7 @@ pipeline answers — so reliability never regresses.
   same.
 
 ### Stage 3 — agent is primary, legacy is the emergency net
-- **30.24** In `KIPU_AGENT_MODE=on`, the agent owns the flow; `runChatPipeline`
+- **30.24** In `KIPU_AGENT_MODE=loop`, the agent owns the flow; `runChatPipeline`
   runs only on agent failure. The agent-era recovery-confirmation / transfer /
   commitment gates are skipped while the agent is primary (`agentMode() !==
   "on"` guard) — they do NOT run in normal production. The remaining fallback
@@ -2848,7 +2848,7 @@ on any failure. Production runs `on`; `off` remains the safety net and the
 wellness metrics each turn; the agent gets a compact briefing in its prompt and
 a `get_proactive_briefing` tool. Test by BEHAVIOR (did it notice? did it help
 without guilt?), never exact phrasing. All read-only; no writes; requires
-`KIPU_AGENT_MODE=on` (the production posture).
+`KIPU_AGENT_MODE=loop` (the production posture).
 
 ### Proactive awareness
 - **31.1** With a card due in a few days (debt balance + `due_day`), after a log
@@ -2893,7 +2893,7 @@ without guilt?), never exact phrasing. All read-only; no writes; requires
 proactive nudges must feel like an intelligent coach with memory, not a
 repeating alarm. **Requires migration `014_stage5_liquidity_and_coach_state.sql`
 applied first** (adds `accounts.liquidity`, `coach_nudge_log`, `user_engagement`).
-Test by behavior; requires `KIPU_AGENT_MODE=on` (the production posture).
+Test by behavior; requires `KIPU_AGENT_MODE=loop` (the production posture).
 
 ### Liquidity / availability realism
 - **32.1** "esa cuenta de ahorro no la cuentes para gastar" / "es inversión" →
@@ -2938,7 +2938,7 @@ Test by behavior; requires `KIPU_AGENT_MODE=on` (the production posture).
 
 ## Script 33 — Stage 6: Margen Kipu (cash-flow-aware safe spending margin)
 
-Requires `KIPU_AGENT_MODE=on` and migrations `014` + `015` applied. Behavior-
+Requires `KIPU_AGENT_MODE=loop` and migrations `014` + `015` applied. Behavior-
 level (judge the reasoning and the simple communication, not exact phrasing).
 
 > **Note (Bloque D).** "Margen Kipu" was retired as a visible brand;
@@ -3434,7 +3434,7 @@ is automated; run these gates instead of long manual sessions.
 
 ## Script 40 — Stage 12: universal capture (one truth, many evidence sources)
 
-Behavior-level QA for the capture system. Requires `KIPU_AGENT_MODE=on` for
+Behavior-level QA for the capture system. Requires `KIPU_AGENT_MODE=loop` for
 the full experience (off → honest degradation, see 40.14). Migration 017 must
 be applied.
 
@@ -3912,7 +3912,7 @@ After any change to onboarding, parser, save flow, or coach:
       and H.1–H.52.
 - [ ] Smoke against a real environment with disposable users: `scripts/qa/`
       (never against the founder's data).
-- [ ] Posture: `KIPU_AGENT_MODE=on` — chat, ambient and fallback quote the
+- [ ] Posture: `KIPU_AGENT_MODE=loop` — chat, ambient and rollback quote the
       SAME Saldo Kipu the dashboard shows; `/app/margen`, `/app/readiness`,
       `/app/precision` and `/app/reality` remain redirects to `/app/saldo`.
 

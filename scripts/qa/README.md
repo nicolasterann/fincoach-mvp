@@ -197,12 +197,13 @@ misma ontología que valida el payload; los rechazos de provenance devuelven el
 set exacto faltante/sobrante; y lifecycle + segunda entrega comparten una sola
 fuente entre prompt y validador. Los mutantes M0M441–448 cortan cada consumo.
 
-Con servidor local, `KIPU_AGENT_MODE=on` y un secreto QA independiente, ejecutar
-el modelo de producción:
+Con servidor local, `KIPU_AGENT_MODE=loop` y un secreto QA independiente,
+ejecutar el loop de producción. Este runner contiene los 35 carriles vivos;
+Claude corre la muestra paga de cierre, no el implementador de la limpieza:
 
 ```bash
-M0_EVAL_SECRET='<secreto-local>' KIPU_AGENT_MODE=on npm run dev
-M0_EVAL_SECRET='<secreto-local>' node --env-file=.env.local ./scripts/qa/m0-model-conversation-e2e.mjs
+M0_EVAL_SECRET='<secreto-local>' KIPU_AGENT_MODE=loop npm run dev
+M0_EVAL_SECRET='<secreto-local>' node --env-file=.env.local ./scripts/qa/m0-loop-conversation-e2e.mjs --mode=loop
 ```
 
 Si el shell de auditoría mata comandos que exceden diez minutos, lanzar la
@@ -210,15 +211,15 @@ misma muestra una sola vez como worker desacoplado (hereda las variables ya
 cargadas y conserva el exit real):
 
 ```bash
-node --env-file=.env.local ./scripts/qa/run-m0-model-e2e-background.mjs m0-11a-wire
+node --env-file=.env.local ./scripts/qa/run-m0-loop-conversation-background.mjs m0-closure --mode=loop
 ```
 
 El launcher devuelve inmediatamente las rutas `/tmp/...log`,
 `/tmp/...status.json` y el pid. El auditor espera el status `finished`; no
 vuelve a lanzar la muestra por timeout del cliente. El proceso sigue usando el
-mismo runner, handshake, cleanup y criterio 24/24.
+mismo runner, handshake, cleanup y criterio 35/35.
 
-Resultado esperado para el re-audit M0.11A: **24/24**, exit 0 y residuo cero
+Resultado esperado para el cierre M0: **35/35**, exit 0 y residuo cero
 en **una sola** corrida completa sobre el árbol/servidor congelado. Ante el
 primer rojo se detiene, se diagnostica por razón tipada y sólo se vuelve a
 muestrear después de cambiar el código. Las corridas previas sirven como

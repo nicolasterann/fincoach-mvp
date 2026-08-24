@@ -1,7 +1,7 @@
 # Kipu — Deployment Readiness
 
-> **Estado (2026-07-16, HEAD post-Bloque H).** Kipu está desplegado en producción
-> (**www.soykipu.com**, Vercel), en beta founder/familia con `KIPU_AGENT_MODE=on`
+> **Estado (2026-08-24, cierre M0).** Kipu está desplegado en producción
+> (**www.soykipu.com**, Vercel), en beta founder/familia con `KIPU_AGENT_MODE=loop`
 > como postura de producción. Este documento es el checklist del operador:
 > variables de entorno de producción, el estado de migraciones (001–055 aplicadas),
 > y los cinco crons de `vercel.json`. La historia por stage vive en
@@ -36,7 +36,7 @@ producción usa la postura AI-native. Grupos:
 - **OpenAI:** `OPENAI_API_KEY`, `OPENAI_COACH_MODEL` (default `gpt-5.4`),
   `OPENAI_ONBOARDING_MODEL`, `OPENAI_TRANSACTION_PARSER_MODEL`, `OPENAI_VISION_MODEL`,
   `OPENAI_TRANSCRIPTION_MODEL`.
-- **Modos de Kipu (producción):** `KIPU_AGENT_MODE=on`,
+- **Modos de Kipu (producción):** `KIPU_AGENT_MODE=loop` (rollback explícito: `off`),
   `TRANSACTION_PARSER_MODE=ai_with_basic_fallback`, `ONBOARDING_ENGINE_MODE=ai_with_mock_fallback`,
   `COACH_RESPONSE_MODE` (según posture del coach).
 - **URLs:** `NEXT_PUBLIC_SITE_URL=https://www.soykipu.com`,

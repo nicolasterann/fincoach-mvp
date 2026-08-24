@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 — Etapa 3F / ronda 1X — Reporte TS-only post-aplicación de 117
 
 Fecha: 2026-08-15  

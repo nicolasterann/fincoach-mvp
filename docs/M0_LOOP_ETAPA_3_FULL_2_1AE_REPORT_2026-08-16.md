@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 loop — Enfocada 1AE y corrida completa 2 de 3
 
 Fecha: 2026-08-16 / finalización UTC 2026-08-17 02:00  

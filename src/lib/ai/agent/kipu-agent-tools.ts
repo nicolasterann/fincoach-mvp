@@ -96,7 +96,6 @@ import {
   statedAmounts,
   type NamedStoredMoneyFact,
 } from "@/lib/capture/amount-evidence";
-import type { AgentActionChallengeDeps } from "@/lib/ai/agent/agent-action-challenges";
 import {
   openCardPaymentCaptureDraft,
   readOpenCardPaymentCaptureDraft,
@@ -353,10 +352,6 @@ export interface AgentContext {
    * los de operaciones abiertas de esta conversación con pregunta pendiente.
    * La autoridad de entidad NO se amplía (v42). */
   monetaryAuthorityMessages?: string[];
-  /** M0 — capabilities selected only after the model produced a validated
-   * plan. When present, the executor refuses every tool outside that plan even
-   * if a future orchestration bug accidentally exposes it. */
-  plannedCapabilities?: Set<string>;
   durableOperationId?: string | null;
   /** Live server-issued lease for this exact durable operation worker. Domain
    * RPCs compare it under lock so a timed-out worker cannot write during a
@@ -371,20 +366,10 @@ export interface AgentContext {
    * request-local and is copied into loopAdvisories/assistantMetadata. */
   modelAuthorityAdvisories?: ModelAuthorityCounterAdvisory[];
   /** Loop-only complete typed catalog facts used to subtract a named stored
-   * amount from the generic multi-money trigger. Undefined preserves v44/on. */
+   * amount from the generic multi-money trigger. */
   serverVerifiedDeclaredStoredFacts?: readonly NamedStoredMoneyFact[];
   operationManifestHash?: string | null;
   operationTransitionKind?: string | null;
-  plannedActions?: Array<{
-    id: string;
-    capability: string;
-    arguments: Record<string, unknown>;
-    effects: Array<Record<string, unknown>>;
-    provenance: AgentValueProvenance[];
-    dependsOn: string[];
-    consumed: boolean;
-    outcome: "pending" | "succeeded" | "needs_input" | "failed";
-  }>;
   activePlannedAction?: {
     id: string;
     capability: string;
@@ -413,10 +398,6 @@ export interface AgentContext {
   // turn is idempotent at the ledger boundary. `dedupeOcc` counts identical
   // fingerprints within the turn; `reconcileSeq` numbers reconciliations.
   operationId?: string | null;
-  // First-principles J closure: sensitive/destructive actions and any monetary
-  // values absent from the current user delivery need a durable server-issued
-  // challenge. Tests inject this seam; production uses the locked DB RPCs.
-  challengeDeps?: AgentActionChallengeDeps;
   dedupeOcc?: Map<string, number>;
   reconcileSeq?: { n: number };
   // Within-turn freshness: write executors set `dirty` after a successful write
@@ -17730,18 +17711,6 @@ export function toolArgumentFailureDisposition(
     : "error";
 }
 
-function plannedEconomicClassifications(ctx: AgentContext): Set<string> {
-  return new Set(
-    (ctx.activePlannedAction?.effects ?? [])
-      .map((effect) =>
-        typeof effect.classification === "string"
-          ? effect.classification
-          : "",
-      )
-      .filter(Boolean),
-  );
-}
-
 /** Monetary authority that comes from typed, current server state rather than
  * from a number the model copied into its payload. This is deliberately a
  * path-level proof registry: each new derived amount needs its own exact
@@ -17870,75 +17839,6 @@ export function loopServerVerifiedStoredMonetaryClaimPaths(
  * boundary that prevents a phrase about returned capital from turning into
  * income or a new liability because a second model pass chose a different
  * enum. No lexical classifier participates. */
-function plannedEconomicCompatibility(
-  name: string,
-  args: Record<string, unknown>,
-  ctx: AgentContext,
-): ToolResult | null {
-  if (!ctx.activePlannedAction) return null;
-  const classifications = plannedEconomicClassifications(ctx);
-  let expected: string | null = null;
-  if (name === "log_movement") {
-    const type = String(args.type ?? "");
-    expected =
-      type === "income"
-        ? "income"
-        : type === "expense"
-          ? "expense"
-          : type === "debt_payment"
-            ? "payment"
-            : null;
-  } else if (name === "log_movements_batch") {
-    const rows = Array.isArray(args.movements) ? args.movements : [];
-    const incomeRows = rows.filter(
-      (row) =>
-        row &&
-        typeof row === "object" &&
-        String((row as Record<string, unknown>).type ?? "") === "income",
-    ).length;
-    const plannedIncome = [...classifications].filter(
-      (classification) => classification === "income",
-    ).length;
-    const incompatibleInflow = [...classifications].some((classification) =>
-      [
-        "debt_proceeds",
-        "receivable_repayment",
-        "capital_return_unrecorded",
-        "refund",
-      ].includes(classification),
-    );
-    if (incomeRows > 0 && (plannedIncome === 0 || incompatibleInflow)) {
-      return {
-        status: "refused",
-        summary:
-          "El lote contiene una entrada que no está validada como ingreso. No registré ninguna fila; separa devoluciones, reembolsos o deuda recibida en su herramienta económica.",
-      };
-    }
-  } else if (name === "record_person_payment" && args.direction === "in") {
-    expected =
-      args.inflowKind === "income"
-        ? "income"
-        : args.inflowKind === "refund"
-          ? "refund"
-          : args.inflowKind === "loan_repayment"
-            ? "receivable_repayment"
-            : args.inflowKind === "borrowed"
-              ? "debt_proceeds"
-              : args.inflowKind === "capital_return_unrecorded"
-                ? "capital_return_unrecorded"
-                : null;
-  }
-  if (expected && !classifications.has(expected)) {
-    return {
-      status: "refused",
-      summary:
-        `La herramienta propone ${expected}, pero ése no es el efecto económico validado por el plan. ` +
-        "No moví dinero; vuelve a planificar quién debía a quién y qué balance cambia.",
-    };
-  }
-  return null;
-}
-
 export async function executeTool(
   name: string,
   inputArgs: Record<string, unknown>,
@@ -17957,58 +17857,6 @@ export async function executeTool(
 ): Promise<ToolResult> {
   let args = inputArgs;
   const loopMode = options.mode === "loop";
-  if (!loopMode && ctx.plannedCapabilities && !ctx.plannedCapabilities.has(name)) {
-    return {
-      status: "refused",
-      summary:
-        "Esa capacidad no pertenece al plan validado de esta operación. No ejecuté nada; vuelve a planificar con el pedido completo.",
-    };
-  }
-  if (!loopMode && ctx.plannedActions) {
-    const canonical = (value: unknown): string => {
-      if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-      if (value && typeof value === "object") {
-        const row = value as Record<string, unknown>;
-        return `{${Object.keys(row)
-          .sort()
-          .map((key) => `${JSON.stringify(key)}:${canonical(row[key])}`)
-          .join(",")}}`;
-      }
-      return JSON.stringify(value);
-    };
-    const planned = ctx.plannedActions.find(
-      (action) =>
-        !action.consumed &&
-        action.capability === name &&
-        canonical(action.arguments) === canonical(inputArgs),
-    );
-    if (!planned) {
-      return {
-        status: "refused",
-        summary:
-          "La llamada no coincide con ningún paso exacto del plan validado. No ejecuté nada; vuelve a planificar con los datos actuales.",
-      };
-    }
-    const blockedDependency = planned.dependsOn.find((dependency) => {
-      const prior = ctx.plannedActions?.find((action) => action.id === dependency);
-      return !prior || prior.outcome !== "succeeded";
-    });
-    if (blockedDependency) {
-      return {
-        status: "refused",
-        summary:
-          "Un paso anterior del plan todavía no está verificado. No ejecuté este paso ni adelanté sus efectos.",
-      };
-    }
-    planned.consumed = true;
-    ctx.activePlannedAction = {
-      id: planned.id,
-      capability: planned.capability,
-      arguments: planned.arguments,
-      effects: planned.effects,
-      provenance: planned.provenance,
-    };
-  }
   if (loopMode) {
     // Gate 3 remains active but correctly sees no planner algebra in native
     // mode. The durable marker describes economic class, not a fabricated
@@ -18016,8 +17864,6 @@ export async function executeTool(
     // after this compatibility gate.
     ctx.activePlannedAction = null;
   }
-  const economicPlanGate = plannedEconomicCompatibility(name, args, ctx);
-  if (economicPlanGate) return economicPlanGate;
   if (loopMode) {
     const step = options.loopStep;
     if (!step || step.capability !== name) {

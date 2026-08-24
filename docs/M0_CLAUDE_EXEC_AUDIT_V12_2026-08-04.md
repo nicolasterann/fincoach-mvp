@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # Certificación externa de M0 — decimotercera ronda (runtime v12)
 
 **Fecha:** 2026-08-04 · **Auditor:** Claude (sesión externa)

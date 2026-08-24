@@ -6,7 +6,6 @@
 //   node --env-file=.env.local scripts/qa/m0-loop-conversation-e2e.mjs --mode=loop --dry-run
 //   node --env-file=.env.local scripts/qa/m0-loop-conversation-e2e.mjs --mode=loop --ola0
 //   node --env-file=.env.local scripts/qa/m0-loop-conversation-e2e.mjs --mode=loop --smoke
-//   node --env-file=.env.local scripts/qa/m0-loop-conversation-e2e.mjs --mode=on
 
 import fsHooks from "node:fs";
 import pathHooks from "node:path";
@@ -63,14 +62,8 @@ const requestedScenarios = new Set(
     .map((value) => value.trim())
     .filter(Boolean),
 );
-if (mode !== "loop" && mode !== "on") {
-  throw new Error("--mode=loop|on is required");
-}
-if (dryRun && mode !== "loop") {
-  throw new Error("--dry-run is available only with --mode=loop");
-}
-if (ola0 && mode !== "loop") {
-  throw new Error("--ola0 is available only with --mode=loop");
+if (mode !== "loop") {
+  throw new Error("--mode=loop is required");
 }
 if (ola0 && (dryRun || smoke)) {
   throw new Error("--ola0 cannot be combined with --dry-run or --smoke");
@@ -1649,7 +1642,7 @@ async function turn(persona, message, options = {}) {
     httpOk:
       response.ok &&
       body?.ok === true &&
-      body?.contract === "m0-agent-eval-2026-08-14-subtractive-semantic-plan-m0-11a" &&
+      body?.contract === "m0-agent-eval-2026-08-24-native-loop-closure" &&
       body?.mode === mode,
     httpStatus: response.status,
     error: response.ok
@@ -7746,7 +7739,7 @@ function estimatedCost() {
     basis: mockRun
       ? "MOCK token telemetry plus a deterministic paraphrase allowance, scaled to the complete catalog"
       : "observed smoke/full telemetry plus a deterministic paraphrase allowance, scaled to the complete catalog",
-    baseline: mode === "on" ? "hybrid v44+M0.11A" : "native loop",
+    baseline: "native loop",
     scenarios: SCENARIOS.length,
     estimatedTurns: fullTurns,
     tokens: full,
@@ -7761,8 +7754,18 @@ async function handshake() {
     headers: { "content-type": "application/json" },
     body: "{}",
   });
-  if (unauthenticated.status !== 404) {
-    throw new Error(`local bridge accepted missing authority: HTTP ${unauthenticated.status}`);
+  const wrongSecret = await evaluationFetch({
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer deliberately-wrong-m0-eval-secret",
+    },
+    body: "{}",
+  });
+  if (unauthenticated.status !== 404 || wrongSecret.status !== 404) {
+    throw new Error(
+      `local bridge accepted invalid authority: missing=${unauthenticated.status} wrong=${wrongSecret.status}`,
+    );
   }
   const health = await evaluationFetch({
     method: "POST",
@@ -7772,7 +7775,7 @@ async function handshake() {
   const parsed = await parseHttpJson(health);
   if (
     health.status !== 400 ||
-    parsed.body?.contract !== "m0-agent-eval-2026-08-14-subtractive-semantic-plan-m0-11a" ||
+    parsed.body?.contract !== "m0-agent-eval-2026-08-24-native-loop-closure" ||
     parsed.body?.mode !== mode
   ) {
     throw new Error(
@@ -7780,7 +7783,7 @@ async function handshake() {
     );
   }
   console.log(
-    `Handshake: contract=${parsed.body.contract} mode=${parsed.body.mode} baseline=${mode === "on" ? "HÍBRIDO v44+M0.11A" : "loop nativo"}`,
+    `Handshake: contract=${parsed.body.contract} mode=${parsed.body.mode} baseline=loop nativo`,
   );
 }
 

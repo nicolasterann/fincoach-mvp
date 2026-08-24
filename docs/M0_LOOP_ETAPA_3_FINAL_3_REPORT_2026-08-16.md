@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 — Etapa 3 — Corrida final 3 / 1Y — Acta final no-verde
 
 Fecha: 2026-08-16  

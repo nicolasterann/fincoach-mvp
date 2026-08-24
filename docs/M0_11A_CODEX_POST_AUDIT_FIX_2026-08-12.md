@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0.11A — reparación posterior al primer audit de PostgreSQL
 
 Fecha: 2026-08-12  

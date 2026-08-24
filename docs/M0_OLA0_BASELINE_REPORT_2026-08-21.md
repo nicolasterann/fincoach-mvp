@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0 — Plan «Fricción Cero» — Ola 0 / línea base
 
 Fecha: 2026-08-21  

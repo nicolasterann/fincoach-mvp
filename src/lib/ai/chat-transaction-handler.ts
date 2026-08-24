@@ -29,8 +29,6 @@ import { looksLikeCommitmentish } from "@/lib/ai/commitment-classifier";
 import {
   agentMode,
   antiBotContinuityReply,
-  runKipuAgent,
-  type AgentPublicationRecovery,
 } from "@/lib/ai/agent/kipu-agent";
 import {
   runKipuAgentLoop,
@@ -219,9 +217,6 @@ export async function handleChatTransactionMessage(
     if (agentMode() === "loop" && !input.requestId && !input.evidenceId) {
       throw new Error("Loop agent deliveries require a stable request identity.");
     }
-    if (agentMode() === "on" && !input.requestId && !input.evidenceId) {
-      throw new Error("Agent deliveries require a stable request identity.");
-    }
     const userOperationKey = deliveryChatOperationKey(input, "user");
     const userAppend = await appendChatMessageWithStatus({
       userId,
@@ -288,7 +283,7 @@ export async function handleChatTransactionMessage(
     }
   }
 
-  // AI-native front door: when the agent is ON, it reasons over live financial
+  // AI-native front door: in loop mode, Kipu reasons over live financial
   // memory and acts through safe tools. A production-agent failure is surfaced
   // as retryable below and NEVER authorizes the legacy writer to reinterpret
   // the same delivery through a different validation surface.
@@ -313,26 +308,6 @@ export async function handleChatTransactionMessage(
         stateVersion: number;
         plan: unknown;
       };
-      voiceAdvisories?: Array<{
-        code: "semantic_voice_rejected" | "response_requirements_omitted";
-        phase: "pending_question" | "final_reply";
-        issues: string[];
-        repairAttempted: boolean;
-        publishedCandidate: "initial" | "repair";
-      }>;
-      intakeFailure?: {
-        stage: string;
-        code: "intake_failed";
-        message: string;
-        attempts: number | null;
-        validationFailures: Array<{
-          attempt: number;
-          kind: "empty" | "invalid_json" | "contract";
-          reason: string;
-        }>;
-      };
-      publicationFailure?: string;
-      publicationRecovery?: AgentPublicationRecovery;
       }
     | null = null;
 
@@ -424,128 +399,6 @@ export async function handleChatTransactionMessage(
     }
   }
 
-  if (channel && agentMode() === "on") {
-    try {
-      const recentRead = await readRecentChatMessages({
-        userId,
-        channel,
-        chatId,
-        // M0: recency is one evidence source, not the operation memory. Keep a
-        // wider conversational window while durable operations carry work that
-        // may be older than any fixed slice.
-        limit: 30,
-      });
-      if (!recentRead.ok) throw new Error("Could not read recent conversation.");
-      const recent = recentRead.messages;
-      const current = (trimmedMessage || message).trim();
-      const prior = recent.filter(
-        (m, idx) =>
-          !(idx === recent.length - 1 && m.role === "user" && m.content.trim() === current),
-      );
-      const agentRes = await runKipuAgent({
-        userId,
-        message: current,
-        recentMessages: prior.map((m) => ({
-          role: m.role,
-          content: m.content,
-          messageType: m.messageType,
-          metadata: m.metadata,
-        })),
-        channel,
-        chatId,
-        evidenceId: input.evidenceId ?? null,
-        clarificationContext: input.clarificationContext ?? undefined,
-        operationId: input.evidenceId
-          ? evidenceOperationNamespace(input.evidenceId)
-          : input.requestId
-            ? chatOperationNamespace(channel, input.requestId)
-            : null,
-        rootMessageId: persistedUserMessageId,
-        deliveryKey: input.evidenceId
-          ? evidenceOperationNamespace(input.evidenceId)
-          : input.requestId
-            ? chatOperationNamespace(channel, input.requestId)
-            : null,
-      });
-      if (agentRes.deliveryInFlight) {
-        throw new AgentDeliveryInFlightError();
-      }
-      agentRun = {
-        ok: agentRes.ok,
-        outcome: agentRes.outcome,
-        pendingClarifications: agentRes.pendingClarifications,
-        durableOperation: agentRes.durableOperation,
-        voiceAdvisories: agentRes.voiceAdvisories,
-        intakeFailure: agentRes.intakeFailure,
-        publicationFailure: agentRes.publicationFailure,
-        publicationRecovery: agentRes.publicationRecovery,
-      };
-      if (agentRes.ok && agentRes.message) {
-        // Use the PRECISE tool outcome, not a tools-used heuristic: a turn that
-        // only read (evaluate_purchase, list_recent_movements, get_proactive_
-        // briefing) must not be labelled/telemetered as a financial write.
-        const wrote = agentRes.outcome.wrote;
-        result = buildChatActionResult({
-          message: agentRes.message,
-          redirectCode: wrote ? "chat-correction-created" : "chat-advisory",
-          assistantMetadata: {
-            agent: true,
-            toolsUsed: agentRes.toolsUsed,
-            toolTrace: agentRes.toolTrace,
-            agentPendingClarifications: agentRes.pendingClarifications,
-            agentRunOk: agentRes.ok,
-            agentOutcome: agentRes.outcome,
-            durableOperation: agentRes.durableOperation ?? null,
-            agentVoiceAdvisories: agentRes.voiceAdvisories ?? [],
-            agentIntakeFailure: agentRes.intakeFailure ?? null,
-            agentPublicationFailure: agentRes.publicationFailure ?? null,
-            agentPublicationRecovery: agentRes.publicationRecovery ?? null,
-            agentPlannerUsage: agentRes.plannerUsage ?? null,
-          },
-        });
-      } else if (!agentRes.ok) {
-        // Universal conversational circuit breaker. A deterministic layer may
-        // refuse execution, but it may not turn the chat into silence, a 500 or
-        // an internal error message. This response asserts no financial fact
-        // and grants no execution authority; `agentRunOk=false` remains visible
-        // to evidence lifecycle and operations telemetry.
-        const continuity = antiBotContinuityReply({
-          outcome: agentRes.outcome,
-          pendingClarifications: agentRes.pendingClarifications,
-        });
-        const continuityMessage = agentRes.message?.trim() || continuity.message;
-        result = buildChatActionResult({
-          message: continuityMessage,
-          redirectCode: "chat-advisory",
-          assistantMetadata: {
-            agent: true,
-            toolsUsed: agentRes.toolsUsed,
-            toolTrace: agentRes.toolTrace,
-            agentPendingClarifications: agentRes.pendingClarifications,
-            agentRunOk: false,
-            agentOutcome: agentRes.outcome,
-            durableOperation: agentRes.durableOperation ?? null,
-            agentVoiceAdvisories: agentRes.voiceAdvisories ?? [],
-            agentIntakeFailure: agentRes.intakeFailure ?? null,
-            agentPublicationFailure: agentRes.publicationFailure ?? null,
-            agentPublicationRecovery: agentRes.publicationRecovery,
-            agentPlannerUsage: agentRes.plannerUsage ?? null,
-          },
-        });
-      }
-    } catch (error) {
-      if (error instanceof AgentDeliveryInFlightError) throw error;
-      console.error("[chat] primary agent failed", {
-        userId,
-        channel,
-        requestId: input.requestId ?? null,
-        evidenceId: input.evidenceId ?? null,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      result = null;
-    }
-  }
-
   if (!result && channel && agentMode() === "loop") {
     result = buildChatActionResult({
       message: LOOP_AGENT_INFRASTRUCTURE_FAILURE_REPLY,
@@ -560,38 +413,6 @@ export async function handleChatTransactionMessage(
           needsInfo: false,
           correctionBlocked: false,
         },
-      },
-    });
-  } else if (!result && channel && agentMode() === "on") {
-    // Only infrastructure failure before `runKipuAgent` returned can reach
-    // here. Keep the conversation alive without letting the legacy financial
-    // brain reinterpret the same delivery.
-    result = buildChatActionResult({
-      message:
-        "No pude procesarlo ahora y no moví dinero. Envíame de nuevo este mismo mensaje; no necesitas explicar el contexto otra vez.",
-      redirectCode: "chat-advisory",
-      assistantMetadata: {
-        agent: true,
-        agentRunOk: false,
-        agentOutcome: {
-          wrote: false,
-          hadError: true,
-          needsInfo: false,
-          correctionBlocked: false,
-        },
-        agentPublicationRecovery: {
-          initialFailure: "turn_exception",
-          diagnostic: {
-            source: "turn",
-            stage: "chat_transaction_handler",
-            code: "agent_transport_exception",
-            detail:
-              "the primary agent threw before returning a typed conversational result",
-            validationFailures: [],
-          },
-          strategy: "safe_no_write_continuity",
-          repairAttempted: false,
-        } satisfies AgentPublicationRecovery,
       },
     });
   } else if (!result) {
@@ -792,7 +613,6 @@ async function runChatPipeline(
   // chat_messages metadata) and this reply is a yes/no, resolve it first — a
   // "sí, quítalo" must execute the recovery, not be read as a coach follow-up.
   if (
-    agentMode() !== "on" &&
     channel &&
     universalRouterEnabled() &&
     (detectAffirmation(trimmedMessage) || detectNegation(trimmedMessage))
@@ -821,7 +641,7 @@ async function runChatPipeline(
   // follow-up gate (so "20 del Pichincha" completing a transfer is not read as
   // coaching). The classifier returns not_transfer for anything that is really
   // a normal movement/goal contribution, so we fall through cleanly.
-  if (agentMode() !== "on" && universalRouterEnabled() && channel) {
+  if (universalRouterEnabled() && channel) {
     const recent = await getRecentChatMessages({ userId, channel, chatId, limit: 8 });
     const lastAssistant = [...recent].reverse().find((m) => m.role === "assistant");
     const transferPending = lastAssistant?.metadata?.transferPending as
@@ -858,7 +678,7 @@ async function runChatPipeline(
   // turn). Runs before the fixed-expense matcher so "actualiza internet a 30 al
   // mes" is treated as a definition change, not a payment. The classifier
   // returns "none" for plain logging, so normal payments fall through.
-  if (agentMode() !== "on" && universalRouterEnabled() && channel) {
+  if (universalRouterEnabled() && channel) {
     const recent = await getRecentChatMessages({ userId, channel, chatId, limit: 8 });
     const lastAssistant = [...recent].reverse().find((m) => m.role === "assistant");
     const commitmentPending = lastAssistant?.metadata?.commitmentPending as

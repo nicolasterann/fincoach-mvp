@@ -1,3 +1,5 @@
+> HISTÓRICO — M0 cerró el 2026-08-24; ver docs/ROADMAP.md.
+
 # M0.11A — relevo sustractivo: significado en el modelo, mecánica en runtime
 
 Fecha: 2026-08-14  
