@@ -848,7 +848,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "plan_goal_funding",
       description:
-        "Read-only. The goal-advisory CALCULATOR: every date⇄contribution number in a goal conversation comes from here, never from your own arithmetic. Give it the target (or goalId of an existing goal) plus whatever the user proposed — a target date, a contribution+cadence, both, or neither — and the engine returns exact figures: required contribution per week/biweek/month for that date, the reach date for that contribution, the feasible frontier (earliest possible date at full capacity, max affordable per cadence), a verdict on the user's own proposal (fits/short/over and by how much), and the engine's available monthly capacity for one more goal. Call it AGAIN on every renegotiation turn ('octubre muy lejos', 'baja el aporte') with the new inputs. For staged goals (e.g. flights before a trip) call it once per stage with each stage's amount and date. installmentMonths computes the interest-free card option (cuota mensual + whether it fits).",
+        "Read-only. The goal-advisory CALCULATOR: every date⇄contribution number in a goal conversation comes from here, never from your own arithmetic. Give it the target (or goalId of an existing goal) plus whatever the user proposed — a target date, a contribution+cadence, both, or neither — and the engine returns exact figures: required contribution per week/biweek/month for that date, the reach date for that contribution, the feasible frontier (earliest possible date at full capacity, max affordable per cadence), a verdict on the user's own proposal (fits/short/over and by how much), and the engine's available monthly capacity for one more goal. Call it AGAIN on every renegotiation turn ('octubre muy lejos', 'baja el aporte') with the new inputs. For staged goals (e.g. flights before a trip) call it once per stage; a SEQUENTIAL later stage passes startDateISO = the previous stage's target date so its math starts there (never quote the isolated frontier as a later stage's date). installmentMonths computes the interest-free card option (cuota mensual + whether it fits).",
       parameters: {
         type: "object",
         properties: {
@@ -857,6 +857,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           goalId: { type: "string", description: "Existing goal to evaluate/renegotiate (exact id, or its name when only one matches); pulls its target, saved amount and currency." },
           alreadySaved: { type: "number", description: "Amount already set aside. Defaults to the goal's current amount or 0." },
           targetDateISO: { type: "string", description: "Candidate target date YYYY-MM-DD (user's or yours to test)." },
+          startDateISO: { type: "string", description: "When the saving STARTS later than today — the key to SEQUENTIAL stages: for a stage that begins after a previous stage completes, pass the previous stage's target date. All math (required contribution, reach date) runs from that start, so a later stage can never land before its predecessor. Omit for plans starting now." },
           contributionAmount: { type: "number", description: "Candidate contribution per cadence period. Requires cadence." },
           cadence: { type: "string", enum: ["weekly", "biweekly", "monthly"], description: "Cadence of contributionAmount." },
           installmentMonths: { type: "number", description: "Only when the user says the purchase offers N interest-free card installments: computes the monthly cuota and whether it fits." },
@@ -3229,12 +3230,19 @@ export function buildMovementEntry(
             : "falta cuenta o tarjeta",
         };
       }
+      // Semántica de método de pago DETERMINISTA (misma doctrina del prompt):
+      // «débito» acota los candidatos a cuentas bancarias — jamás efectivo —
+      // así el candidato único se asigna en vez de preguntar «¿banco o cash?».
+      const debitStated = /\bd[eé]bito\b/iu.test(ctx.rawMessage ?? "");
       const pick = planCashAccountForCurrency({
         currency: explicitCurrency,
         chosen: null,
         candidates: ctx.accounts.map((a) => ({
           id: a.id, name: a.name, currency: (a.currency as string | null) ?? null,
-          ordinary: !a.isGoalAccount && a.liquidity !== "non_liquid",
+          ordinary:
+            !a.isGoalAccount &&
+            a.liquidity !== "non_liquid" &&
+            !(debitStated && a.type === "cash"),
           isDefault: a.isCurrencyDefault === true,
         })),
       });
@@ -5406,6 +5414,16 @@ export async function executePlanGoalFunding(
   if (args.targetDateISO != null && !targetDate) {
     return { status: "needs_info", summary: "La fecha candidata no existe o no está en formato YYYY-MM-DD." };
   }
+  const startDate = validISODate(args.startDateISO);
+  if (args.startDateISO != null && !startDate) {
+    return { status: "needs_info", summary: "La fecha de inicio no existe o no está en formato YYYY-MM-DD." };
+  }
+  if (startDate && targetDate && startDate >= targetDate) {
+    return {
+      status: "needs_info",
+      summary: "La fecha objetivo debe ser posterior a la fecha de inicio de la etapa; una etapa que arranca después no puede terminar antes.",
+    };
+  }
   const cadence = ["weekly", "biweekly", "monthly"].includes(args.cadence as string)
     ? (args.cadence as GoalCadence)
     : null;
@@ -5467,11 +5485,12 @@ export async function executePlanGoalFunding(
     capacityNote = "tu panorama no es legible este turno, así que no afirmo capacidad libre; la matemática fecha⇄aporte va igual";
   }
 
+  const simStartISO = startDate && startDate > todayISO(ctx) ? startDate : todayISO(ctx);
   const base: GoalSimBase = {
     targetAmount,
     currentAmount: alreadySaved,
     availableMonthly: capacityKnown ? (availableMonthly as number) : 0,
-    now: new Date(`${todayISO(ctx)}T12:00:00.000Z`),
+    now: new Date(`${simStartISO}T12:00:00.000Z`),
   };
   const remaining = Math.round(Math.max(0, targetAmount - alreadySaved) * 100) / 100;
   const m = (v: number) => money(v, currency);
@@ -5493,6 +5512,9 @@ export async function executePlanGoalFunding(
   lines.push(
     `Objetivo ${m(targetAmount)}${alreadySaved > 0 ? ` · ya apartado ${m(alreadySaved)} · falta ${m(remaining)}` : ""}.`,
   );
+  if (simStartISO !== todayISO(ctx)) {
+    lines.push(`Etapa SECUENCIAL: el ahorro arranca el ${simStartISO} (después de la etapa anterior); toda la matemática corre desde ahí.`);
+  }
   if (remaining <= 0) {
     lines.push("Ya está completamente fondeado: no hace falta plan nuevo.");
   }
@@ -5526,7 +5548,7 @@ export async function executePlanGoalFunding(
     const maxPer = perCadence(frontierSource.maxAffordableMonthly);
     lines.push(
       frontierSource.earliestFeasibleDateISO
-        ? `Frontera posible: a tope de lo libre (${m(maxPer.monthly)}/mes = ${m(maxPer.weekly)}/sem) lo más pronto es ${frontierSource.earliestFeasibleDateISO}.`
+        ? `Frontera AISLADA (toda tu capacidad SOLO a esta meta, sin otras etapas): a tope (${m(maxPer.monthly)}/mes = ${m(maxPer.weekly)}/sem) lo más pronto es ${frontierSource.earliestFeasibleDateISO}. NO es la fecha realista de una etapa posterior: para eso usa startDateISO con la fecha de la etapa previa.`
         : "Frontera posible: hoy no hay nada libre para una meta nueva sin mover otra cosa.",
     );
   }
@@ -5553,6 +5575,7 @@ export async function executePlanGoalFunding(
       targetAmount,
       alreadySaved,
       remaining,
+      startDateISO: simStartISO,
       availableMonthly: capacityKnown ? availableMonthly : null,
       capacityKnown,
       byDate: byDate
@@ -5690,13 +5713,24 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
           .neq("status", "cancelled")
           .limit(20);
         if (error || !data) return null;
+        // La identidad de una meta re-narrada es su NOMBRE: dos metas
+        // distintas pueden costar lo mismo (la etapa 2 de un viaje murió
+        // porque otra meta valía igual dentro de la ventana). El monto solo
+        // confirma cuando los nombres ya se contienen.
         return (
-          data.find(
-            (row) =>
-              normName(String(row.name ?? "")) === normalizedName ||
-              (Math.abs(Number(row.target_amount) - targetAmount) <= 0.005 &&
-                String(row.currency ?? "").toUpperCase() === goalCurrency),
-          ) ?? null
+          data.find((row) => {
+            const rowName = normName(String(row.name ?? ""));
+            if (rowName === normalizedName) return true;
+            const contained =
+              rowName.length > 0 &&
+              normalizedName.length > 0 &&
+              (rowName.includes(normalizedName) || normalizedName.includes(rowName));
+            return (
+              contained &&
+              Math.abs(Number(row.target_amount) - targetAmount) <= 0.005 &&
+              String(row.currency ?? "").toUpperCase() === goalCurrency
+            );
+          }) ?? null
         );
       } catch {
         return null;
@@ -5716,7 +5750,7 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
       return {
         status: "done",
         effect: "noop",
-        summary: `La meta "${recentDup.name}" (${formatMoney(Number(recentDup.target_amount), goalCurrency as CurrencyCode)}${dupPlan ? `, ${dupPlan}` : ""}) ya quedó creada hace un momento en esta misma conversación; no la dupliqué. Confírmale ESE estado tal cual (no ofrezcas ajustar lo que ya está así); si de verdad quiere OTRA meta igual, que lo diga y la creo.`,
+        summary: `La meta "${recentDup.name}" (${formatMoney(Number(recentDup.target_amount), goalCurrency as CurrencyCode)}${dupPlan ? `, ${dupPlan}` : ""}) ya quedó creada hace un momento en esta misma conversación; no la dupliqué. Confírmale ESE estado tal cual (no ofrezcas ajustar lo que ya está así). Si lo que el usuario pidió es CAMBIARLE algo (otra fecha, otro aporte), hazlo YA en este mismo turno con update_goal goalId=${recentDup.id} — no se lo ofrezcas, ejecútalo. Solo si quiere OTRA meta igual, que lo diga y la creo.`,
         data: { goalId: recentDup.id, noop: true },
       };
     }
@@ -7527,6 +7561,28 @@ export async function executeRegisterCardPayment(args: Record<string, unknown>, 
       return n.includes(target) || target.includes(n);
     });
     if (nonCardMatches.length === 1) {
+      // Delegación INTERNA: el pago de un préstamo llegó por la tool de
+      // tarjetas con un match único de deuda no-tarjeta — ejecutarlo aquí
+      // mismo por el writer correcto elimina la dependencia de que el modelo
+      // obedezca un redirect de texto («no lo puedo asentar desde aquí»).
+      const loanAmount = Number(args.amount);
+      if (Number.isFinite(loanAmount) && loanAmount > 0) {
+        const fromRef = typeof args.fromAccount === "string" ? args.fromAccount.trim() : "";
+        const fromMatch = fromRef
+          ? ctx.accounts.find((row) => row.id === fromRef) ??
+            resolveExistingInstrumentName(fromRef, ctx.accounts).exact
+          : null;
+        return executeLogMovement(
+          {
+            type: "debt_payment",
+            amount: loanAmount,
+            debtAccountId: nonCardMatches[0].id,
+            ...(fromMatch ? { sourceAccountId: fromMatch.id } : {}),
+            description: `Pago ${nonCardMatches[0].name}`,
+          },
+          ctx,
+        );
+      }
       return {
         status: "redirect",
         summary: `"${nonCardMatches[0].name}" es un préstamo, no una tarjeta. Registra ese pago con log_movement (type "debt_payment", debtAccountId=${nonCardMatches[0].id}, la cuenta de origen que dijo el usuario). No le preguntes nada: re-llama con eso.`,

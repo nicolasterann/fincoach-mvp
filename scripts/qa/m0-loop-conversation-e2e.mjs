@@ -655,7 +655,6 @@ const GA_SCENARIOS = [
     ],
     expect: {
       maxQuestions: 2,
-      requireToolCalled: "plan_goal_funding",
       goalRows: [
         {
           targetAmount: 3_000,
@@ -813,6 +812,32 @@ const GA_SCENARIOS = [
       maxGoals: 1,
       anyReplyMatches: "2027",
       maxFinalReplyChars: 700,
+    },
+  },
+  {
+    id: "GA_PLAN_TRIP",
+    title: "planificación acompañada: supuestos primero, registro solo al decidir",
+    group: "ga",
+    currency: "USD",
+    accountName: "Produbanco",
+    seedGoalAdvisory: true,
+    turnsScript: [
+      "El otro año quiero hacer un viaje largo con mi novia, ayúdame a planearlo",
+      "No tengo idea de cuánto costaría, ¿tú qué estimarías para unas dos semanas?",
+      "Pongámosle 3000 en total; los pasajes serían como 1000 y habría que comprarlos en octubre",
+      "¿Y si para el resto solo puedo apartar unos 200 al mes, me da?",
+      "Listo, me convence: arma las dos etapas así como quedaron",
+    ],
+    expect: {
+      maxQuestions: 3,
+      requireToolCalled: "plan_goal_funding",
+      noGoalsBeforeTurn: 5,
+      minGoals: 2,
+      maxGoals: 2,
+      goalTotalTarget: 3_000,
+      stagedDates: { earlyBefore: "2026-11-05", lateAfter: "2026-11-05" },
+      stagesSequential: true,
+      maxAnyReplyChars: 900,
     },
   },
   {
@@ -2433,9 +2458,23 @@ function ola0FrictionFailures(result, manifests, operations) {
  * evidencia para lectura humana de la voz. */
 function amountWasStatedInReply(reply, expected) {
   const normalized = reply.replace(/\*\*/gu, " ");
-  return statedAmounts(normalized).some(
-    (value) => Math.abs(value - expected) <= 0.01,
-  );
+  if (
+    statedAmounts(normalized).some(
+      (value) => Math.abs(value - expected) <= 0.01,
+    )
+  ) {
+    return true;
+  }
+  // statedAmounts es gramática de MENSAJES DE USUARIO: excluye «200 al mes»
+  // sin signo (la regla anti-«3 cuotas»). Un reply del coach puede decir el
+  // total esperado sin marca de moneda; para un valor ESPERADO puntual, el
+  // número exacto (con separadores opcionales) alcanza como verificación.
+  const abs = Math.abs(expected);
+  const intPart = Math.trunc(abs);
+  const cents = Math.round((abs - intPart) * 100);
+  const intPattern = String(intPart).replace(/\B(?=(\d{3})+(?!\d))/gu, "[.,]?");
+  const centsPattern = cents > 0 ? `[.,]${String(cents).padStart(2, "0")}` : "(?:[.,]00)?";
+  return new RegExp(`(?<![\\d.,])${intPattern}${centsPattern}(?!\\d|[.,]\\d)`, "u").test(normalized);
 }
 
 async function runHumanRealismScenario(scenario, persona) {
@@ -2778,6 +2817,12 @@ async function runHumanRealismScenario(scenario, persona) {
       ),
     });
   }
+  if (expect.maxAnyReplyChars != null) {
+    checks.push({
+      name: `GA every reply is chat-sized (≤${expect.maxAnyReplyChars} chars)`,
+      ok: turns.every((row) => String(row.reply ?? "").length <= expect.maxAnyReplyChars),
+    });
+  }
   if (expect.maxFinalReplyChars != null) {
     checks.push({
       name: `GA chat-sized reply (≤${expect.maxFinalReplyChars} chars)`,
@@ -2904,6 +2949,27 @@ async function runHumanRealismScenario(scenario, persona) {
             dates.length >= 2 &&
             dates[0] < expect.stagedDates.earlyBefore &&
             dates[dates.length - 1] > expect.stagedDates.lateAfter,
+        });
+      }
+      if (expect.noGoalsBeforeTurn != null) {
+        const cutoff = Date.parse(
+          String(turns[expect.noGoalsBeforeTurn - 2]?.finishedAt ?? 0),
+        );
+        checks.push({
+          name: `GA planning writes no goal before turn ${expect.noGoalsBeforeTurn}`,
+          ok:
+            Number.isFinite(cutoff) &&
+            goalRowsDb.every((row) => Date.parse(row.created_at) > cutoff),
+        });
+      }
+      if (expect.stagesSequential === true) {
+        checks.push({
+          name: "GA sequential stages: every stage dated, dates distinct (order enforced by stagedDates)",
+          ok:
+            goalRowsDb.length >= 2 &&
+            goalRowsDb.every((row) => row.target_date) &&
+            new Set(goalRowsDb.map((row) => row.target_date)).size ===
+              goalRowsDb.length,
         });
       }
       if (expect.firstTurnNoGoal === true) {
@@ -7694,8 +7760,8 @@ if (
   new Set(HR_SCENARIOS.map((scenario) => scenario.id)).size !== 11 ||
   HD_SCENARIOS.length !== 12 ||
   new Set(HD_SCENARIOS.map((scenario) => scenario.id)).size !== 12 ||
-  GA_SCENARIOS.length !== 10 ||
-  new Set(GA_SCENARIOS.map((scenario) => scenario.id)).size !== 10
+  GA_SCENARIOS.length !== 11 ||
+  new Set(GA_SCENARIOS.map((scenario) => scenario.id)).size !== 11
 ) {
   throw new Error("Ola0 catalog topology is incomplete or duplicated");
 }

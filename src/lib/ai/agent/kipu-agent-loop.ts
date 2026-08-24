@@ -10,6 +10,7 @@ import {
   isReplyToRecurringNotification,
   mutationClaimNeedsActionReceipt,
   writeDeniedWithReceipt,
+  replyOmitsCommittedFigure,
   refreshAgentStateBeforeModel,
   replyMoneyFiguresAbsentFromEvidence,
   sameTurnMutationReplay,
@@ -758,13 +759,31 @@ método de pago acotan la cuenta: «débito» es una cuenta bancaria (jamás
 efectivo); «efectivo»/«cash» es la cuenta de efectivo.
 
 Metas y decisiones grandes (un viaje, un iPhone, un activo, un préstamo, una
-inversión) son una ASESORÍA construida en varias vueltas, no una respuesta
-suelta: entiende el deseo, trae los números del motor, propone un plan
-concreto, y ADAPTA la propuesta a cada feedback («octubre muy lejos» ⇒
+inversión) son una ASESORÍA con DOS FASES distintas, y confundirlas es el
+error más grave del asesor.
+FASE 1 — PLANIFICAR: mientras el usuario explora («ayúdame a planearlo»,
+«¿cuánto costaría?», «¿qué me recomiendas?», «¿y si mejor…?»), acompáñalo
+como un asesor de agencia: preguntas útiles, estimados con rangos, opciones
+y escenarios — TODO en supuestos, en mensajes CORTOS, y SIN crear nada ni
+ofrecer crear en cada mensaje. Explorar un escenario nuevo, cambiar cifras,
+dudar o preguntar son PLANIFICACIÓN, no una decisión. Recién cuando el plan
+esté maduro puedes ofrecer UNA vez, en una frase: «¿lo dejamos así?».
+FASE 2 — CERRAR: solo cuando el usuario DECIDE con claridad («listo,
+hagamos así», «arma esto», «dale, créala») registras EXACTAMENTE lo
+decidido. Una orden acompañada de una duda u objeción sobre el MISMO plan
+(«arma las dos, pero no entiendo por qué esa fecha») NO es una decisión
+cerrada: resuelve primero la duda, corrige el plan y confirma — y JAMÁS
+registres un plan que tú mismo estás describiendo como incoherente o
+demasiado apretado en esa misma respuesta.
+En AMBAS fases, ADAPTA la propuesta a cada feedback («octubre muy lejos» ⇒
 recalcula para septiembre; «muy alto el aporte» ⇒ aporte menor y fecha más
 lejana) — SIEMPRE recalculando con plan_goal_funding: toda cifra de aporte,
 fecha alcanzable, capacidad libre o veredicto sale de esa tool, jamás de tu
-aritmética. Honestidad de asesor primero: si le alcanza cómodo para comprarlo
+aritmética. En etapas SECUENCIALES (pasajes primero, resto después), la
+fecha realista de una etapa posterior se calcula pasando startDateISO = la
+fecha de la etapa anterior; la «frontera» del motor es POR-META-AISLADA y
+jamás es la fecha de una etapa posterior — una etapa que va después nunca
+puede quedar fechada antes que su predecesora. Honestidad de asesor primero: si le alcanza cómodo para comprarlo
 ya, dilo sin inventar una meta; si lo deja apretado o cruza capas, propone
 armarlo como meta con números; si su fecha/monto es ambicioso, dilo con el
 veredicto del motor y ofrece la alternativa viable. Si creaste una meta cuyo plan NO entra
@@ -783,7 +802,9 @@ forma MENSUAL como canónica (di ambas al confirmar). Y la regla de cierre:
 cuando el usuario ELIGE una opción que tú ya cotizaste («semanal con lo que
 haga falta», «déjala en la mitad», «dale con la mensual», «ajústala»),
 EJECUTA el cambio en ese mismo turno con la cifra del motor — responder «si
-quieres te lo dejo» a una orden ya dada es un error de asesor. Si ofreciste
+quieres te lo dejo» a una orden ya dada es un error de asesor. Esa regla es
+de la FASE DE CIERRE: explorar un escenario («¿y si aporto 20?») jamás es
+una orden de crear. Si ofreciste
 varias opciones y el usuario dice «dale/armalo así» sin elegir una, arma TU
 recomendada y decláralo — y «armarla» significa create_goal con la fecha de
 esa opción (la frontera del motor si va al máximo) y
@@ -4536,6 +4557,59 @@ export async function runKipuAgentLoop(
         );
         if (receiptsReply) {
           finalized = { text: receiptsReply, advisories: finalized.advisories };
+        }
+      }
+    }
+    // La cifra de un compromiso recién escrito es deber de la respuesta: si el
+    // recibo dice «aporte comprometido de 93.15$/sem» y la respuesta ofrece
+    // «decirte el monto exacto después», una reescritura la exige; si persiste,
+    // la respuesta se compone de los recibos.
+    if (outcome.wrote && successfulWriteReceipts.length > 0) {
+      const omittedFigure = replyOmitsCommittedFigure(
+        finalized.text,
+        successfulWriteReceipts,
+      );
+      if (omittedFigure != null) {
+        activeTurnFailureSite = "forced_completion";
+        try {
+          const repairedFigure = await completeLoopModel(model, {
+            messages: [
+              ...messages,
+              { role: "assistant", content: finalized.text },
+              {
+                role: "system",
+                content: `Tu borrador cerró un compromiso sin nombrar su cifra exacta (${omittedFigure}). Reescribe la MISMA respuesta nombrando ese monto tal cual del recibo — jamás lo dejes «para el siguiente paso». No llames tools.`,
+              },
+            ],
+            tools: KIPU_LOOP_TOOL_SCHEMAS,
+            toolChoice: "none",
+            temperature: 0.4,
+          });
+          addUsage(usage, repairedFigure.usage);
+          const repaired = sanitizeAgentReply(repairedFigure.content ?? "");
+          if (
+            repaired &&
+            replyOmitsCommittedFigure(repaired, successfulWriteReceipts) == null &&
+            !writeDeniedWithReceipt(repaired, true)
+          ) {
+            finalized = { text: repaired, advisories: finalized.advisories };
+          } else {
+            const receiptsReply = loopPostWriteReceiptContinuity(
+              successfulWriteReceipts,
+              agentCtx.saldoAvailable !== false,
+            );
+            if (receiptsReply) {
+              finalized = { text: receiptsReply, advisories: finalized.advisories };
+            }
+          }
+        } catch {
+          const receiptsReply = loopPostWriteReceiptContinuity(
+            successfulWriteReceipts,
+            agentCtx.saldoAvailable !== false,
+          );
+          if (receiptsReply) {
+            finalized = { text: receiptsReply, advisories: finalized.advisories };
+          }
         }
       }
     }

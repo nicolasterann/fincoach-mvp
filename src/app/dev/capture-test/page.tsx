@@ -178,6 +178,8 @@ import {
   findBareConfirmationActionWith,
   computeLiveTotalsByCurrency,
   writeDeniedWithReceipt,
+  replyOmitsCommittedFigure,
+  committedFiguresFromReceipts,
 } from "@/lib/ai/agent/kipu-agent";
 import {
   agentLoopManifestRejectionShape,
@@ -32041,7 +32043,7 @@ assert(
       ir340TypedError.role === "system" &&
       ir340TypedError.message ===
         "KIPU_LOOP_MESSAGE_SEQUENCE_INVALID index=1 role=system" &&
-      ir340CompletionCalls.length === 9 &&
+      ir340CompletionCalls.length === 10 &&
       ir328Loop.includes(
         "  const repaired = repairLoopMessagesSequence(request.messages);\n  assertLoopMessagesSequence(repaired);\n  return model.complete({ ...request, messages: repaired as never });",
       ) &&
@@ -33222,6 +33224,7 @@ assert(
     [
       "la meta re-narrada no se duplica y el recibo de update_goal declara aporte y fecha",
       pmAgentTools.includes("ya quedó creada hace un momento en esta misma conversación; no la dupliqué") &&
+        pmAgentTools.includes("hazlo YA en este mismo turno con update_goal goalId=") &&
         pmAgentTools.includes("aporte comprometido de ${formatMoney(appliedContribution, goalCurrencyCode)}") &&
         pmAgentTools.includes("nueva fecha ${patch.target_date}"),
     ],
@@ -33257,7 +33260,7 @@ assert(
       "un nombre de préstamo en la tool de tarjetas redirige tipado a log_movement (jamás pregunta cuál tarjeta)",
       await (async () => {
         const redirect = await executeRegisterCardPayment(
-          { cardName: "crédito alpaca", amount: 100 },
+          { cardName: "crédito alpaca" },
           {
             userId: "u1",
             baseCurrency: "USD",
@@ -33315,6 +33318,11 @@ assert(
       ) === true,
     ],
     ["«no la pude guardar» y «no se guardó» son claims de fallo", writeDeniedWithReceipt("No la pude guardar.", true) === true && writeDeniedWithReceipt("Al final no se guardó la meta.", true) === true],
+    [
+      "«no se alcanzó a crear por un fallo interno al guardar» es un claim de fallo (el caso iPhone real)",
+      writeDeniedWithReceipt("No se alcanzó a crear por un fallo interno al guardar. Si quieres, lo intento de nuevo.", true) === true &&
+        writeDeniedWithReceipt("No quedó creada la meta.", true) === true,
+    ],
     ["narrar el éxito jamás matchea", writeDeniedWithReceipt("Listo: quedó creada la meta PlayStation 5 con 40$/sem.", true) === false],
     ["un condicional en presente no es un claim de fallo", writeDeniedWithReceipt("Si falla el guardado más adelante, te aviso al toque.", true) === false],
     ["un verbo de lectura no es un fallo de guardado", writeDeniedWithReceipt("No pude leer tus tasas vigentes; el resto quedó igual.", true) === false],
@@ -33337,6 +33345,117 @@ assert(
     "IR356 · negar un write con recibo es tan falso como afirmarlo sin recibo — la publicación lo repara con los recibos",
     ir356Checks.every(([, pass]) => pass),
     JSON.stringify(ir356Checks.filter(([, p]) => !p).map(([n]) => n)),
+  );
+
+  // ── IR357 — planificar y cerrar son fases; las etapas secuenciales corren
+  // desde la fecha de su predecesora (startDateISO) y la frontera del motor es
+  // por-meta-AISLADA; la identidad del dup de metas es el NOMBRE.
+  const ir357Seq = await executePlanGoalFunding(
+    { targetAmount: 2_000, targetDateISO: "2027-08-31", startDateISO: "2026-10-31", contributionAmount: 200, cadence: "monthly" },
+    ir355Ctx,
+  );
+  const ir357SeqData = ir357Seq.data as {
+    startDateISO?: string;
+    byContribution?: { reachDateISO: string };
+    byDate?: { monthly: number };
+  };
+  const ir357Inverted = await executePlanGoalFunding(
+    { targetAmount: 500, targetDateISO: "2026-10-01", startDateISO: "2026-11-30" },
+    ir355Ctx,
+  );
+  const ir357Checks: [string, boolean][] = [
+    [
+      "una etapa secuencial corre desde la fecha de su predecesora y jamás llega antes",
+      ir357Seq.status === "done" &&
+        ir357SeqData.startDateISO === "2026-10-31" &&
+        typeof ir357SeqData.byContribution?.reachDateISO === "string" &&
+        ir357SeqData.byContribution.reachDateISO > "2026-10-31" &&
+        /Etapa SECUENCIAL: el ahorro arranca el 2026-10-31/.test(ir357Seq.summary ?? ""),
+    ],
+    [
+      "una etapa que termina antes de arrancar se rehúsa tipada",
+      ir357Inverted.status === "needs_info" &&
+        /posterior a la fecha de inicio/.test(ir357Inverted.summary ?? ""),
+    ],
+    [
+      "la frontera se declara AISLADA y nunca como fecha de una etapa posterior",
+      pmAgentTools.includes("Frontera AISLADA (toda tu capacidad SOLO a esta meta") &&
+        pmAgentTools.includes("para eso usa startDateISO con la fecha de la etapa previa"),
+    ],
+    [
+      "el prompt separa PLANIFICAR de CERRAR y una objeción reabre la planificación",
+      ir328Loop.includes("FASE 1 — PLANIFICAR") &&
+        ir328Loop.includes("FASE 2 — CERRAR") &&
+        ir328Loop.includes("NO es una decisión\ncerrada") &&
+        ir328Loop.includes("startDateISO = la\nfecha de la etapa anterior") &&
+        ir328Loop.includes("jamás es\nuna orden de crear"),
+    ],
+    [
+      "la identidad del dup de metas es el NOMBRE (el monto solo confirma nombres contenidos)",
+      pmAgentTools.includes("            if (rowName === normalizedName) return true;") &&
+        pmAgentTools.includes("              contained &&\n              Math.abs(Number(row.target_amount) - targetAmount) <= 0.005"),
+    ],
+  ];
+  assert(
+    "IR357 · planificar≠cerrar, etapas secuenciales desde su predecesora, frontera aislada y dup por nombre",
+    ir357Checks.every(([, pass]) => pass),
+    JSON.stringify(ir357Checks.filter(([, p]) => !p).map(([n]) => n)),
+  );
+
+  // ── IR358 — la cifra de un compromiso recién escrito es deber de la
+  // respuesta, y el pago de un préstamo por la tool de tarjetas se ejecuta por
+  // delegación interna (jamás depende de que el modelo obedezca un redirect).
+  const ir358Receipts = [
+    'Listo, "iPhone 18": aporte comprometido de 93.15$/sem (reserva esa plata en tu plan). Confírmalo natural.',
+  ];
+  const ir358Checks: [string, boolean][] = [
+    [
+      "el extractor lee la cifra comprometida del recibo",
+      JSON.stringify(committedFiguresFromReceipts(ir358Receipts)) === "[93.15]" &&
+        JSON.stringify(committedFiguresFromReceipts(["Creé la meta (600$). Con ~40$/sem reservados."])) === "[40]",
+    ],
+    [
+      "una respuesta sin la cifra la omite; con la cifra cumple",
+      replyOmitsCommittedFigure("Listo: la dejé semanal con el aporte necesario.", ir358Receipts) === 93.15 &&
+        replyOmitsCommittedFigure("Listo: quedó con 93.15 USD por semana.", ir358Receipts) === null &&
+        replyOmitsCommittedFigure("cualquier texto", []) === null,
+    ],
+    [
+      "la publicación exige la cifra y cae a los recibos si persiste",
+      ir328Loop.includes(
+        "    if (outcome.wrote && successfulWriteReceipts.length > 0) {\n      const omittedFigure = replyOmitsCommittedFigure(",
+      ) &&
+        ir328Loop.includes("sin nombrar su cifra exacta"),
+    ],
+    [
+      "un préstamo por la tool de tarjetas se ejecuta por delegación interna (con monto delega al writer; sin monto conserva el redirect)",
+      await (async () => {
+        const loanCtx = {
+          userId: "00000000-0000-0000-0000-000000000001",
+          baseCurrency: "USD",
+          timezone: "America/Guayaquil",
+          rawMessage: "pagué 100 de mi crédito alpaca",
+          accounts: [],
+          debtAccounts: [{ id: "d-loan", name: "Crédito Alpaca HD", type: "loan", currency: "USD" }],
+          goals: [],
+          fxRates: [],
+        } as unknown as AgentContext;
+        const delegated = await executeRegisterCardPayment(
+          { cardName: "crédito alpaca", amount: 100 },
+          loanCtx,
+        );
+        return (
+          delegated.status !== "redirect" &&
+          /falta cuenta de origen/.test(delegated.summary ?? "") &&
+          pmAgentTools.includes('type: "debt_payment",\n            amount: loanAmount,\n            debtAccountId: nonCardMatches[0].id,')
+        );
+      })(),
+    ],
+  ];
+  assert(
+    "IR358 · cifra comprometida obligatoria en la respuesta y delegación interna del pago de préstamo",
+    ir358Checks.every(([, pass]) => pass),
+    JSON.stringify(ir358Checks.filter(([, p]) => !p).map(([n]) => n)),
   );
   assert(
     "IR351 · cualquier jerga autoriza por CITA literal del episodio — sin listas hardcodeadas; una cita fabricada jamás autoriza y un fallo de control jamás pide reformular",

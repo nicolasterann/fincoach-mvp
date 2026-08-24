@@ -1095,7 +1095,46 @@ function mutationStateIsGrounded(
  * dato exacto" class). Bounded past-tense save-failure grammar over write
  * verbs only; hypotheticals in present/subjunctive do not match. */
 const SAVE_FAILURE_CLAIM =
-  /(?:fall[oó](?:\s+(?:el|la|al))?\s+(?:guardad[oa]|guardar|creaci[oó]n|crear|registro|registrar)|(?:no|tampoco)\s+(?:se\s+|te\s+|me\s+)?(?:l[oa]\s+)?pud[eo]\s+(?:crear|guardar|registrar|dejar)|no\s+se\s+(?:guard[oó]|cre[oó]|registr[oó])\b|intent[eé]\s+(?:crear|guardar|registrar|dejar)\w*[^.]{0,60}?(?:pero|fall[oó]|no\s+se)|(?:esta|otra)\s+vez\s+fall[oó])/iu;
+  /(?:fall[oó](?:\s+(?:el|la|al))?\s+(?:guardad[oa]|guardar|creaci[oó]n|crear|registro|registrar)|(?:no|tampoco)\s+(?:se\s+|te\s+|me\s+)?(?:l[oa]\s+)?pud[eo]\s+(?:crear|guardar|registrar|dejar)|no\s+se\s+(?:guard[oó]|cre[oó]|registr[oó])\b|no\s+(?:se\s+|te\s+)?alcanz[oó]\s+a\s+(?:crear|guardar|registrar)|no\s+qued[oó]\s+(?:cread[oa]|guardad[oa]|registrad[oa])\b|(?:hubo\s+un\s+)?(?:fallo|error)\s+interno\s+al\s+(?:guardar|crear|registrar)|fallo\s+interno\b|intent[eé]\s+(?:crear|guardar|registrar|dejar)\w*[^.]{0,60}?(?:pero|fall[oó]|no\s+se)|(?:esta|otra)\s+vez\s+fall[oó])/iu;
+
+/** Committed-contribution figures pulled from this turn's write receipts
+ * («aporte comprometido de 93.15$/sem», «Con ~40$/sem reservados»). A reply
+ * that closed a commitment without naming its figure sent the founder chasing
+ * «el monto exacto» one more turn — the receipt's number is the reply's duty. */
+export function committedFiguresFromReceipts(receipts: readonly string[]): number[] {
+  const values = new Set<number>();
+  const re = /(?:aporte comprometido de|con ~)\s*([\d.,]+)\s*\$?\s*\/?\s*(?:sem|quincena|mes)/giu;
+  for (const receipt of receipts) {
+    for (const match of receipt.matchAll(re)) {
+      const token = match[1].replace(/\.(?=\d{3})/gu, "").replace(",", ".");
+      const value = Number(token);
+      if (Number.isFinite(value) && value > 0) values.add(value);
+    }
+  }
+  return [...values];
+}
+
+export function replyOmitsCommittedFigure(
+  reply: string,
+  receipts: readonly string[],
+): number | null {
+  const figures = committedFiguresFromReceipts(receipts);
+  if (figures.length === 0) return null;
+  const normalized = (reply ?? "").replace(/\*\*/gu, " ");
+  for (const value of figures) {
+    const abs = Math.abs(value);
+    const intPart = Math.trunc(abs);
+    const cents = Math.round((abs - intPart) * 100);
+    const intPattern = String(intPart).replace(/\B(?=(\d{3})+(?!\d))/gu, "[.,]?");
+    const centsPattern = cents > 0 ? `[.,]${String(cents).padStart(2, "0")}` : "(?:[.,]00)?";
+    const present = new RegExp(
+      `(?<![\d.,])${intPattern}${centsPattern}(?!\d|[.,]\d)`,
+      "u",
+    ).test(normalized);
+    if (!present) return value;
+  }
+  return null;
+}
 
 export function writeDeniedWithReceipt(
   text: string,

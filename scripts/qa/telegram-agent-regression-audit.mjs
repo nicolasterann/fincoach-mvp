@@ -4073,8 +4073,8 @@ const cases = [
   {
     name: "M0M592 a loan name in the card-payment tool asks an absurd card question again",
     file: "src/lib/ai/agent/kipu-agent-tools.ts",
-    from: "    if (nonCardMatches.length === 1) {\n      return {\n        status: \"redirect\",",
-    to: "    if (false) {\n      return {\n        status: \"redirect\",",
+    from: "    if (nonCardMatches.length === 1) {",
+    to: "    if (false) { // mutation: loan branch dead",
     detector: "IR355",
   },
   {
@@ -4094,9 +4094,51 @@ const cases = [
   {
     name: "M0M595 the save-failure grammar goes blind",
     file: "src/lib/ai/agent/kipu-agent.ts",
-    from: "const SAVE_FAILURE_CLAIM =\n  /(?:fall[oó](?:\\s+(?:el|la|al))?\\s+(?:guardad[oa]|guardar|creaci[oó]n|crear|registro|registrar)|(?:no|tampoco)\\s+(?:se\\s+|te\\s+|me\\s+)?(?:l[oa]\\s+)?pud[eo]\\s+(?:crear|guardar|registrar|dejar)|no\\s+se\\s+(?:guard[oó]|cre[oó]|registr[oó])\\b|intent[eé]\\s+(?:crear|guardar|registrar|dejar)\\w*[^.]{0,60}?(?:pero|fall[oó]|no\\s+se)|(?:esta|otra)\\s+vez\\s+fall[oó])/iu;",
+    from: "const SAVE_FAILURE_CLAIM =\n  /(?:fall[oó](?:\\s+(?:el|la|al))?\\s+(?:guardad[oa]|guardar|creaci[oó]n|crear|registro|registrar)|(?:no|tampoco)\\s+(?:se\\s+|te\\s+|me\\s+)?(?:l[oa]\\s+)?pud[eo]\\s+(?:crear|guardar|registrar|dejar)|no\\s+se\\s+(?:guard[oó]|cre[oó]|registr[oó])\\b|no\\s+(?:se\\s+|te\\s+)?alcanz[oó]\\s+a\\s+(?:crear|guardar|registrar)|no\\s+qued[oó]\\s+(?:cread[oa]|guardad[oa]|registrad[oa])\\b|(?:hubo\\s+un\\s+)?(?:fallo|error)\\s+interno\\s+al\\s+(?:guardar|crear|registrar)|fallo\\s+interno\\b|intent[eé]\\s+(?:crear|guardar|registrar|dejar)\\w*[^.]{0,60}?(?:pero|fall[oó]|no\\s+se)|(?:esta|otra)\\s+vez\\s+fall[oó])/iu;",
     to: "const SAVE_FAILURE_CLAIM = /$^/u; // mutation: blind grammar",
     detector: "IR356",
+  },
+  {
+    name: "M0M596 a distinct goal that happens to cost the same is swallowed as a duplicate again",
+    file: "src/lib/ai/agent/kipu-agent-tools.ts",
+    from: "            return (\n              contained &&\n              Math.abs(Number(row.target_amount) - targetAmount) <= 0.005 &&",
+    to: "            return (\n              Math.abs(Number(row.target_amount) - targetAmount) <= 0.005 &&",
+    detector: "IR357",
+  },
+  {
+    name: "M0M597 a sequential stage runs from today again and can land before its predecessor",
+    file: "src/lib/ai/agent/kipu-agent-tools.ts",
+    from: "  const simStartISO = startDate && startDate > todayISO(ctx) ? startDate : todayISO(ctx);",
+    to: "  const simStartISO = todayISO(ctx); // mutation: sequential start ignored",
+    detector: "IR357",
+  },
+  {
+    name: "M0M598 the planning/closing phase doctrine disappears from the prompt",
+    file: "src/lib/ai/agent/kipu-agent-loop.ts",
+    from: "FASE 1 — PLANIFICAR: mientras el usuario explora",
+    to: "Mientras el usuario explora",
+    detector: "IR357",
+  },
+  {
+    name: "M0M599 the frontier stops declaring itself isolated",
+    file: "src/lib/ai/agent/kipu-agent-tools.ts",
+    from: "Frontera AISLADA (toda tu capacidad SOLO a esta meta, sin otras etapas)",
+    to: "Frontera posible",
+    detector: "IR357",
+  },
+  {
+    name: "M0M600 a freshly committed figure can be deferred to the next step again",
+    file: "src/lib/ai/agent/kipu-agent-loop.ts",
+    from: "    if (outcome.wrote && successfulWriteReceipts.length > 0) {\n      const omittedFigure = replyOmitsCommittedFigure(",
+    to: "    if (false && outcome.wrote && successfulWriteReceipts.length > 0) {\n      const omittedFigure = replyOmitsCommittedFigure(",
+    detector: "IR358",
+  },
+  {
+    name: "M0M601 the loan payment through the card tool depends on model obedience again",
+    file: "src/lib/ai/agent/kipu-agent-tools.ts",
+    from: "      const loanAmount = Number(args.amount);\n      if (Number.isFinite(loanAmount) && loanAmount > 0) {",
+    to: "      const loanAmount = Number(args.amount);\n      if (false) { // mutation: delegation disabled",
+    detector: "IR358",
   },
   {
     name: "M0M560 degraded authority guards stop emitting their bounded telemetry counter",

@@ -4747,3 +4747,88 @@ El historial de una conversación larga con fallos VIEJOS induce falsos
 fallos nuevos por auto-copia; la respuesta no es limpiar historia (es real)
 sino la barrera de verdad en la dirección que faltaba. Verdad tiene DOS
 direcciones y cada una necesita su barrera.
+
+# ADENDA 63 — 2026-08-24 — Planificar y cerrar son fases: el asesor que acompaña primero y registra al final
+
+Estado: **AUTORITATIVA.** Reporte del founder (transcript Europa): «si le doy
+el monto funciona bien, pero si le pido que me ayude a planificar se hace mil
+bolas… necesitamos que Kipu sea también un asistente, no solo un contador».
+La sesión terminó con dos metas creadas mientras el usuario OBJETABA la fecha
+(la etapa 2 quedó fechada 2026-10-22, ANTES que sus pasajes del 30-11) y con
+la capacidad semanal reventada — el propio Kipu lo describió como
+incoherente… y las creó igual.
+
+## A63-1. Las clases (todas de arquitectura)
+
+1. **Sin separación de fases.** Toda mi doctrina reciente empujaba
+   DECISIVIDAD de cierre; aplicada a la exploración vuelve al asesor un
+   contador ansioso que ofrece «¿te la creo?» en cada mensaje y mezcla
+   supuestos con registros.
+2. **La «fecha realista» de la etapa 2 era la frontera AISLADA del motor**
+   (cada meta simulada sola con TODA la capacidad) citada como secuencia.
+3. **Una orden con objeción se trató como decisión cerrada** («arma las dos.
+   Pero no entiendo por qué…») y se registró un plan que el propio asesor
+   llamaba sin sentido.
+
+## A63-2. Los fixes
+
+- **Doctrina de DOS FASES** (prompt, general): FASE 1 PLANIFICAR — opciones,
+  rangos, escenarios, todo en supuestos, mensajes cortos, sin crear ni
+  ofrecer crear (una sola vez, al madurar: «¿lo dejamos así?»); FASE 2
+  CERRAR — solo ante decisión clara, registrar EXACTAMENTE lo decidido. Una
+  orden acompañada de duda sobre el MISMO plan NO cierra: se resuelve la
+  duda, se corrige y se confirma; JAMÁS se registra un plan que uno mismo
+  describe como incoherente. La regla «orden ya cotizada = ejecutar» queda
+  acotada a la fase de cierre («¿y si aporto 20?» jamás es una orden).
+- **`startDateISO` en plan_goal_funding** (motor): una etapa SECUENCIAL
+  corre desde la fecha de su predecesora — el aporte requerido y la fecha de
+  llegada se calculan desde ese inicio, y una etapa que termina antes de
+  arrancar se rehúsa tipada. La frontera se declara «AISLADA (toda tu
+  capacidad SOLO a esta meta)» y nunca como fecha de una etapa posterior.
+- **Identidad del dup de metas = NOMBRE** (el monto solo confirma nombres
+  contenidos): el predicado monto+moneda tragó la etapa 2 de un viaje porque
+  OTRA meta valía igual — dos metas distintas pueden costar lo mismo.
+- **Delegación interna préstamo→writer**: register_card_payment con match
+  único de deuda no-tarjeta y monto EJECUTA el debt_payment vía log_movement
+  (el redirect de texto dependía de obediencia del modelo: «no lo puedo
+  asentar desde aquí»); sin monto conserva el redirect.
+- **Barrera de cifra comprometida** (`replyOmitsCommittedFigure`): el
+  «aporte comprometido de X» del recibo DEBE aparecer en la respuesta — un
+  cierre con «te digo el monto exacto después» se reescribe con la cifra y,
+  si persiste, la respuesta se compone de los recibos. Tercera dirección de
+  la verdad: afirmar sin recibo (bloqueado), negar con recibo (bloqueado),
+  y cerrar sin la cifra del recibo (bloqueado).
+- Gramática de writeDenied ampliada («no se alcanzó a crear», «fallo interno
+  al guardar», «no quedó creada») — el caso iPhone reincidió con conjugación
+  nueva. El dup-noop redirige cambios a update_goal con el goalId. «Débito»
+  acota candidatos a cuentas bancarias también en el PICKER (determinista).
+- Las dos metas Europa incoherentes del founder quedaron liberadas
+  (soft-cancel, cero aportes, operación puntual documentada).
+
+## A63-3. Red
+
+Lane **GA_PLAN_TRIP** (la clase, no el transcript): 4 turnos de exploración
+con CERO metas creadas (`noGoalsBeforeTurn`), estimados y escenarios, y el
+cierre en el turno 5 con las DOS etapas exactas (total 3000, fechas
+secuenciales distintas, ambas comprometidas) — el flujo usó startDateISO en
+vivo («si arrancas después de los pasajes llegarías el 31 de agosto de
+2027»). IR357 (fases + secuencia + frontera aislada + dup por nombre),
+IR358 (cifra comprometida + delegación conductual sin DB), IR340 9→10.
+M0M596–601 muertas (596/601 exigieron anclas de rama completa — 11ª/12ª
+aserción débil). `maxAnyReplyChars` y fallback numérico exacto en el
+verificador de totales de replies (statedAmounts es gramática de MENSAJES:
+excluía «200 al mes» sin signo).
+
+## A63-4. Números
+
+Muestra completa **34/34 duros verdes** (4.59/5, $1.78) — corridas de camino
+31→33→33→32 con cada rojo tipado (dos eran producto: delegación y cifra
+omitida; dos eran forma/harness). capture **890/890** · mutaciones
+**595/595** SOLAS · PG **82/82** + **M116–M123** · DRY 32/32 · OLA0 16/16 ·
+calibración 2/2 · tsc/lint/build limpios. Sin migraciones.
+
+## A63-5. Lección
+
+La decisividad es una virtud DE FASE: el mismo empuje que cierra bien un
+compromiso destruye una exploración. Un asesor tiene dos velocidades, y la
+arquitectura debe nombrarlas para que el modelo sepa en cuál está.
