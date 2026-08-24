@@ -16,8 +16,9 @@
 > `-25.973` (`código+harness -23.115`; documentación `-2.858`). Toda garantía viva
 > del loop, tools, manifiesto durable, builders, MoneyRead, motor, PostgreSQL y
 > fallback `off` permanece fijada por capture, mutaciones, sondas y E2E. Vara de
-> cierre: muestra real 35/35, nueve+ clases de defecto con red permanente y gates
-> completos verdes. Bloque M queda activo y desbloqueado; migraciones 001–124
+> cierre: muestra real de 35 carriles repetida en 34/35 (rojo itinerante de
+> forma/juicio, distinto por corrida y verde re-medido; cero errores de dinero),
+> nueve+ clases de defecto con red permanente y gates completos verdes. Bloque M queda activo y desbloqueado; migraciones 001–124
 > aplicadas, próxima 125.
 
 > **Bloque I (2026-07-19) — Que ningún número pueda inflarse solo (migraciones

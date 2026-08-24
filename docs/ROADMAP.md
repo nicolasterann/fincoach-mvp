@@ -1901,7 +1901,10 @@ eliminados por inalcanzabilidad. No cambió ninguna superficie viva: el loop,
 las tools, el manifiesto 112–115, los builders, MoneyRead, el motor financiero,
 PostgreSQL y el fallback `off` permanecen.
 
-**Vara final cumplida:** muestra conversacional real de 35 carriles **35/35**;
+**Vara final cumplida:** muestra conversacional real de 35 carriles corrida
+repetidamente en **34/35** — un único rojo ITINERANTE por corrida (carril
+distinto cada vez, de forma/juicio, verde al re-medirse; cero errores de
+dinero en ningún rojo);
 capture **826/826** y mutaciones **324/324** con toda garantía viva conservada; PostgreSQL **82/82** más
 M116–M124; DRY **32/32**; OLA0 **16/16**; CAL **2/2**; typecheck, lint y build
 limpios. Nueve o más clases de defecto descubiertas por founder y auditorías

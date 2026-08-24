@@ -427,7 +427,9 @@ that neither live mode could call them. The ~124 tool bodies, financial engine,
 MoneyRead doctrine, builders, manifest authority (112–115), PostgreSQL and the
 legacy `off` pipeline remain intact.
 
-M0 closed with the real 35-lane model sample at 35/35 and the permanent capture,
+M0 closed with the real 35-lane model sample run repeatedly at 34/35 (one
+roaming form/judgment red per roll, a different lane each run, green when
+re-measured, zero money errors) and the permanent capture,
 mutation, PostgreSQL, DRY, OLA0, CAL, typecheck, lint and build gates. The full
 staged history is preserved in `docs/BUILD_PROGRESS.md` and the historical
 `docs/M0_*` dossier. Migrations 001–124 are applied; 125 is next. The only

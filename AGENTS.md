@@ -36,9 +36,10 @@ unreachable from both live modes. `AgentMode` is now `off | loop`; old
 `on`/`shadow` environment values map to `loop` with a one-time warning.
 Emergency rollback is `KIPU_AGENT_MODE=off`, the frozen legacy pipeline.
 
-The closure bar was the real 35-lane conversation sample at 35/35 plus the
-permanent capture, mutation, PostgreSQL, DRY, OLA0, CAL, typecheck, lint and
-build gates. More than nine defect classes discovered through founder use and
+The closure bar was the real 35-lane conversation sample, run repeatedly at
+34/35 with a single roaming form/judgment red per roll (a different lane each
+run, green when re-measured, zero money errors), plus the permanent capture,
+mutation, PostgreSQL, DRY, OLA0, CAL, typecheck, lint and build gates. More than nine defect classes discovered through founder use and
 independent audits remain encoded as permanent regression coverage. The full
 v10–v44/M0.11A/tool-loop history is intentionally kept out of this standing
 brief; its evidence lives in
@@ -279,7 +280,7 @@ warning on layer crossings.
 ## Testing
 
 After meaningful changes: `npm run lint`, `npm run build`, `/dev/capture-test`
-(currently 823/823 assertions green after the M0 closure pruning), and the behavior-level QA in
+(currently 826/826 assertions green after the M0 closure pruning), and the behavior-level QA in
 `docs/TEST_SCRIPTS.md`; larger stages also get a disposable-persona E2E
 battery and a multi-agent red team. Check `git status`. Do not commit unless
 told.

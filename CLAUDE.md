@@ -73,9 +73,11 @@ v29–v44 repair/publication stack were deleted. `AgentMode` is `off | loop`;
 `on` and `shadow` are compatibility aliases for `loop`, and emergency
 rollback is `off` to the frozen legacy pipeline.
 
-M0 closed against the real 35-lane sample at 35/35 and the full permanent gate
-stack. More than nine independently discovered defect classes remain as
-regression coverage. Detailed v10–v44, M0.11A and tool-loop history lives in
+M0 closed against the real 35-lane conversation sample run repeatedly at 34/35
+— a single ROAMING red per roll (a different aspirational form/judgment lane
+each run, green when re-measured; zero money errors in any red) — plus the
+full permanent gate stack. More than nine independently discovered defect
+classes remain as regression coverage. Detailed v10–v44, M0.11A and tool-loop history lives in
 `docs/M0_CLAUDE_AUDIT_TOOL_LOOP_2026-08-14.md` and the historical `docs/M0_*`
 reports, not in this standing brief. Migrations 001–124 are applied; 125 is
 next.
@@ -191,7 +193,7 @@ classifiers, docs — is fair game to refactor toward the vision.
    → ask or confirm, never guess a money movement.
 4. **Run `npm run lint` and `npm run build`** — both must be clean/green.
 5. **Test by behavior, not phrasing** (docs/TEST_SCRIPTS.md); keep
-   `/dev/capture-test` green (823 assertions after M0 closure), and for stage-level work run a
+   `/dev/capture-test` green (826 assertions after M0 closure), and for stage-level work run a
    disposable-persona E2E battery + red-team pass.
 6. **Report** files changed, intentional non-changes, risks, and any DDL to
    apply manually.
