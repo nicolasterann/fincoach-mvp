@@ -455,6 +455,8 @@ import {
   executeSumBalancesWith,
   executePlanGoalFunding,
   executeRegisterCardPayment,
+  executeCreateGoal,
+  resolveGoalFundingAccount,
   unrequestedDuplicateMovementNoopWith,
   installmentCloseDegradedSummary,
   installmentCreateDegradedSummary,
@@ -33456,6 +33458,174 @@ assert(
     "IR358 · cifra comprometida obligatoria en la respuesta y delegación interna del pago de préstamo",
     ir358Checks.every(([, pass]) => pass),
     JSON.stringify(ir358Checks.filter(([, p]) => !p).map(([n]) => n)),
+  );
+
+  // ── IR359 — 124: la cuenta de FONDEO declarada de una meta es un hecho del
+  // motor: defaultea el origen de un aporte sin cuenta nombrada (evidencia
+  // "learned", no muere en unproven_choice), jamás re-rutea un cruce de moneda,
+  // el calendario atribuye el aporte a esa cuenta y los executors la resuelven
+  // con aclaración temprana en vez de error de escritura.
+  const ir359Ctx = (goalFunding: string | undefined, accounts: Record<string, unknown>[], raw = "aporté 100 a mi meta") => ({
+    userId: "u1",
+    rawMessage: raw,
+    channel: "web",
+    timezone: "America/Guayaquil",
+    baseCurrency: "USD",
+    fxRates: [{ from: "ARS", to: "USD", rate: 0.000676, source: "manual" }],
+    accounts,
+    debtAccounts: [],
+    goals: [
+      { id: "gUsd", name: "Viaje", currency: "USD", goalAccountId: null, fundingAccountId: goalFunding },
+      { id: "gArs", name: "Auto", currency: "ARS", goalAccountId: null, fundingAccountId: goalFunding },
+    ],
+  }) as unknown as AgentContext;
+  const ir359TwoUsd = [
+    { id: "wells", name: "Wells", currency: "USD" },
+    { id: "supe2", name: "Supervielle", currency: "USD" },
+  ];
+  const ir359a = buildMovementEntry(
+    { type: "goal_contribution", amount: 100, currency: "USD", goalId: "gUsd" },
+    ir359Ctx("wells", ir359TwoUsd),
+  );
+  const ir359b = buildMovementEntry(
+    { type: "goal_contribution", amount: 100, currency: "USD", goalId: "gUsd", sourceAccountId: "supe2" },
+    ir359Ctx("wells", ir359TwoUsd, "aporté 100 a mi meta desde Supervielle"),
+  );
+  const ir359c = buildMovementEntry(
+    { type: "goal_contribution", amount: 100, currency: "ARS", goalId: "gArs" },
+    ir359Ctx("wells", [
+      { id: "wells", name: "Wells", currency: "USD" },
+      { id: "supeArs", name: "Supervielle", currency: "ARS" },
+    ]),
+  );
+  const ir359d = buildMovementEntry(
+    { type: "goal_contribution", amount: 100, goalId: "gUsd" },
+    ir359Ctx("ghost", []),
+  );
+  const ir359CalWith = buildFinancialCalendar({
+    accounts: [],
+    incomeSources: [],
+    fixedExpenses: [],
+    scheduledPayments: [],
+    debtAccounts: [],
+    mainGoal: { id: "gUsd", name: "Viaje", currency: "USD", fundingAccountId: "wells" } as unknown as FinancialGoal,
+    weeklyGoalContribution: 50,
+  }).events.filter((e) => e.type === "goal_contribution");
+  const ir359CalWithout = buildFinancialCalendar({
+    accounts: [],
+    incomeSources: [],
+    fixedExpenses: [],
+    scheduledPayments: [],
+    debtAccounts: [],
+    mainGoal: { id: "gUsd", name: "Viaje", currency: "USD" } as unknown as FinancialGoal,
+    weeklyGoalContribution: 50,
+  }).events.filter((e) => e.type === "goal_contribution");
+  const ir359CreateCtx = (accounts: Record<string, unknown>[]) => ({
+    userId: "u1",
+    rawMessage: "crea la meta",
+    channel: "web",
+    timezone: "America/Guayaquil",
+    baseCurrency: "USD",
+    accounts,
+    debtAccounts: [],
+    goals: [],
+  }) as unknown as AgentContext;
+  const ir359Threw = { status: "error", summary: "threw" } as Awaited<ReturnType<typeof executeCreateGoal>>;
+  const ir359Ambiguous = await executeCreateGoal(
+    { name: "Meta IR359", targetAmount: 500, fundingAccount: "banco" },
+    ir359CreateCtx([
+      { id: "b1", name: "Banco Uno", currency: "USD" },
+      { id: "b2", name: "Banco Dos", currency: "USD" },
+    ]),
+  ).catch(() => ir359Threw);
+  const ir359Mismatch = await executeCreateGoal(
+    { name: "Meta IR359", targetAmount: 500, fundingAccount: "Euro Cuenta" },
+    ir359CreateCtx([{ id: "eu", name: "Euro Cuenta", currency: "EUR" }]),
+  ).catch(() => ir359Threw);
+  const ir359Schemas = (KIPU_TOOL_SCHEMAS as unknown as { function: { name: string; parameters: { properties: Record<string, unknown> } } }[])
+    .filter((t) => ["create_goal", "update_goal"].includes(t.function.name));
+  const ir359Checks: [string, boolean][] = [
+    [
+      "aporte sin cuenta nombrada sale de la cuenta de fondeo aunque haya DOS en la moneda (evidencia learned)",
+      ir359a.ok === true &&
+        ir359a.entry.sourceAccountId === "wells" &&
+        /fijada para los aportes/.test(ir359a.summary ?? ""),
+    ],
+    [
+      "una cuenta nombrada por el usuario en el turno gana sobre el fondeo",
+      ir359b.ok === true &&
+        ir359b.entry.sourceAccountId === "supe2" &&
+        !/fijada para los aportes/.test(ir359b.summary ?? ""),
+    ],
+    [
+      "un aporte en otra moneda que la cuenta de fondeo pregunta — jamás re-rutea en silencio",
+      ir359c.ok === false && /NO lo muevas de cuenta/.test(ir359c.reason ?? ""),
+    ],
+    [
+      "un fondeo stale (cuenta ya no existe) degrada a la pregunta normal, no revienta",
+      ir359d.ok === false && /falta cuenta de origen/.test(ir359d.reason ?? ""),
+    ],
+    [
+      "el calendario atribuye el aporte a la cuenta de fondeo (y null sin fondeo)",
+      ir359CalWith.length > 0 &&
+        ir359CalWith.every((e) => e.accountId === "wells") &&
+        ir359CalWithout.length > 0 &&
+        ir359CalWithout.every((e) => e.accountId === null),
+    ],
+    [
+      "create_goal aclara temprano un fondeo ambiguo o con moneda cruzada sin escribir nada",
+      ir359Ambiguous.status === "needs_info" &&
+        /Varias cuentas coinciden/.test(ir359Ambiguous.summary ?? "") &&
+        ir359Mismatch.status === "needs_info" &&
+        /debe estar en USD/.test(ir359Mismatch.summary ?? ""),
+    ],
+    [
+      "los dos schemas declaran fundingAccount y el update permite des-fijar con none",
+      ir359Schemas.length === 2 &&
+        ir359Schemas.every((t) => "fundingAccount" in t.function.parameters.properties) &&
+        pmAgentTools.includes('if (args.fundingAccount === "none") {\n      patch.funding_account_id = null;'),
+    ],
+    [
+      "el wiring vive: default de fondeo + evidencia learned + resolver en create",
+      pmAgentTools.includes("let fundingDefaulted = false;\n    let fundingDefaultNote = \"\";\n    if (!source && goal.fundingAccountId) {") &&
+        pmAgentTools.includes('chosenEvidence: fundingDefaulted\n          ? "learned"') &&
+        pmAgentTools.includes("const fundingResolved = resolveGoalFundingAccount(args.fundingAccount, goalCurrency, ctx);"),
+    ],
+    [
+      "el prompt enseña el hecho del motor sin preguntarlo al crear",
+      ir328Loop.includes("fíjalo con\ncreate_goal/update_goal fundingAccount") &&
+        ir328Loop.includes("Nunca lo preguntes al crear"),
+    ],
+    [
+      "el resolver puro: id exacto, nombre único, ambiguo, inexistente, moneda cruzada y arg ausente",
+      (() => {
+        const rCtx = ir359CreateCtx([
+          { id: "w1", name: "Wells Fargo", currency: "USD" },
+          { id: "b1", name: "Banco Uno", currency: "USD" },
+          { id: "b2", name: "Banco Dos", currency: "USD" },
+          { id: "eu", name: "Euro Cuenta", currency: "EUR" },
+        ]);
+        const byId = resolveGoalFundingAccount("w1", "USD", rCtx);
+        const byName = resolveGoalFundingAccount("wells fargo", "USD", rCtx);
+        const ambiguous = resolveGoalFundingAccount("banco", "USD", rCtx);
+        const missing = resolveGoalFundingAccount("Inexistente XY", "USD", rCtx);
+        const crossed = resolveGoalFundingAccount("Euro Cuenta", "USD", rCtx);
+        const absent = resolveGoalFundingAccount(undefined, "USD", rCtx);
+        return (
+          byId?.ok === true && byId.account.id === "w1" &&
+          byName?.ok === true && byName.account.id === "w1" &&
+          ambiguous?.ok === false && /Varias cuentas coinciden/.test(ambiguous.reason) &&
+          missing?.ok === false && /No encuentro esa cuenta/.test(missing.reason) &&
+          crossed?.ok === false && /debe estar en USD/.test(crossed.reason) &&
+          absent === null
+        );
+      })(),
+    ],
+  ];
+  assert(
+    "IR359 · la cuenta de fondeo declarada es hecho del motor: default del aporte, atribución del calendario, cero re-ruteo de moneda y resolución temprana",
+    ir359Checks.every(([, pass]) => pass),
+    JSON.stringify(ir359Checks.filter(([, p]) => !p).map(([n]) => n)),
   );
   assert(
     "IR351 · cualquier jerga autoriza por CITA literal del episodio — sin listas hardcodeadas; una cita fabricada jamás autoriza y un fallo de control jamás pide reformular",

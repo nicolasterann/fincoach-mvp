@@ -29,7 +29,7 @@ export async function loadUserFinancialData(userId: string) {
     supabase
       .from("goals")
       .select(
-        "id, user_id, name, target_amount, currency, current_amount, target_date, goal_account_id, status, feasibility_status, weekly_required_amount, monthly_required_amount, created_at",
+        "id, user_id, name, target_amount, currency, current_amount, target_date, goal_account_id, funding_account_id, status, feasibility_status, weekly_required_amount, monthly_required_amount, created_at",
       )
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),

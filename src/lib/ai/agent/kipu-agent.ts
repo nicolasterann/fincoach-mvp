@@ -431,6 +431,17 @@ export function buildAgentContextDataMessage(
       currentAmount: goal.currentAmount,
       targetAmount: goal.targetAmount,
       currency: goal.currency,
+      // 124 — the DECLARED contribution source is an engine fact the model can
+      // cite ("los aportes salen de Wells Fargo"); null = none declared.
+      fundingAccount: goal.fundingAccountId
+        ? {
+            id: goal.fundingAccountId,
+            name: contextText(
+              ctx.accounts.find((account) => account.id === goal.fundingAccountId)?.name ?? "",
+              120,
+            ),
+          }
+        : null,
       note: contextText(goal.notes),
     })),
     goalAccount:

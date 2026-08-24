@@ -4832,3 +4832,100 @@ calibración 2/2 · tsc/lint/build limpios. Sin migraciones.
 La decisividad es una virtud DE FASE: el mismo empuje que cierra bien un
 compromiso destruye una exploración. Un asesor tiene dos velocidades, y la
 arquitectura debe nombrarlas para que el modelo sepa en cuál está.
+
+# ADENDA 64 — 2026-08-24 — LA CUENTA DE FONDEO DECLARADA ES HECHO DEL MOTOR (migración 124) + CONTRATO DE CIERRE PARA CODEX
+
+Estado: **AUTORITATIVA.** Mandato del founder tras el transcript México
+(casi perfecto salvo «el aporte de Pasajes México en Supervielle»): aprobar
+el diseño de fondeo, implementarlo, aplicar la migración, probarlo,
+pushear/commitear y redactar el prompt exacto para que Codex borre el código
+muerto y actualice los docs declarando M0 cerrado; después Claude audita a
+Codex y M0 se declara cerrado. «Ni siquiera creo que hace falta hacer más
+pruebas de mi lado, siempre y cuando no dañes nada de lo que tenemos.»
+
+## A64-1. Diagnóstico y diseño
+
+«Los aportes salen de Wells Fargo» vivía como memoria conversacional
+(`remember_fact`); el MOTOR (calendario → tesorería → pisos) no la veía y
+atribuía el aporte a la cuenta cotidiana aprendida (Supervielle). El evento
+`goal_contribution` era el ÚNICO ítem del calendario sin `accountId`.
+Diseño aprobado: `goals.funding_account_id` OPCIONAL — jamás se pregunta al
+crear (se conserva la fricción-cero original); cuando el usuario lo declara
+se vuelve hecho del motor; null = comportamiento previo byte a byte.
+
+## A64-2. Migración 124 (APLICADA) + liberación de datos
+
+Doctrina 073/074 completa: `kipu__validate_goal_account_link` valida también
+el fondeo (misma moneda, lock real `kipu__locked_account_currency`); la
+cuenta de fondeo entra a `kipu__account_currency_dependency` (moneda
+inmutable por los DOS lados — RPC y trigger de accounts); ON DELETE SET NULL
+con columna nullable (cero clase 091). DO-block de verificación interno.
+Liberación de datos documentada: Pasajes México y Viaje México (ambas USD)
+→ funding = Wells Fargo (USD), verificada 2/2 en la misma transacción.
+Sondas `m0-loop-124-e2e.mjs` **7/7** al primer intento: aterriza · rehúsa
+cruce de moneda en INSERT y UPDATE · rama original intacta · moneda
+inmutable por dependencia (con CONTRAFACTUAL: la cuenta gemela sin vínculo
+sí cambia — guard, no cerrojo) · borrar la cuenta degrada a null sin romper.
+
+## A64-3. Cableado TypeScript (todas las costuras)
+
+Tipo `FinancialGoal.fundingAccountId` → mappers (supabase-mappers,
+goals-wealth-store) → selects (context-builder, load-user-financial-data) →
+**calendario**: `goal_contribution` lleva `accountId = fundingAccountId`
+(la tesorería ancla el aporte a esa cuenta; `treasury.ts` ya consumía
+`e.accountId`) → serialización al modelo (`fundingAccount {id,name}` por
+meta) → `create_goal`/`update_goal` aceptan `fundingAccount` (id o nombre
+único; `"none"` des-fija; resolver compartido con aclaración temprana de
+ambigüedad/cruce de moneda ANTES de escribir; recibos declaran el origen) →
+`buildMovementEntry`: un aporte SIN cuenta nombrada defaultea a la cuenta de
+fondeo de ESA meta con evidencia **"learned"** (doctrina 068: preferencia
+estructurada durable — no muere en `unproven_choice` aunque haya varias
+cuentas en la moneda; una cuenta nombrada por el usuario en el turno sigue
+mandando; un cruce de moneda PREGUNTA, jamás re-rutea) → una línea de
+doctrina en el prompt del loop.
+
+## A64-4. Medición y red
+
+GA_FUNDING (carril 35, geometría adversarial: DOS cuentas USD con la
+currency-default en Produbanco y el fondeo en Wells GA — si el hecho no
+manda, la física DB lo delata): **PASS 3/3** (enfocado + dos corridas
+completas; el modelo pasó `fundingAccount` al crear, el aporte sin cuenta
+aterrizó desde Wells GA y la respuesta lo declaró con saldo post-registro).
+IR359 (11 sub-checks: default con learned, cuenta nombrada gana, cruce
+pregunta, fondeo stale degrada, calendario atribuye, executors aclaran
+temprano, schemas + "none", wiring vivo, prompt, resolver puro 6 casos).
+M0M602–M0M607 muertas por IR359.
+
+Muestra completa de 35 carriles corrida DOS veces: **34/35 + 34/35** con
+rojos **DISJUNTOS e itinerantes** — HD_BREAKDOWN en la corrida 1 (verde en
+la 2 y enfocado), HR_PATTERN en la corrida 2 (verde en la 1 y enfocado; el
+modelo preguntó en frío en vez de obedecer el hint de patrón dominante:
+cero writes erróneos, una pregunta de más — forzarlo en código cruzaría la
+frontera «jamás escribir dinero desde un patrón conductual»). Tipificación:
+**varianza estocástica de forma del modelo**, sin mecanismo causal con el
+diff (ningún rojo toca metas/fondeo; los carriles del diff verdes 3/3).
+Calidad 4.66 y 4.55. Lección de captura: la corrida 1 se lanzó con
+`| tail -60` y el transcript del rojo se PERDIÓ — una medición congelada se
+captura ÍNTEGRA a archivo, siempre. Nota de medición para la era M: con 35
+carriles de forma, p(35/35 por tirada) es materialmente <1; el rojo
+itinerante es propiedad de la medición — si molesta, la regla correcta es
+estabilidad (rojo = falla dos veces), jamás debilitar checks. Harness
+intacto.
+
+## A64-5. Números
+
+capture **891/891** · mutaciones **601/601** SOLAS · PG **82/82** +
+**M116–M124** (124 = 7/7) · DRY 32/32 · OLA0 16/16 · CAL 2/2 ·
+tsc/lint/build limpios · migración 124 APLICADA · liberación México→Wells
+2/2 · costo muestras ≈ $3.9.
+
+## A64-6. Contrato de cierre
+
+`docs/M0_CIERRE_CODEX_CLEANUP_PROMPT_2026-08-24.md` — instrucción exacta
+para Codex: borrado del stack envelope POR ALCANZABILIDAD (advertencia
+explícita: la tabla de ADENDA 5 está superseded — `agent-action-guard.ts`
+es pieza VIVA del loop), keep-list intocable, `AgentMode` → `off|loop` con
+compat, poda del harness sin debilitar checks de código vivo, gates verdes
+en rama `m0-closure-cleanup` SIN merge, reporte formato §8, auditoría de
+Claude pre-merge (diff completo + gates + muestra real) y solo entonces la
+declaración de cierre.

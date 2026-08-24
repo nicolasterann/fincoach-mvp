@@ -56,6 +56,8 @@ export interface SupabaseGoalRow {
   current_amount: number | string;
   target_date: string | null;
   goal_account_id: string | null;
+  // 124 — declared funding source. Optional so reads degrade gracefully.
+  funding_account_id?: string | null;
   status: FinancialGoal["status"];
   feasibility_status: FinancialGoal["feasibilityStatus"];
   weekly_required_amount: number | string;
@@ -134,6 +136,7 @@ export function mapSupabaseGoal(row: SupabaseGoalRow): FinancialGoal {
     currentAmount: toNumber(row.current_amount),
     targetDate: row.target_date ?? "",
     goalAccountId: row.goal_account_id ?? undefined,
+    fundingAccountId: row.funding_account_id ?? undefined,
     status: row.status,
     feasibilityStatus: row.feasibility_status,
     weeklyRequiredAmount: toNumber(row.weekly_required_amount),

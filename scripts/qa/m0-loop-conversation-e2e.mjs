@@ -856,6 +856,29 @@ const GA_SCENARIOS = [
       maxGoals: 0,
     },
   },
+  {
+    // 124 — fondeo declarado: geometría adversarial con DOS cuentas USD donde
+    // la currency-default es Produbanco. Si el hecho de fondeo no manda, la
+    // meta queda sin cuenta o el aporte sale de Produbanco — y los checks de
+    // funding_account_id y source_account_id lo delatan por física, no por forma.
+    id: "GA_FUNDING",
+    title: "fondeo declarado: la meta guarda su cuenta y el aporte sale de ahí",
+    group: "ga",
+    currency: "USD",
+    accountName: "Produbanco",
+    seedGoalAdvisory: true,
+    seedSecondAccount: { name: "Wells GA", currency: "USD", balance: 800 },
+    turnsScript: [
+      "Quiero una meta de 900$ para una bici, para el 30 de diciembre. Los aportes van a salir de mi cuenta Wells GA.",
+      "Aporté 60 a la meta de la bici",
+    ],
+    expect: {
+      maxQuestions: 2,
+      goalRows: [{ targetAmount: 900, fundingAccountName: "Wells GA" }],
+      maxGoals: 1,
+      writes: [{ type: "goal_contribution", amount: 60, accountName: "Wells GA" }],
+    },
+  },
 ];
 
 const HR_SCENARIOS = [
@@ -2626,6 +2649,27 @@ async function runHumanRealismScenario(scenario, persona) {
       if (gaCard.error) throw new Error(`GA card: ${gaCard.error.message}`);
       persona.cards = [...(persona.cards ?? []), gaCard.data];
     }
+    // 124 — segunda cuenta en la MISMA moneda: geometría adversarial para el
+    // fondeo declarado (la currency-default sigue siendo la principal, así que
+    // si el hecho de fondeo no manda, el aporte aterriza en la cuenta equivocada
+    // y el check de source_account_id lo delata).
+    if (scenario.seedSecondAccount) {
+      const secondAccount = await admin
+        .from("accounts")
+        .insert({
+          user_id: persona.userId,
+          name: scenario.seedSecondAccount.name,
+          type: "bank",
+          currency: scenario.seedSecondAccount.currency ?? "USD",
+          current_balance_original: scenario.seedSecondAccount.balance ?? 800,
+          current_balance_base: scenario.seedSecondAccount.balance ?? 800,
+          is_currency_default: false,
+        })
+        .select("id,name,currency")
+        .single();
+      if (secondAccount.error) throw new Error(`GA second account: ${secondAccount.error.message}`);
+      persona.accounts = [...(persona.accounts ?? []), secondAccount.data];
+    }
   }
   if (scenario.seedEtoroTemptation) {
     const temptBase = Date.now() - 3 * 86_400_000;
@@ -2873,7 +2917,7 @@ async function runHumanRealismScenario(scenario, persona) {
   if (gaChecked) {
     const goalsRead = await admin
       .from("goals")
-      .select("id,name,target_amount,currency,cadence,contribution_amount,target_date,status,created_at")
+      .select("id,name,target_amount,currency,cadence,contribution_amount,target_date,funding_account_id,status,created_at")
       .eq("user_id", persona.userId)
       .neq("status", "cancelled")
       .neq("id", persona.goal?.id ?? "00000000-0000-0000-0000-000000000000")
@@ -2922,6 +2966,8 @@ async function runHumanRealismScenario(scenario, persona) {
               Math.abs(Number(match.contribution_amount) - wanted.contributionAmount) <= 0.005) &&
             (wanted.requireContribution !== true ||
               (Number(match.contribution_amount) > 0 && match.cadence != null)) &&
+            (wanted.fundingAccountName == null ||
+              match.funding_account_id === accountByName(wanted.fundingAccountName)) &&
             dateOk,
         });
         if (expect.replyStatesGoalContribution === true && match) {
@@ -7760,8 +7806,8 @@ if (
   new Set(HR_SCENARIOS.map((scenario) => scenario.id)).size !== 11 ||
   HD_SCENARIOS.length !== 12 ||
   new Set(HD_SCENARIOS.map((scenario) => scenario.id)).size !== 12 ||
-  GA_SCENARIOS.length !== 11 ||
-  new Set(GA_SCENARIOS.map((scenario) => scenario.id)).size !== 11
+  GA_SCENARIOS.length !== 12 ||
+  new Set(GA_SCENARIOS.map((scenario) => scenario.id)).size !== 12
 ) {
   throw new Error("Ola0 catalog topology is incomplete or duplicated");
 }

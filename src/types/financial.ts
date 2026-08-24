@@ -198,6 +198,10 @@ export interface FinancialGoal {
   currentAmount: number;
   targetDate: string;
   goalAccountId?: string;
+  /** 124 — the cash account the user DECLARED contributions come from. Never
+   *  asked at creation; when present it is an ENGINE fact (calendar/treasury
+   *  attribution + default contribution source). Absent ⇒ legacy behavior. */
+  fundingAccountId?: string;
   status: GoalStatus;
   feasibilityStatus: GoalFeasibilityStatus;
   weeklyRequiredAmount: number;

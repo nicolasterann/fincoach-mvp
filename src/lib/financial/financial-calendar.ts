@@ -544,7 +544,7 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
     const weeks = Math.max(1, Math.round(horizonDays / 7));
     for (let w = 0; w < weeks; w++) {
       const d = new Date(today.getTime() + w * 7 * DAY_MS);
-      push({ dateObj: d, idSeed: input.mainGoal.id, date: iso(d), amount: weeklyGoal, type: "goal_contribution", label: `Aporte a ${input.mainGoal.name || "tu meta"}`, requirement: "flexible", confidence: "medium", cashflowAffecting: true, isInternalTransfer: Boolean(input.mainGoal.goalAccountId), isPaid: false, reserves: true, origin: "goal" });
+      push({ dateObj: d, idSeed: input.mainGoal.id, date: iso(d), amount: weeklyGoal, type: "goal_contribution", label: `Aporte a ${input.mainGoal.name || "tu meta"}`, requirement: "flexible", confidence: "medium", cashflowAffecting: true, isInternalTransfer: Boolean(input.mainGoal.goalAccountId), isPaid: false, reserves: true, origin: "goal", accountId: input.mainGoal.fundingAccountId ?? null });
     }
   }
 

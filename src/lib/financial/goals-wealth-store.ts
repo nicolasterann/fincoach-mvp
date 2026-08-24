@@ -43,6 +43,7 @@ function mapGoalRow(r: Row): FinancialGoal {
     currentAmount: num(r.current_amount),
     targetDate: String(r.target_date ?? ""),
     goalAccountId: str(r.goal_account_id),
+    fundingAccountId: str(r.funding_account_id),
     status: (str(r.status) ?? "active") as GoalStatus,
     feasibilityStatus: (str(r.feasibility_status) ?? "viable") as FinancialGoal["feasibilityStatus"],
     weeklyRequiredAmount: num(r.weekly_required_amount),
@@ -333,6 +334,8 @@ export interface CreateGoalArgs {
   contributionAmount?: number | null;
   flexibleDeadline?: boolean;
   investmentEligible?: boolean;
+  /** 124 — declared funding source (validated currency==goal by the DB trigger). */
+  fundingAccountId?: string | null;
   operationKey?: string | null;
 }
 
@@ -358,6 +361,7 @@ export async function createGoalRow(a: CreateGoalArgs): Promise<{ ok: boolean; i
     contribution_amount: a.contributionAmount ?? null,
     flexible_deadline: a.flexibleDeadline ?? false,
     investment_eligible: a.investmentEligible ?? false,
+    funding_account_id: a.fundingAccountId ?? null,
   };
   const created = await insertIdempotentUserRow({
     table: "goals",

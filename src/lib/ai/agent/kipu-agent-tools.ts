@@ -884,6 +884,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           contributionAmount: { type: "number", description: "Committed amount per cadence (reserves money). Only with an agreed contribution." },
           commitRequiredContribution: { type: "boolean", description: "When the user asks to commit WHATEVER contribution the target date needs ('con los aportes que hagan falta'), set true (requires targetDate): the ENGINE computes the exact required contribution and reserves it — never compute it yourself. Uses the user's cadence if given, else monthly." },
           currency: { type: "string", description: "ISO code only if stated; omit for the user's primary currency." },
+          fundingAccount: { type: "string", description: "ONLY when the user DECLARES which account the contributions come from ('los aportes salen de Wells Fargo'): account id or unique name. Never ask for it — omitted means the engine attributes automatically. Becomes an engine fact (calendar/treasury attribution + default source when they log a contribution without naming an account)." },
         },
         required: ["name", "targetAmount"],
         additionalProperties: false,
@@ -938,6 +939,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           commitRequiredContribution: { type: "boolean", description: "When the user asks to commit WHATEVER contribution the goal's target date needs ('semanal con lo que haga falta'), set true: the ENGINE derives the exact required contribution for the goal's (or newly passed) target date and commits it in the user's cadence (or monthly). Never compute the figure yourself." },
           makePrimary: { type: "boolean" },
           flexibleDeadline: { type: "boolean" },
+          fundingAccount: { type: "string", description: "When the user DECLARES which account this goal's contributions come from ('los aportes de esta meta salen de Wells Fargo'): account id or unique name. Pass \"none\" to clear it (back to automatic attribution). Becomes an engine fact (calendar/treasury attribution + default contribution source)." },
           confirm: { type: "boolean", description: "Required true for status='cancelled', ONLY after the user explicitly confirmed. Never set it on the first call." },
         },
         required: ["goalId"],
@@ -3480,6 +3482,21 @@ export function buildMovementEntry(
     // J-1 (re-auditado) — la META la nombra el usuario; la cuenta origen: elegida
     // en otra moneda ⇒ preguntar; omitida + única ordinaria ⇒ asignar.
     if (!goal) return { ok: false, reason: "falta la meta" };
+    // 124 — origen omitido + cuenta de FONDEO declarada en la meta ⇒ esa cuenta
+    // manda sobre el default por moneda (el usuario la declaró para ESTA meta).
+    // Una cuenta nombrada por el usuario en el turno sigue mandando sobre todo.
+    // Es evidencia "learned": preferencia estructurada durable (068-doctrina),
+    // no una elección del modelo — no muere en unproven_choice.
+    let fundingDefaulted = false;
+    let fundingDefaultNote = "";
+    if (!source && goal.fundingAccountId) {
+      const funding = ctx.accounts.find((a) => a.id === goal.fundingAccountId);
+      if (funding) {
+        source = funding;
+        fundingDefaulted = true;
+        fundingDefaultNote = ` (desde ${funding.name}, la cuenta que dejó fijada para los aportes de esa meta — díselo en una frase)`;
+      }
+    }
     if (!source && explicitCurrency) {
       const pick = planCashAccountForCurrency({
         currency: explicitCurrency,
@@ -3504,13 +3521,15 @@ export function buildMovementEntry(
         currency: explicitCurrency,
         chosen: { id: source.id, name: source.name, currency: (source.currency as string | null) ?? null },
         candidates: ctx.accounts.map((a) => ({ id: a.id, name: a.name, currency: (a.currency as string | null) ?? null })),
-        chosenEvidence: chosenAccountEvidence(
-          ctx,
-          "log_movement",
-          args,
-          source,
-          ctx.accounts,
-        ),
+        chosenEvidence: fundingDefaulted
+          ? "learned"
+          : chosenAccountEvidence(
+              ctx,
+              "log_movement",
+              args,
+              source,
+              ctx.accounts,
+            ),
       });
       if (pick.route === "ask") {
         if (pick.reason === "unproven_choice") {
@@ -3533,7 +3552,7 @@ export function buildMovementEntry(
     }
     return {
       ok: true,
-      summary: `Goal contribution ${amount} from ${source.name} to ${goal.name}.`,
+      summary: `Goal contribution ${amount} from ${source.name} to ${goal.name}.${fundingDefaultNote}`,
       entry: {
         ...base,
         type: "goal_contribution",
@@ -5594,7 +5613,52 @@ export async function executePlanGoalFunding(
   };
 }
 
-async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+// 124 — resuelve la cuenta de FONDEO declarada de una meta (id exacto o nombre
+// único entre cuentas ordinarias). La moneda debe coincidir con la de la meta:
+// el trigger SQL lo re-valida bajo lock; aquí la aclaración llega amable y
+// temprana en vez de como error de escritura. null = el arg no vino.
+export function resolveGoalFundingAccount(
+  ref: unknown,
+  goalCurrency: string,
+  ctx: AgentContext,
+): { ok: true; account: Account } | { ok: false; reason: string } | null {
+  if (typeof ref !== "string" || !ref.trim()) return null;
+  const raw = ref.trim();
+  const candidates = ctx.accounts.filter((a) => !a.isGoalAccount);
+  const byId = candidates.find((a) => a.id === raw);
+  const target = normName(raw);
+  const matches = byId
+    ? [byId]
+    : candidates.filter((a) => {
+        const n = normName(a.name);
+        return n.includes(target) || target.includes(n);
+      });
+  if (matches.length === 0) {
+    const list = candidates.map((a) => `"${a.name}"`).join(", ");
+    return {
+      ok: false,
+      reason: list
+        ? `No encuentro esa cuenta para el origen de los aportes. Tiene: ${list}; pregúntale cuál.`
+        : "No tiene cuentas registradas para fijar el origen de los aportes.",
+    };
+  }
+  if (matches.length > 1) {
+    return {
+      ok: false,
+      reason: `Varias cuentas coinciden con ese origen (${matches.map((a) => a.name).join(", ")}); pregúntale cuál exactamente.`,
+    };
+  }
+  const account = matches[0];
+  if (String(account.currency).toUpperCase() !== goalCurrency.toUpperCase()) {
+    return {
+      ok: false,
+      reason: `La meta acumula en ${goalCurrency} y ${account.name} está en ${account.currency}: la cuenta de origen debe estar en ${goalCurrency}. Pregúntale desde cuál cuenta en ${goalCurrency} saldrán los aportes.`,
+    };
+  }
+  return { ok: true, account };
+}
+
+export async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const name = typeof args.name === "string" ? args.name.trim() : "";
   const targetAmount = Number(args.targetAmount);
   if (!name) return { status: "needs_info", summary: "¿Cómo quieres llamar a esta meta?" };
@@ -5674,6 +5738,14 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
     };
   }
   const goalCurrency = statedCurrency ?? ctx.baseCurrency;
+  // 124 — el origen declarado de los aportes se fija SOLO cuando el usuario lo
+  // dice (jamás se pregunta al crear); una referencia que no resuelve o cuya
+  // moneda no calza se aclara antes de escribir nada.
+  const fundingResolved = resolveGoalFundingAccount(args.fundingAccount, goalCurrency, ctx);
+  if (fundingResolved && !fundingResolved.ok) {
+    return { status: "needs_info", summary: fundingResolved.reason };
+  }
+  const fundingAccountId = fundingResolved?.ok ? fundingResolved.account.id : null;
   const a: CreateGoalArgs = {
     userId: ctx.userId,
     name,
@@ -5684,6 +5756,7 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
     cadence,
     contributionAmount: cadence && Number.isFinite(contributionAmount) && contributionAmount > 0 ? contributionAmount : null,
     currency: goalCurrency,
+    fundingAccountId,
     operationKey: agentActionDedupe(ctx, "create-goal", [
       name,
       targetAmount,
@@ -5691,6 +5764,7 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
       goalCurrency,
       cadence ?? null,
       contributionAmount,
+      fundingAccountId,
     ]),
   };
   // Cross-turn re-narración net (misma doctrina que los movimientos): la meta
@@ -5759,6 +5833,9 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
   if (!res.ok) return { status: "error", summary: `No pude guardar la meta "${name}". No prometas que quedó registrada; ofrécele reintentar.` };
   ctx.dirty = true;
   const committed = a.cadence && a.contributionAmount ? ` Con ~${formatMoney(a.contributionAmount, goalCurrency as CurrencyCode)}/${a.cadence === "weekly" ? "sem" : a.cadence === "biweekly" ? "quincena" : "mes"} reservados.` : "";
+  const fundingLine = fundingResolved?.ok
+    ? ` Los aportes salen de ${fundingResolved.account.name} (quedó fijado como origen: el calendario y los registros sin cuenta nombrada usarán esa cuenta).`
+    : "";
   // Meta con fecha pero sin aporte: el recibo trae la referencia del MOTOR en
   // la mano (misma matemática de plan_goal_funding), para que la propuesta de
   // aporte salga en ESTA respuesta con cifras del motor — nunca de cabeza.
@@ -5790,7 +5867,7 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
       }
     : {
         status: "done",
-        summary: `Creé la meta "${name}" (${formatMoney(targetAmount, goalCurrency as CurrencyCode)}${a.targetDate ? `, para ${a.targetDate}` : ", sin fecha fija"}).${committed}${fundingReference} Confírmalo natural y, si no hay fecha/aporte, ofrece definirlos para armar el plan.`,
+        summary: `Creé la meta "${name}" (${formatMoney(targetAmount, goalCurrency as CurrencyCode)}${a.targetDate ? `, para ${a.targetDate}` : ", sin fecha fija"}).${committed}${fundingLine}${fundingReference} Confírmalo natural y, si no hay fecha/aporte, ofrece definirlos para armar el plan.`,
         data: { goalId: res.id },
       };
 }
@@ -5974,6 +6051,27 @@ async function executeUpdateGoal(args: Record<string, unknown>, ctx: AgentContex
   }
   if (args.makePrimary === true) { patch.is_primary = true; patch.goal_type = "primary"; }
   if (args.flexibleDeadline === true) patch.flexible_deadline = true;
+  // 124 — «los aportes salen de X» es un hecho del motor sobre ESTA meta, no una
+  // nota: se fija aquí y el calendario/tesorería/registros lo consumen. "none"
+  // lo des-fija (vuelve a la atribución automática).
+  let fundingAccountName: string | null = null;
+  if (args.fundingAccount !== undefined) {
+    if (args.fundingAccount === "none") {
+      patch.funding_account_id = null;
+    } else {
+      const resolved = resolveGoalFundingAccount(
+        args.fundingAccount,
+        storedGoal?.currency ?? ctx.baseCurrency,
+        ctx,
+      );
+      if (!resolved) {
+        return { status: "needs_info", summary: "¿Desde cuál cuenta salen los aportes de esa meta?" };
+      }
+      if (!resolved.ok) return { status: "needs_info", summary: resolved.reason };
+      patch.funding_account_id = resolved.account.id;
+      fundingAccountName = resolved.account.name;
+    }
+  }
   const targetAmount = Number(args.targetAmount);
   const hasTargetAmount = Number.isFinite(targetAmount) && targetAmount > 0;
   const requestedCurrency =
@@ -6041,6 +6139,13 @@ async function executeUpdateGoal(args: Record<string, unknown>, ctx: AgentContex
   if (patch.is_primary) changes.push("ahora es tu meta principal");
   if (patch.flexible_deadline) changes.push("quedó con fecha flexible");
   if (patch.target_date) changes.push(`nueva fecha ${patch.target_date}`);
+  if ("funding_account_id" in patch) {
+    changes.push(
+      patch.funding_account_id && fundingAccountName
+        ? `los aportes salen de ${fundingAccountName} (origen fijado: el calendario y los registros sin cuenta nombrada usarán esa cuenta)`
+        : "los aportes ya no tienen cuenta fija de origen (vuelve la atribución automática)",
+    );
+  }
   if (patch.contribution_amount !== undefined || patch.cadence !== undefined) {
     const appliedContribution =
       patch.contribution_amount !== undefined
