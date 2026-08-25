@@ -2,7 +2,13 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  LiveOrb,
+  type LiveOrbHandle,
+  type LiveOrbState,
+  type OrbQualityTier,
+} from "./LiveOrb";
 import { QuipuLayerCord } from "./QuipuLayerCord";
 import type { OrbKind, ShellOrb, ShellPayload } from "./shell-payload";
 import { StaticOrb } from "./StaticOrb";
@@ -94,11 +100,28 @@ function PillText({ line }: { line: string }) {
   );
 }
 
-export function SantuarioShell({ payload }: { payload: ShellPayload }) {
+export interface SantuarioPreviewControls {
+  forcedTier?: OrbQualityTier;
+  forcedState?: LiveOrbState;
+  showPerf?: boolean;
+}
+
+export function SantuarioShell({
+  payload,
+  preview,
+}: {
+  payload: ShellPayload;
+  preview?: SantuarioPreviewControls;
+}) {
   const router = useRouter();
   const trackRef = useRef<HTMLDivElement>(null);
+  const liveOrbRef = useRef<LiveOrbHandle>(null);
   const scrollFrame = useRef<number | null>(null);
+  const settleTimer = useRef<number | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [liveSettled, setLiveSettled] = useState(true);
+  const [liveTier, setLiveTier] = useState<OrbQualityTier>(0);
+  const [liveState, setLiveState] = useState<LiveOrbState>("available");
   const [perspectiveOpen, setPerspectiveOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [micHint, setMicHint] = useState(false);
@@ -118,21 +141,52 @@ export function SantuarioShell({ payload }: { payload: ShellPayload }) {
   const goToOrb = (index: number) => {
     const track = trackRef.current;
     if (!track) return;
+    setLiveSettled(false);
     track.scrollLeft = index * track.clientWidth;
     // The label follows the position the browser actually accepted. A failed
     // programmatic move therefore cannot claim a different layer than the one
     // still visible.
     syncActiveFromTrack(track);
+    if (settleTimer.current != null) window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(() => setLiveSettled(true), 140);
   };
 
   const handleScroll = () => {
+    setLiveSettled(false);
     if (scrollFrame.current != null) cancelAnimationFrame(scrollFrame.current);
     scrollFrame.current = requestAnimationFrame(() => {
       const track = trackRef.current;
       if (!track) return;
       syncActiveFromTrack(track);
     });
+    if (settleTimer.current != null) window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(() => {
+      const track = trackRef.current;
+      if (track) syncActiveFromTrack(track);
+      setLiveSettled(true);
+    }, 140);
   };
+
+  useEffect(() => () => {
+    if (scrollFrame.current != null) cancelAnimationFrame(scrollFrame.current);
+    if (settleTimer.current != null) window.clearTimeout(settleTimer.current);
+  }, []);
+
+  useEffect(() => {
+    const orb = liveOrbRef.current;
+    if (!orb) return;
+    orb.reset();
+    if (preview?.forcedState === "capturing") {
+      orb.signalCapture();
+    } else if (preview?.forcedState === "written") {
+      orb.signalWritten({
+        level: Math.max(0, (activeOrb?.level ?? 0.64) - 0.24),
+        receiptKey: "preview-receipt",
+      });
+    } else if (preview?.forcedState === "crossing") {
+      orb.signalCrossing({ level: 0, to: "reserva", factKey: "preview-crossing" });
+    }
+  }, [activeOrb?.level, preview?.forcedState]);
 
   const chatHref = (text: string) => {
     const trimmed = text.trim();
@@ -147,7 +201,19 @@ export function SantuarioShell({ payload }: { payload: ShellPayload }) {
   const pillFor = (orb: ShellOrb) =>
     orb.amountLabel == null
       ? null
-      : orb.emptyInvite ?? (orb.kind === "saldo" ? payload.runwayLine : null) ?? payload.pillLine;
+      : orb.emptyInvite ??
+        (orb.kind === "saldo" && liveState === "dawn" && payload.dawn
+          ? `Volvieron ${payload.dawn.fillLabel} al amanecer.`
+          : null) ??
+        (orb.kind === "saldo" ? payload.runwayLine : null) ??
+        payload.pillLine;
+
+  const imperativePreview =
+    preview?.forcedState === "capturing" ||
+    preview?.forcedState === "written" ||
+    preview?.forcedState === "crossing";
+  const forcedRenderState = imperativePreview ? undefined : preview?.forcedState;
+  const showLiveCanvas = liveSettled && liveTier > 0 && liveState !== "fog";
 
   return (
     <main className="kipu-santuario" data-layer={activeKind}>
@@ -193,36 +259,57 @@ export function SantuarioShell({ payload }: { payload: ShellPayload }) {
             </button>
           </section>
         ) : (
-          <div ref={trackRef} className="kipu-shell-track" onScroll={handleScroll}>
-            {payload.orbs.map((orb) => {
-              const line = pillFor(orb);
-              return (
-                <section
-                  key={orb.kind}
-                  id={`kipu-panel-${orb.kind}`}
-                  className="kipu-shell-slide"
-                  data-orb-kind={orb.kind}
-                  role="tabpanel"
-                  aria-labelledby={`kipu-tab-${orb.kind}`}
-                >
-                  <Link href={ORB_META[orb.kind].href} className="kipu-shell-orb-link" aria-label={orbAriaLabel(orb)}>
-                    <StaticOrb kind={orb.kind} level={orb.level} />
-                    <span className="kipu-shell-readout">
-                      <span className={`kipu-shell-amount${orb.amountLabel == null ? " kipu-shell-amount--invite" : ""}`}>
-                        {orb.amountLabel ?? orb.emptyInvite ?? "Dato no disponible"}
+          <div className="kipu-shell-track-wrap" data-live-visible={showLiveCanvas ? "true" : "false"}>
+            <div className="kipu-shell-live-layer" aria-hidden="true">
+              <LiveOrb
+                ref={liveOrbRef}
+                kind={activeKind}
+                level={activeOrb?.level ?? null}
+                amountMissing={activeOrb?.amountLabel == null}
+                dawn={activeKind === "saldo" ? payload.dawn : null}
+                runway={activeKind === "saldo" && payload.runwayLine != null}
+                active={liveSettled}
+                forcedTier={preview?.forcedTier}
+                forcedState={forcedRenderState}
+                showPerf={preview?.showPerf}
+                onStateChange={setLiveState}
+                onTierChange={setLiveTier}
+              />
+              <span className="kipu-shell-live-spacer kipu-shell-live-spacer--readout" />
+              <span className="kipu-shell-live-spacer kipu-shell-live-spacer--pill" />
+            </div>
+            <div ref={trackRef} className="kipu-shell-track" onScroll={handleScroll}>
+              {payload.orbs.map((orb, index) => {
+                const line = pillFor(orb);
+                return (
+                  <section
+                    key={orb.kind}
+                    id={`kipu-panel-${orb.kind}`}
+                    className="kipu-shell-slide"
+                    data-active={index === activeIndex ? "true" : "false"}
+                    data-orb-kind={orb.kind}
+                    role="tabpanel"
+                    aria-labelledby={`kipu-tab-${orb.kind}`}
+                  >
+                    <Link href={ORB_META[orb.kind].href} className="kipu-shell-orb-link" aria-label={orbAriaLabel(orb)}>
+                      <StaticOrb kind={orb.kind} level={orb.level} />
+                      <span className="kipu-shell-readout">
+                        <span className={`kipu-shell-amount${orb.amountLabel == null ? " kipu-shell-amount--invite" : ""}`}>
+                          {orb.amountLabel ?? orb.emptyInvite ?? "Dato no disponible"}
+                        </span>
+                        {orb.amountLabel != null && (
+                          <span className="kipu-shell-subtitle">{orbSubtitle(orb)}</span>
+                        )}
                       </span>
-                      {orb.amountLabel != null && (
-                        <span className="kipu-shell-subtitle">{orbSubtitle(orb)}</span>
-                      )}
-                    </span>
-                  </Link>
-                  <div className={`kipu-shell-pill${line ? "" : " kipu-shell-pill--empty"}`} aria-hidden={line ? undefined : true}>
-                    <span className="kipu-shell-pill__dot" />
-                    <span>{line ? <PillText line={line} /> : "Sin novedades"}</span>
-                  </div>
-                </section>
-              );
-            })}
+                    </Link>
+                    <div className={`kipu-shell-pill${line ? "" : " kipu-shell-pill--empty"}`} aria-hidden={line ? undefined : true}>
+                      <span className="kipu-shell-pill__dot" />
+                      <span>{line ? <PillText line={line} /> : "Sin novedades"}</span>
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
           </div>
         )}
 

@@ -304,6 +304,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
       return;
     }
     liveWebglContexts += 1;
+    let contextCounted = true;
 
     let currentTier: OrbQualityTier = selectedTier;
     let buffer: OrbBufferInfo = { dpr: 1, width: 1, height: 1 };
@@ -330,6 +331,26 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     let animationState = renderInputs.current.state;
     let animationFrom = animatedLevel;
     let animationAt = startAt;
+
+    const releaseContextCount = () => {
+      if (!contextCounted) return;
+      contextCounted = false;
+      liveWebglContexts = Math.max(0, liveWebglContexts - 1);
+    };
+
+    const onContextLost = (event: Event) => {
+      event.preventDefault();
+      if (!renderer) return;
+      renderer = null;
+      releaseContextCount();
+      currentTier = 0;
+      setTier(0);
+      paused = true;
+      if (frameRequest) cancelAnimationFrame(frameRequest);
+      frameRequest = 0;
+      publishTelemetry(performance.now(), true);
+    };
+    canvas.addEventListener("webglcontextlost", onContextLost);
 
     const resize = () => {
       if (!renderer) return;
@@ -366,7 +387,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
       if (nextTier === 0 && renderer) {
         renderer.dispose();
         renderer = null;
-        liveWebglContexts = Math.max(0, liveWebglContexts - 1);
+        releaseContextCount();
       }
     };
 
@@ -520,6 +541,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
 
     return () => {
       if (frameRequest) cancelAnimationFrame(frameRequest);
+      canvas.removeEventListener("webglcontextlost", onContextLost);
       resizeObserver.disconnect();
       intersectionObserver.disconnect();
       document.removeEventListener("visibilitychange", onVisibility);
@@ -529,7 +551,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
       if (renderer) {
         renderer.dispose();
         renderer = null;
-        liveWebglContexts = Math.max(0, liveWebglContexts - 1);
+        releaseContextCount();
       }
       wakeRef.current = () => undefined;
     };
