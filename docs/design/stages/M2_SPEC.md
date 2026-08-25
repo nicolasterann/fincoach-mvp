@@ -103,9 +103,18 @@ ni librerías de shaders)**.
   **no dibujar** cuando la capa activa no es la del orbe vivo o el canvas
   está fuera de pantalla. Tras **60 s sin interacción**, baja la cadencia a
   ~30 fps (respiración lenta, batería). Cualquier interacción la restaura.
-- **Limpieza:** al desmontar, cancela el rAF, libera programa/buffers y llama
-  `WEBGL_lose_context` si está disponible. Una navegación al chat y vuelta no
-  puede dejar contextos huérfanos (lo audito contando contextos).
+- **Limpieza:** al desmontar, cancela el rAF y libera programa/buffers. Una
+  navegación al chat y vuelta no puede dejar contextos huérfanos (lo audito
+  contando contextos).
+  **CORRECCIÓN (auditoría M2 Ronda 1 — esta línea pedía antes llamar
+  `WEBGL_lose_context` siempre, y eso causó el defecto O1):**
+  `loseContext()` **destruye el elemento canvas para siempre**, así que sólo
+  es admisible sobre un canvas que se va junto con el componente — **jamás
+  sobre uno que la próxima inicialización vaya a reutilizar** (el cleanup del
+  efecto corre también al cambiar una dependencia, p. ej. `forcedTier`, sin
+  desmontar). Suelta la referencia y deja que el navegador recolecte, o fuerza
+  un `<canvas>` nuevo en cada init (por ejemplo con `key`). La garantía debe
+  ser **estructural**: un re-init no puede heredar un canvas muerto.
 
 ### 3.2 Añadidos al payload (servidor)
 
@@ -205,6 +214,12 @@ fps, así que el que mide soy yo — pero **tú tienes que dejarlo medible**:
 - `?perf=1` en el harness muestra un panel con: tier actual, fps, mediana y
   p95 de frame time, DPR efectivo, píxeles del buffer, **número de contextos
   WebGL vivos** y si el bucle está pausado.
+  **CORRECCIÓN (auditoría M2 Ronda 1 — defecto O2):** el panel **jamás
+  presenta un valor no medido como si fuera una medición**. Distingue
+  «sin datos todavía» (guion) de un cero real, lee `tier`, contextos, DPR y
+  píxeles del **estado vivo** (¿existe renderer?, ¿existe contexto?, ¿qué
+  tamaño tiene el buffer?) y no sólo de lo que publica el `draw`, y cuando
+  está pausado dice **por qué** (oculto / fuera de viewport / tier 0).
 - `?tier=0|1|2|3` **fuerza** un tier (para auditar cada uno visualmente).
 - `?state=<estado>` fuerza cada estado de §3.3, incluidos los tres no
   cableados.
