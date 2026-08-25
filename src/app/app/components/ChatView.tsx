@@ -169,13 +169,27 @@ export function ChatView({
 
   useEffect(() => {
     if (!initialTurnId || deepLinkHandled.current) return;
-    const target = turnRefs.current.get(initialTurnId);
-    if (!target) return;
-    deepLinkHandled.current = true;
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
-    setHighlightedTurnId(initialTurnId);
-    const timer = window.setTimeout(() => setHighlightedTurnId(null), 2200);
-    return () => window.clearTimeout(timer);
+    let frame = 0;
+    let timer = 0;
+    let attempts = 0;
+    const reveal = () => {
+      const target = turnRefs.current.get(initialTurnId);
+      if (!target && attempts < 8) {
+        attempts += 1;
+        frame = window.requestAnimationFrame(reveal);
+        return;
+      }
+      if (!target) return;
+      deepLinkHandled.current = true;
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHighlightedTurnId(initialTurnId);
+      timer = window.setTimeout(() => setHighlightedTurnId(null), 2200);
+    };
+    frame = window.requestAnimationFrame(reveal);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
   }, [initialTurnId, messages.length]);
 
   // Text shared into Kipu (PWA share target or an internal CTA) PREFILLS the
@@ -314,6 +328,8 @@ export function ChatView({
   return (
     <div
       className="relative mx-auto flex h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col"
+      data-initial-turn-id={initialTurnId}
+      data-share-prefill={initialShareText ? "ready" : undefined}
       onDragLeave={(e) => {
         if (e.currentTarget === e.target) setIsDragging(false);
       }}

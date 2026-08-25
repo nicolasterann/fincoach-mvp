@@ -56,6 +56,7 @@ export interface ThreadMessageRow {
   role: string;
   channel: string;
   content: string;
+  operation_key?: string | null;
   metadata: Record<string, unknown> | null;
   created_at: string;
 }
@@ -135,16 +136,16 @@ export async function readCompleteThreadRowsWith(
 }
 
 function durableIdentityPart(
-  metadata: Record<string, unknown>,
+  row: ThreadMessageRow,
 ): { kind: string; value: string } | null {
-  const durableOperation = metadata.durableOperation;
-  if (durableOperation && typeof durableOperation === "object") {
-    const id = (durableOperation as { id?: unknown }).id;
-    if (typeof id === "string" && id.trim()) {
-      return { kind: "operation", value: id.trim() };
-    }
+  // The operation can legitimately span several user deliveries. Its id binds
+  // receipts, but it is not enough to prove two chat turns are duplicates.
+  // operation_key is the durable identity of one delivered role/turn.
+  if (typeof row.operation_key === "string" && row.operation_key.trim()) {
+    return { kind: "delivery", value: row.operation_key.trim() };
   }
 
+  const metadata = row.metadata ?? {};
   const keys = [
     "calendarDigestClaimId",
     "objectiveCloseClaimId",
@@ -164,7 +165,7 @@ function durableIdentityPart(
 /** Identity-only dedupe. Text, timestamps, and visual similarity are
  * deliberately absent: without a durable key, both deliveries stay visible. */
 export function threadIdentityKey(row: ThreadMessageRow): string | null {
-  const identity = durableIdentityPart(row.metadata ?? {});
+  const identity = durableIdentityPart(row);
   if (!identity) return null;
   return `${row.role}:${identity.kind}:${identity.value}`;
 }
@@ -392,7 +393,7 @@ function liveThreadReader(
   const base = () => {
     let query = client
       .from("chat_messages")
-      .select("id, role, channel, content, metadata, created_at")
+      .select("id, role, channel, content, operation_key, metadata, created_at")
       .eq("user_id", userId)
       .in("channel", ["web", "telegram"])
       .neq("role", "system");
@@ -486,7 +487,7 @@ export async function readFreshThreadTurn(input: {
 }): Promise<ThreadTurn | null> {
   const { data, error } = await input.client
     .from("chat_messages")
-    .select("id, role, channel, content, metadata, created_at")
+    .select("id, role, channel, content, operation_key, metadata, created_at")
     .eq("user_id", input.userId)
     .eq("id", input.turnId)
     .eq("role", "assistant")

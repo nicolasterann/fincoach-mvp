@@ -218,6 +218,13 @@ import {
   refundRegistrationIsProven,
 } from "@/lib/ai/apply-chat-transaction-intent";
 import { turnAuthor, toolsUsedOf, AUTHOR_LABEL } from "@/lib/chat-memory/turn-provenance";
+import {
+  dedupeThreadRows,
+  readCompleteThreadRowsWith,
+  storedTurnStatus,
+  threadIdentityKey,
+  type ThreadMessageRow,
+} from "@/lib/chat-memory/thread-view";
 import { planStatedAmount } from "@/lib/capture/stated-amount";
 import { inferMultiSourceAllocations, planMultiSourcePayment } from "@/lib/capture/multi-source";
 import { retractsMultiSource } from "@/lib/capture/card-payment-draft";
@@ -25469,6 +25476,168 @@ assert(
         "utf8",
       ).includes("'manifest_present',v_manifest_found"),
     JSON.stringify({ lanes: ir348LaneIds, ola0Total: 16 }),
+  );
+
+  // M3 — the product thread is cross-channel and honest about identity,
+  // completeness, status and ledger provenance. These checks pin behaviour
+  // plus the live wiring; they do not substitute for browser QA.
+  const m3Row = (
+    id: string,
+    channel: "web" | "telegram",
+    metadata: Record<string, unknown> | null,
+    content = "Aviso",
+  ): ThreadMessageRow => ({
+    id,
+    role: "assistant",
+    channel,
+    content,
+    metadata,
+    created_at: `2026-08-25T12:00:0${id.slice(-1)}.000Z`,
+  });
+  const m3DedupeRows = dedupeThreadRows([
+    m3Row("claim-1", "telegram", {
+      source: "recurring",
+      calendarDigestClaimId: "digest-1",
+    }),
+    m3Row("claim-2", "web", {
+      source: "recurring",
+      calendarDigestClaimId: "digest-1",
+    }),
+    m3Row("legacy-3", "telegram", null, "Mismo texto legacy"),
+    m3Row("legacy-4", "web", null, "Mismo texto legacy"),
+    m3Row("operation-5", "telegram", {
+      durableOperation: { id: "multi-turn-operation" },
+    }),
+    m3Row("operation-6", "web", {
+      durableOperation: { id: "multi-turn-operation" },
+    }),
+  ]);
+  assert(
+    "M3-1 · dedupe usa identidad durable y nunca texto: prefiere la copia web probada y conserva ambos legacy",
+    m3DedupeRows.length === 5 &&
+      m3DedupeRows.some((row) => row.id === "claim-2") &&
+      !m3DedupeRows.some((row) => row.id === "claim-1") &&
+      m3DedupeRows.filter((row) => row.content === "Mismo texto legacy").length === 2 &&
+      m3DedupeRows.filter((row) => row.id.startsWith("operation-")).length === 2 &&
+      threadIdentityKey(m3Row("claim-5", "web", null)) === null &&
+      storedTurnStatus({ chatResponseStatus: "needs_clarification" }) ===
+        "needs_clarification" &&
+      storedTurnStatus({ message_type: "transaction" }) === null,
+    JSON.stringify(m3DedupeRows.map(({ id, channel }) => ({ id, channel }))),
+  );
+
+  let m3Page = 0;
+  const m3Complete = await readCompleteThreadRowsWith(
+    {
+      page: async () => {
+        m3Page += 1;
+        return {
+          rows:
+            m3Page === 1
+              ? [m3Row("page-3", "web", null), m3Row("page-2", "web", null), m3Row("page-1", "web", null)]
+              : [m3Row("page-1", "web", null)],
+          error: null,
+        };
+      },
+      count: async () => ({ count: 3, error: null }),
+    },
+    2,
+    5,
+  );
+  const m3Partial = await readCompleteThreadRowsWith(
+    {
+      page: async () => ({
+        rows: [m3Row("cap-3", "web", null), m3Row("cap-2", "web", null), m3Row("cap-1", "web", null)],
+        error: null,
+      }),
+      count: async () => ({ count: 3, error: null }),
+    },
+    2,
+    2,
+  );
+  const m3Failed = await readCompleteThreadRowsWith({
+    page: async () => ({ rows: null, error: "offline" }),
+    count: async () => ({ count: null, error: "offline" }),
+  });
+  assert(
+    "M3-2 · cursor+CAP+1 separa completo, parcial y lectura caída",
+    m3Complete.complete &&
+      !m3Complete.readFailed &&
+      m3Complete.rows.length === 3 &&
+      !m3Partial.complete &&
+      !m3Partial.readFailed &&
+      m3Partial.rows.length === 2 &&
+      m3Failed.readFailed &&
+      !m3Failed.complete &&
+      m3Failed.rows.length === 0,
+    JSON.stringify({ complete: m3Complete, partial: m3Partial, failed: m3Failed }),
+  );
+
+  const m3ThreadSource = readFileSync(
+    `${process.cwd()}/src/lib/chat-memory/thread-view.ts`,
+    "utf8",
+  );
+  const m3HandlerSource = readFileSync(
+    `${process.cwd()}/src/lib/ai/chat-transaction-handler.ts`,
+    "utf8",
+  );
+  const m3ChatPageSource = readFileSync(
+    `${process.cwd()}/src/app/app/chat/page.tsx`,
+    "utf8",
+  );
+  const m3ShellSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/SantuarioShell.tsx`,
+    "utf8",
+  );
+  const m3RecurringSource = readFileSync(
+    `${process.cwd()}/src/lib/scheduled/recurring-notifier.ts`,
+    "utf8",
+  );
+  const m3ObjectiveSql = readFileSync(
+    `${process.cwd()}/supabase/sql/081_bloqueJ7_deterministic_conflicts_are_not_serialization_failures.sql`,
+    "utf8",
+  );
+  assert(
+    "M3-3 · hilo web+Telegram incluye publicadores chat_id nulo y el recibo sólo nace de pasos aterrizados releídos del ledger",
+    m3ThreadSource.includes('.in("channel", ["web", "telegram"])') &&
+      !m3ThreadSource.includes('.eq("chat_id"') &&
+      m3RecurringSource.includes("calendarDigestClaimId: input.claimId") &&
+      m3ObjectiveSql.includes("'objectiveCloseClaimId', p_claim_id") &&
+      m3ThreadSource.includes('.from("agent_operation_steps")') &&
+      m3ThreadSource.includes('.in("status", ["verified", "applied"])') &&
+      m3ThreadSource.includes('type === "transaction"') &&
+      m3ThreadSource.includes('.from("transactions")') &&
+      m3ThreadSource.includes("const view = describeMovement(tx") &&
+      m3ThreadSource.includes("saldoLabel: null") &&
+      !/Saldo[^"\n]{0,80}→|→[^"\n]{0,80}Saldo/i.test(
+        `${m3ThreadSource}\n${pmChatView}`,
+      ),
+    "canales/publicadores/cadena durable/ledger/formato/saldo",
+  );
+
+  assert(
+    "M3-4 · estados, centinela y deep-link conservan autoridad, retry y vista limpia sin fabricar turnos",
+    m3HandlerSource.includes(
+      'if (channel && result.chatResponse.status !== "failed")',
+    ) &&
+      m3HandlerSource.includes(
+        'chatResponseStatus: result.chatResponse.status,',
+      ) &&
+      pmChatView.includes("Pregunta pendiente") &&
+      pmChatView.includes("Eso todavía no lo sé hacer.") &&
+      pmChatView.includes("No pude leer tu conversación ahora.") &&
+      pmChatView.includes("Hay más historial del que puedo mostrar aquí.") &&
+      pmChatView.includes("replaceAll(INTERNAL_RECEIPT_SENTINEL") &&
+      !pmChatView.includes("agent_action_challenges") &&
+      !pmChatView.includes("explicitActionConfirmation") &&
+      !pmChatView.includes(">Confirmar<") &&
+      m3ChatPageSource.includes("initialTurnId={initialTurnId}") &&
+      pmChatView.includes('target.scrollIntoView({ behavior: "smooth", block: "center" })') &&
+      m3ShellSource.includes("/app/chat?turn=") &&
+      m3ShellSource.includes(': "/app/activity"') &&
+      pmTransactionActions.includes("chat_cleared_at: new Date().toISOString()") &&
+      !/clearChatHistoryAction[\s\S]{0,900}\.delete\(/.test(pmTransactionActions),
+    "status/sentinel/authority/deep-link/view clear",
   );
 
   // M0 closure: the old mixed envelope assertions also pinned live SQL/tools.
