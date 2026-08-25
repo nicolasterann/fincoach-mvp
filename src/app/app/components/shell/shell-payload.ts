@@ -50,7 +50,7 @@ const subtitles: Record<OrbKind, string> = {
   saldo: "Disponible hoy",
   reserva: "Tu respaldo",
   metas: "Por aportar este mes",
-  patrimonio: "Ya invertido",
+  patrimonio: "Patrimonio total",
   deuda: "Te falta pagar",
 };
 
@@ -126,11 +126,19 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
   const metasLayers = saldo.layers.filter(
     (layer) => layer.kind === "metas" || layer.kind === "ahorro_inversion",
   );
+  const monthlyProtected = briefing.margenKipu.capacity.monthlyProtected;
+  const hasMetasEntity =
+    ctx.goals.length > 0 ||
+    ctx.assets.length > 0 ||
+    monthlyProtected.savings > 0 ||
+    monthlyProtected.investment > 0 ||
+    briefing.goalsIntel.investment != null;
   const metasAmount = metasLayers.length
     ? metasLayers.reduce((sum, layer) => sum + (layer.amount ?? 0), 0)
-    : null;
-  const patrimonioLayer = saldo.layers.find((layer) => layer.kind === "patrimonio") ?? null;
-  const patrimonioAmount = patrimonioLayer?.amount ?? null;
+    : hasMetasEntity
+      ? 0
+      : null;
+  const patrimonioAmount = briefing.goalsIntel.netWorth?.totalNetWorth ?? null;
   const debtAmount = briefing.debtHealth.totalDebt;
 
   const supabase = await createSupabaseServerClient();
@@ -187,8 +195,12 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
       levelNote: null,
       emptyInvite:
         metasAmount == null
-          ? "¿Armamos tu primera meta? Cuéntame qué sueñas."
-          : null,
+          ? ctx.assetsAvailable
+            ? "¿Armamos tu primera meta? Cuéntame qué sueñas."
+            : "No puedo confirmar tus metas e inversiones ahora."
+          : metasAmount <= 0.005
+            ? "No queda aporte reservado este mes."
+            : null,
     },
     {
       kind: "patrimonio",
@@ -199,7 +211,9 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
       levelNote: null,
       emptyInvite:
         patrimonioAmount == null
-          ? "Cuando inviertas o ahorres a largo plazo, esto crece contigo."
+          ? briefing.goalsIntel.wealthAvailable
+            ? "Aún no hay un patrimonio para mostrar. Cuéntame qué tienes y qué debes."
+            : "No puedo leer tu patrimonio ahora. Intenta de nuevo."
           : null,
     },
     {
