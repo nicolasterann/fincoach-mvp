@@ -8,6 +8,7 @@ import {
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { formatDateEs } from "@/lib/format/dates-es";
+import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { loadCurrentFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { convert } from "@/lib/fx/fx-rates";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
@@ -26,6 +27,12 @@ export interface ShellOrb {
   emptyInvite: string | null;
 }
 
+export interface ShellDawn {
+  levelFrom: number;
+  fillLabel: string;
+  dayKey: string;
+}
+
 export interface ShellPayload {
   status: ShellStatus;
   orbs: ShellOrb[];
@@ -33,6 +40,7 @@ export interface ShellPayload {
   lastMovement: { timeLabel: string; label: string; amountLabel: string } | null;
   runwayLine: string | null;
   greetingName: string | null;
+  dawn: ShellDawn | null;
 }
 
 interface RecentMovementRow {
@@ -75,6 +83,7 @@ function fogPayload(greetingName: string | null): ShellPayload {
     lastMovement: null,
     runwayLine: null,
     greetingName,
+    dawn: null,
   };
 }
 
@@ -251,5 +260,13 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
           : "Sin ingreso activo: registra tu ingreso para calcular tu Saldo."
         : null,
     greetingName,
+    dawn:
+      saldo.todayFill > 0 && saldo.cap > 0
+        ? {
+            levelFrom: clampLevel((saldo.saldo - saldo.todayFill) / saldo.cap),
+            fillLabel: display(saldo.todayFill),
+            dayKey: makeDayKey(ctx.profile.timezone)(new Date()),
+          }
+        : null,
   };
 }
