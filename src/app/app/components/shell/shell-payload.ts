@@ -9,6 +9,7 @@ import { makeDisplayFormatter } from "@/lib/financial/display-money";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { formatDateEs } from "@/lib/format/dates-es";
 import { loadCurrentFxRatesForDisplay } from "@/lib/fx/fx-store";
+import { convert } from "@/lib/fx/fx-rates";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { describeMovement } from "../app-dashboard-helpers";
 
@@ -115,6 +116,12 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
     ctx.profile.displayCurrency,
     rates,
   );
+  const displayRaw = (amount: number): number => {
+    const target = ctx.profile.displayCurrency;
+    if (!target || target === ctx.profile.baseCurrency) return amount;
+    const converted = convert(amount, ctx.profile.baseCurrency, target, rates);
+    return converted.ok ? converted.baseAmount : amount;
+  };
   const saldo = briefing.margenKipu.saldo;
   const metasLayers = saldo.layers.filter(
     (layer) => layer.kind === "metas" || layer.kind === "ahorro_inversion",
@@ -150,7 +157,7 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
     {
       kind: "saldo",
       amountLabel: display(saldo.saldo),
-      amountRaw: saldo.saldo,
+      amountRaw: displayRaw(saldo.saldo),
       subtitle: subtitles.saldo,
       level: saldo.cap > 0 ? clampLevel(saldo.saldo / saldo.cap) : null,
       levelNote: null,
@@ -162,7 +169,7 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
     {
       kind: "reserva",
       amountLabel: display(saldo.reserva),
-      amountRaw: saldo.reserva,
+      amountRaw: displayRaw(saldo.reserva),
       subtitle: subtitles.reserva,
       level: null,
       levelNote: null,
@@ -174,7 +181,7 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
     {
       kind: "metas",
       amountLabel: metasAmount == null ? null : display(metasAmount),
-      amountRaw: metasAmount,
+      amountRaw: metasAmount == null ? null : displayRaw(metasAmount),
       subtitle: subtitles.metas,
       level: null,
       levelNote: null,
@@ -186,7 +193,7 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
     {
       kind: "patrimonio",
       amountLabel: patrimonioAmount == null ? null : display(patrimonioAmount),
-      amountRaw: patrimonioAmount,
+      amountRaw: patrimonioAmount == null ? null : displayRaw(patrimonioAmount),
       subtitle: subtitles.patrimonio,
       level: null,
       levelNote: null,
@@ -198,7 +205,7 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
     {
       kind: "deuda",
       amountLabel: display(debtAmount),
-      amountRaw: debtAmount,
+      amountRaw: displayRaw(debtAmount),
       subtitle: subtitles.deuda,
       level: null,
       levelNote: null,
