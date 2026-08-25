@@ -137,3 +137,105 @@ diseño ni de shader.
 la evidencia que tu entorno permita, y vuelvo a ejecutar. Cuando O1 esté
 cerrado, el propio harness pasa a ser auditable y podré cubrir buena parte de
 lo que hoy quedó en el aire.
+
+---
+
+# M2_AUDIT — Ronda 2 · VEREDICTO: **VERDE CONDICIONADO**
+
+- **Fecha:** 2026-08-25 · **Árbol auditado:** `stage-m-front` @ `b084433`
+- **Entrada:** `M2_REPORT.md` Ronda 2 (O1, O2 y n1 respondidas).
+- **Método:** los tres gates re-corridos por mí + ejecución en Chromium con
+  instrumentación independiente (`isContextLost`, identidad del elemento
+  canvas, conteo de contextos, comparación de cifras entre tiers).
+
+**Las dos órdenes bloqueantes están cerradas y probadas moviendo la app.**
+M2 queda aceptado por el lado de la auditoría, con una reserva explícita
+(§Condición) sobre lo que este entorno no puede medir.
+
+## O1 · CERRADA — el tier ya no mata el orbe
+
+Recorrido `tier=3 → tier=2 → tier=1` en pestaña limpia:
+
+| paso | contexto perdido | tier en el DOM | contextos vivos | canvas nuevo |
+|---|---|---|---|---|
+| carga `tier=3` | `false` | 3 | 1 | — |
+| cambio a `tier=2` | `false` | 2 | 1 | **sí** |
+| cambio a `tier=1` | `false` | 1 | 1 | **sí** |
+
+Las dos defensas están puestas y son estructurales: `dispose()` ya no llama
+`loseContext` (**cero apariciones de `loseContext`/`lose_context` en todo el
+shell**) y el tier forzado forma la `key` de `LiveOrb`, así que un cambio de
+tier monta un **elemento canvas nuevo** y no puede heredar uno muerto.
+
+**B1 completo, incluida la fuga:** normal ⇒ 1 contexto / 1 canvas; en niebla
+(el componente se desmonta) ⇒ **0 contextos / 0 canvas**, y el panel dice
+`estado fog`; al volver ⇒ **1**, nunca 2. El contexto se libera de verdad.
+
+## O2 · CERRADA — el panel dice la verdad
+
+Con la pestaña oculta y **cero cuadros dibujados**, el panel reporta ahora:
+
+```
+tier 3 · pausado: oculto | fps — | frame p50 — ms · p95 — ms
+DPR 2.0 · 636,804 px | contextos vivos 1 | estado available
+```
+
+Es exactamente lo pedido: el tier, el contexto y el buffer salen del estado
+real (798×798 = 636.804 px con DPR 2), lo no medido se muestra como `—` y
+jamás como 0, y la pausa dice **su motivo**. Vi tres motivos distintos en
+vivo (`oculto`, `inicializando`, `tier 0`), lo que hace el instrumento
+diagnosticable en vez de mudo.
+
+## n1 · CERRADA
+
+El buffer nace sin medir y converge a 798×798 real; no reaparece el 1×1.
+
+## Lo demás que verifiqué en esta ronda
+
+- **Gates (por mí):** `lint` **0 errores**, `build` **exit 0**, captura
+  **826/826**.
+- **B7 · la calidad no toca el dinero:** las cinco cifras son **idénticas**
+  en tier 3 y en tier 1 (`82.40$ · 1,200$ · 260$ · 3,480$ · 760$`).
+- **B2 · materias y tiers se distinguen en pantalla:** tier 3 Saldo = agua
+  viva con menisco curvo, brillo de lámina, cuerpo volumétrico y motas
+  suspendidas bajo un domo de vidrio; Patrimonio = núcleo de cristal
+  facetado suspendido, tamaño fijo, sin lámina; **tier 1** = líquido plano
+  con onda simple, visiblemente más barato y sin raymarch. La escalera
+  cambia el acabado sin tocar la verdad.
+- **B12 · no-regresión:** el carrusel conserva la paridad de M1.
+- **B13 · arrastres m1/m2/m3:** cerrados.
+
+## Condición para el merge (no es una orden a Codex)
+
+Una parte de M2 **no la ha verificado nadie todavía**, y no por descuido: en
+este entorno la pestaña vive en `document.hidden`, `requestAnimationFrame` no
+corre y las capturas sólo fuerzan cuadros sueltos. Queda sin comprobar:
+
+1. **fps reales y la degradación automática en movimiento** (sólo audité su
+   lógica: ventanas de 60, mediana >20 ms dos veces, histéresis, y el acierto
+   de excluir los cuadros en idle de la ventana de calidad).
+2. **La ceremonia del amanecer** y las transiciones **capturando / escrito /
+   cruce**.
+3. **reduced-motion** y **ausencia de WebGL** de punta a punta.
+4. **El presupuesto en un Android de gama media** — nadie de este circuito
+   puede sustituir un teléfono real.
+
+**Recomiendo al founder** una pasada de cinco minutos en su propio navegador
+(que sí compone) y una en su teléfono, con esta lista corta:
+`?tier=0..3` (que el orbe sobreviva y se note la diferencia) · `?state=`
+amanecer (sube una vez y no se repite al recargar), capturando (el nivel
+**no** se mueve), escrito (baja al nivel entregado), cruce · el modo sin
+animación del sistema · y mirar el panel con `?perf=1` para ver fps reales.
+**Con eso M2 queda cerrado del todo; sin eso, se mergea asumiendo ese riesgo
+declarado.**
+
+## Nota menor (para M3, no bloquea)
+
+Con `?perf=1` el panel se superpone al recibo y al dock en 375 px. Es una
+superficie de desarrollo y sólo aparece con el flag, pero conviene moverlo
+cuando M3 toque esa zona.
+
+## Estado
+
+**M2 ACEPTADO** por la auditoría. `stage-m-front` puede mergearse cuando el
+founder complete (o asuma) la §Condición. El spec de M3 llega cuando lo pida.

@@ -75,6 +75,13 @@ en otro chat) sin contaminar su árbol ni su contexto.
   máquina de ocho estados (amanecer cableado; capturando/escrito/cruce tras
   una API imperativa para M4–M5), escalera de calidad que se degrada sola con
   su instrumentación medible, y los arrastres m1–m3 de M1. Criterios B1–B14.
+- [stages/M3_SPEC — Diálogo I](stages/M3_SPEC.md) · 2026-08-25 · El chat que
+  expresa al agente: recibos releídos del ledger (nunca del modelo y **sin
+  flecha de saldo** — el motor sólo conoce el post-write), `status` deja de
+  descartarse, hilo unificado web+Telegram con procedencia, dedupe por
+  identidad durable, fix de lectura del digest invisible (C4), `?turn=` para
+  la cinta, y los anclajes del gate re-anclados sin debilitarse. Criterios
+  T1–T14.
 - [M_DESIGN_003 — Auditoría de pre-implementación](M_DESIGN_003_AUDITORIA_PREIMPLEMENTACION_2026-08-24.md)
   · 2026-08-24 (M0 cerrado, Bloque M activo) · Veredicto GO sobre la propuesta,
   medición del front actual, 7 correcciones factuales de los docs contra el
