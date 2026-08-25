@@ -147,6 +147,21 @@ function telemetryText(value: number): string {
   return Number.isFinite(value) ? value.toFixed(1) : "0.0";
 }
 
+function signalAnimationKey(input: RenderInputs): string {
+  if (input.signal?.type === "written") return `written:${input.signal.receiptKey}`;
+  if (input.signal?.type === "crossing") return `crossing:${input.signal.factKey}`;
+  if (input.state === "dawn") return `dawn:${input.dawn?.dayKey ?? "none"}`;
+  return input.state;
+}
+
+function mixRgb(from: OrbRgb, to: OrbRgb, ratio: number): OrbRgb {
+  return [
+    from[0] + (to[0] - from[0]) * ratio,
+    from[1] + (to[1] - from[1]) * ratio,
+    from[2] + (to[2] - from[2]) * ratio,
+  ];
+}
+
 export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
   {
     kind,
@@ -327,8 +342,15 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     let liquid: OrbRgb = [0, 0, 0];
     let deep: OrbRgb = [0, 0, 0];
     let accent: OrbRgb = [0, 0, 0];
+    let liquidFrom: OrbRgb = liquid;
+    let deepFrom: OrbRgb = deep;
+    let accentFrom: OrbRgb = accent;
+    let liquidTarget: OrbRgb = liquid;
+    let deepTarget: OrbRgb = deep;
+    let accentTarget: OrbRgb = accent;
+    let colorTransitionAt = 0;
     let animatedLevel = renderInputs.current.level;
-    let animationState = renderInputs.current.state;
+    let animationKey = signalAnimationKey(renderInputs.current);
     let animationFrom = animatedLevel;
     let animationAt = startAt;
 
@@ -444,8 +466,9 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
       }
 
       const input = renderInputs.current;
-      if (input.state !== animationState) {
-        animationState = input.state;
+      const nextAnimationKey = signalAnimationKey(input);
+      if (nextAnimationKey !== animationKey) {
+        animationKey = nextAnimationKey;
         animationAt = now;
         animationFrom = animatedLevel;
         if (input.state === "dawn" && input.dawn) {
@@ -464,17 +487,42 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
         const progress = Math.min(1, (now - animationAt) / 1_100);
         const eased = 1 - Math.pow(1 - progress, 3);
         animatedLevel = animationFrom + (targetLevel - animationFrom) * eased;
-      } else {
+      } else if (input.state !== "capturing") {
         animatedLevel = input.level;
       }
 
       const theme = document.documentElement.dataset.theme ?? "dark";
       const nextColorSignature = `${input.kind}:${theme}`;
       if (colorSignature !== nextColorSignature) {
+        const nextLiquid = readCssColor(canvas, `--kipu-liquid-${input.kind}`);
+        const nextDeep = readCssColor(canvas, `--kipu-deep-${input.kind}`);
+        const nextAccent = readCssColor(canvas, `--layer-${input.kind}`);
+        if (colorSignature && input.state === "crossing") {
+          liquidFrom = liquid;
+          deepFrom = deep;
+          accentFrom = accent;
+          liquidTarget = nextLiquid;
+          deepTarget = nextDeep;
+          accentTarget = nextAccent;
+          colorTransitionAt = now;
+        } else {
+          liquid = nextLiquid;
+          deep = nextDeep;
+          accent = nextAccent;
+          liquidTarget = nextLiquid;
+          deepTarget = nextDeep;
+          accentTarget = nextAccent;
+          colorTransitionAt = 0;
+        }
         colorSignature = nextColorSignature;
-        liquid = readCssColor(canvas, `--kipu-liquid-${input.kind}`);
-        deep = readCssColor(canvas, `--kipu-deep-${input.kind}`);
-        accent = readCssColor(canvas, `--layer-${input.kind}`);
+      }
+      if (colorTransitionAt > 0) {
+        const progress = Math.min(1, (now - colorTransitionAt) / 900);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        liquid = mixRgb(liquidFrom, liquidTarget, eased);
+        deep = mixRgb(deepFrom, deepTarget, eased);
+        accent = mixRgb(accentFrom, accentTarget, eased);
+        if (progress === 1) colorTransitionAt = 0;
       }
       const elapsed = (now - startAt) / 1_000;
       const slowTime = input.state === "runway" ? elapsed * 0.36 : elapsed;

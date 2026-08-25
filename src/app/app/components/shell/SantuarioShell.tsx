@@ -365,6 +365,18 @@ export function SantuarioShell({
         </div>
       </div>
 
+      {payload.status === "niebla" && preview?.showPerf && (
+        <aside className="kipu-orb-perf" aria-label="Rendimiento del orbe estático en niebla">
+          <strong>Orbe vivo</strong>
+          <span>tier 0 · pausado</span>
+          <span>fps 0.0</span>
+          <span>frame p50 0.0 ms · p95 0.0 ms</span>
+          <span>DPR 1.0 · 0 px</span>
+          <span>contextos vivos 0</span>
+          <span>estado fog</span>
+        </aside>
+      )}
+
       {perspectiveOpen && (
         <div className="kipu-shell-sheet-backdrop" role="presentation" onMouseDown={() => setPerspectiveOpen(false)}>
           <section
