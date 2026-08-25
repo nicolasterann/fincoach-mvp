@@ -243,3 +243,125 @@ La arquitectura de M1 está bien y no se rehace: el flag, el payload de una
 sola lectura, la separación servidor/cliente, los tokens de §11, la niebla,
 el alcance de archivos y la accesibilidad quedan como están. Las cuatro
 órdenes bloqueantes son de comportamiento y de verdad, no de estructura.
+
+---
+
+# M1_AUDIT — Ronda 3 · VEREDICTO: **VERDE**
+
+- **Fecha:** 2026-08-24 · **Árbol auditado:** `stage-m-front` @ `b2cf447`
+- **Entrada:** `M1_REPORT.md` Ronda 3 (O1–O8 respondidas; A5/A7/A8/A9 marcadas
+  honestamente como no verificables en su entorno — la enmienda al protocolo
+  funcionó).
+- **Método:** gates re-corridos por mí + verificación por EJECUCIÓN en
+  Chromium a 375×812 (taps reales sobre los chips, escritura en el dock,
+  lectura del log de red, medición de geometría) + lectura del diff completo.
+
+**Las cuatro órdenes bloqueantes están cerradas y PROBADAS moviendo la app,
+no leyendo el código.** M1 queda aceptado.
+
+## Verificación de las órdenes bloqueantes
+
+**O1 · Carrusel — CERRADA.** Los cuatro taps recorridos en vivo; en cada uno
+coinciden posición, capa visible, tab, acento **y la cifra**:
+
+| tap | scrollLeft | slide visible | tab | acento | cifra |
+|---|---|---|---|---|---|
+| Metas | 750 | metas | Metas | metas | 260$ |
+| Deuda | 1500 | deuda | Deuda | deuda | 760$ |
+| Reserva | 375 | reserva | Reserva | reserva | 1.200$ |
+| Saldo | 0 | saldo | Saldo | saldo | 82,40$ |
+
+El arreglo es estructural, que es lo que pedí: el índice se deriva de la
+posición que el navegador ACEPTÓ (`syncActiveFromTrack`), así que un
+movimiento fallido ya no puede afirmar otra capa.
+
+**Nota metodológica que importa para futuras rondas:** mi primer intento
+mostró el swipe «desincronizado». Era **mi entorno, no el código**: la
+pestaña estaba oculta (`document.hidden = true`), y con la pestaña oculta
+Chromium **pausa `requestAnimationFrame`**, que es donde vive el sync del
+scroll (medido: 0 callbacks en 800 ms; y asignar `scrollLeft` no emite evento
+de scroll en ese estado). Forzando un frame, el tab se sincronizó solo a
+«Reserva» con su acento. Registro el falso positivo para no repetirlo:
+**antes de reportar una desincronía, comprobar `document.hidden` y que rAF
+corra.**
+
+**O2 · Dock — CERRADA.** Tocar el input ya no navega (URL intacta, input
+enfocado), se escribe, y el envío produjo en el log de red:
+`GET /app/chat?share=cafe%204.50%20con%20produbanco` — prefill entregado, sin
+autoenvío. Placeholder «Anota o pregúntame…» (O7) entra sin cortarse.
+
+**O3 · Existencia vs monto — CERRADA, y la doctrina se sostiene.** Verifiqué
+la parte que el reporte no podía probar sola: **una lectura fallida de metas
+LANZA** en el context builder (`user-financial-context-builder.ts:318,328`),
+así que `ctx.goals.length === 0` significa de verdad «no tiene metas» y jamás
+«no pude leer». Los activos usan el flag existente `assetsAvailable` y, cuando
+no es publicable, el orbe dice «No puedo confirmar tus metas e inversiones
+ahora» en vez de invitar. Entidad viva + ciclo en cero ⇒ `0$` afirmado +
+«No queda aporte reservado este mes». Correcto.
+
+**O4 · Patrimonio — CERRADA.** El orbe lee
+`briefing.goalsIntel.netWorth.totalNetWorth`: **el mismo campo y el mismo
+rótulo («Patrimonio total») que renderiza el héroe de `/app/wealth`**. `null`
+sigue siendo `null` (nunca cero) y `wealthAvailable` separa «no hay» de «no
+pude leer». Ver §Decisión para el founder: la elección es correcta pero
+cambia el SIGNIFICADO del orbe respecto de D3.
+
+## No bloqueantes: O5, O6, O7, O8 cerradas
+
+- **O5** medido: marco en `y=0`, dock termina en `y=800` con viewport 812 —
+  cinta y dock dentro de pantalla. ✓
+- **O6** día-1 ahora es producible: Saldo/Reserva/Deuda con `0$` afirmado +
+  su invitación en la pill; Metas/Patrimonio con la invitación como texto
+  focal, sin subtítulo huérfano y sin duplicarla en la pill. ✓
+- **O7** ✓ · **O8** anotado como hueco conocido para el stage del toggle. ✓
+
+## Gates (corridos por el auditor sobre `b2cf447`)
+
+`npm run lint` → **0 errores** (8 warnings preexistentes en `scripts/qa/`).
+`npm run build` → **exit 0**, compilado + TypeScript OK.
+`/dev/capture-test` → **826/826**, exit 0.
+
+## Menores que viajan a M2 (no bloquean el merge)
+
+- **m1 · El fixture día-1 quedó con copy viejo de Patrimonio** («Cuando
+  inviertas o ahorres a largo plazo, esto crece contigo») mientras producción
+  ya dice «Aún no hay un patrimonio para mostrar…». Misma clase que O6: el
+  harness debe mostrar lo que producción produce. Alinear los textos del
+  fixture con `shell-payload.ts`.
+- **m2 · El selector flotante del harness tapa la fila de tabs** a 375 px
+  (queda sobre la zona derecha, cerca de «Deuda»). Superficie de dev, pero es
+  justo donde miramos: moverlo o hacerlo colapsable hacia el borde.
+- **m3 · Falta el estado de patrimonio NEGATIVO en el harness.** Con la
+  decisión de O4, `totalNetWorth` puede ser negativo (deuda > activos), que es
+  un caso normal del usuario objetivo. Añadir el fixture y decidir la
+  composición ANTES de que lo vea un usuario real.
+
+## Decisión para el founder (no es defecto — es producto)
+
+Al cerrar O4, el orbe **Patrimonio dejó de significar «lo ya invertido»**
+(que es lo que fijaba D3 en `M_DESIGN_002`) y pasó a significar **patrimonio
+total = cuentas + activos + inversiones − deudas**. Codex lo declaró
+abiertamente y eligió bien dentro de mi orden, pero el cambio tiene
+consecuencias que sólo el founder decide:
+
+1. **Deja de ser una capa disjunta:** ese número CONTIENE el Saldo y la
+   Reserva y RESTA la Deuda, así que el carrusel ya no son cinco cajones
+   separados de tu plata.
+2. **Puede ser negativo** para el usuario objetivo (18–35 con tarjeta), y un
+   número grande en rojo en la pantalla de bienvenida choca con P4 (cero
+   culpa). Necesita decisión de copy/tratamiento (m3).
+3. **A cambio gana coherencia:** misma palabra, misma cifra y misma puerta
+   que la pantalla que abre — que era el defecto que O4 atacaba.
+
+Opciones para M6/M7: (a) quedarse con patrimonio total y aceptar que el
+quinto orbe es un «resumen», no una capa; (b) volver a «lo invertido» y
+cambiar el héroe de `/app/wealth` para que citen lo mismo. **Recomiendo (a)
+para M1–M5 —está construido, es veraz y coherente— y resolverlo formalmente
+al especificar M6**, que es donde vive la superficie de patrimonio.
+
+## Estado
+
+**M1 ACEPTADO.** La rama `stage-m-front` puede mergearse a `main` cuando el
+founder lo ordene. El spec de M2 (el orbe vivo con shader, su máquina de
+estados y su presupuesto de rendimiento) se escribe cuando el founder lo
+pida; los tres menores m1–m3 entran en su §Arrastres.

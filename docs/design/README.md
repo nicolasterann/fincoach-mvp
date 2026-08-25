@@ -69,6 +69,12 @@ en otro chat) sin contaminar su árbol ni su contexto.
   de build: flag `KIPU_SHELL`, santuario con carrusel de 5 orbes estáticos
   honestos, payload de UNA lectura, puertas a todos los detalles, dock v1,
   harness `/dev/shell-preview`, criterios A1–A14 y protocolo de comunicación.
+  **CERRADO VERDE en 3 rondas** (ver `M1_AUDIT.md`).
+- [stages/M2_SPEC — El orbe vivo](stages/M2_SPEC.md) · 2026-08-24 · Shader
+  WebGL portado del mock con UN solo contexto, cinco materias por capa,
+  máquina de ocho estados (amanecer cableado; capturando/escrito/cruce tras
+  una API imperativa para M4–M5), escalera de calidad que se degrada sola con
+  su instrumentación medible, y los arrastres m1–m3 de M1. Criterios B1–B14.
 - [M_DESIGN_003 — Auditoría de pre-implementación](M_DESIGN_003_AUDITORIA_PREIMPLEMENTACION_2026-08-24.md)
   · 2026-08-24 (M0 cerrado, Bloque M activo) · Veredicto GO sobre la propuesta,
   medición del front actual, 7 correcciones factuales de los docs contra el
