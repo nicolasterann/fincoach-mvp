@@ -52,7 +52,6 @@ const STATE_ALIASES: Record<string, Scenario> = {
 
 const FORCED_LIVE_STATE: Partial<Record<Scenario, LiveOrbState>> = {
   normal: "available",
-  amanecer: "dawn",
   niebla: "fog",
   runway: "runway",
   "saldo-cero": "empty",
@@ -193,6 +192,7 @@ export default async function ShellPreviewPage({
       ? Number(tierQuery) as OrbQualityTier
       : undefined;
   const showPerf = perf === "1";
+  const forcedState = state === "dawn" ? "dawn" : FORCED_LIVE_STATE[scenario];
 
   return (
     <div className="relative min-h-screen bg-zinc-950">
@@ -237,7 +237,7 @@ export default async function ShellPreviewPage({
         payload={payloadFor(scenario)}
         preview={{
           forcedTier: tier,
-          forcedState: FORCED_LIVE_STATE[scenario],
+          forcedState,
           showPerf,
         }}
       />
