@@ -521,8 +521,8 @@ body {
 
 .kipu-orb-perf {
   position: fixed;
-  bottom: calc(env(safe-area-inset-bottom) + 8px);
-  left: 8px;
+  top: calc(env(safe-area-inset-top) + 8px);
+  right: 8px;
   z-index: 80;
   display: grid;
   min-width: 220px;

@@ -316,7 +316,15 @@ export function SantuarioShell({
 
         <div className="kipu-shell-actions">
           {payload.lastMovement ? (
-            <Link href="/app/activity" className="kipu-shell-cinta" aria-label={`Último movimiento: ${payload.lastMovement.label}, ${payload.lastMovement.amountLabel}`}>
+            <Link
+              href={
+                payload.lastMovement.turnId
+                  ? `/app/chat?turn=${encodeURIComponent(payload.lastMovement.turnId)}`
+                  : "/app/activity"
+              }
+              className="kipu-shell-cinta"
+              aria-label={`Último movimiento: ${payload.lastMovement.label}, ${payload.lastMovement.amountLabel}`}
+            >
               <span className="kipu-shell-cinta__time">{payload.lastMovement.timeLabel}</span>
               <span className="kipu-shell-cinta__label">{payload.lastMovement.label}</span>
               <span className="kipu-shell-cinta__amount">{payload.lastMovement.amountLabel}</span>

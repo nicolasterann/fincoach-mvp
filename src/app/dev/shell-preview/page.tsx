@@ -72,7 +72,12 @@ const basePayload: ShellPayload = {
   status: "ok",
   orbs: normalOrbs,
   pillLine: "Diners · 50.60$ · 27 de agosto",
-  lastMovement: { timeLabel: "14:20", label: "Café · Produbanco", amountLabel: "−4.50$" },
+  lastMovement: {
+    timeLabel: "14:20",
+    label: "Café · Produbanco",
+    amountLabel: "−4.50$",
+    turnId: null,
+  },
   runwayLine: null,
   greetingName: "Nico",
   dawn: null,

@@ -11,6 +11,7 @@ import { formatDateEs } from "@/lib/format/dates-es";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { loadCurrentFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { convert } from "@/lib/fx/fx-rates";
+import { findThreadTurnForTransaction } from "@/lib/chat-memory/thread-view";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { describeMovement } from "../app-dashboard-helpers";
 
@@ -37,13 +38,19 @@ export interface ShellPayload {
   status: ShellStatus;
   orbs: ShellOrb[];
   pillLine: string | null;
-  lastMovement: { timeLabel: string; label: string; amountLabel: string } | null;
+  lastMovement: {
+    timeLabel: string;
+    label: string;
+    amountLabel: string;
+    turnId: string | null;
+  } | null;
   runwayLine: string | null;
   greetingName: string | null;
   dawn: ShellDawn | null;
 }
 
 interface RecentMovementRow {
+  id: string;
   description: string;
   category: string | null;
   base_amount: number | string;
@@ -154,7 +161,7 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString();
   const { data: recentRows, error: movementError } = await supabase
     .from("transactions")
-    .select("description, category, base_amount, base_currency, type, occurred_at, debt_account_id, goal_id")
+    .select("id, description, category, base_amount, base_currency, type, occurred_at, debt_account_id, goal_id")
     .eq("user_id", userId)
     .gte("occurred_at", since)
     .order("occurred_at", { ascending: false })
@@ -169,6 +176,13 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
       })
     : null;
   const movementSign = movementView?.tone === "out" ? "−" : movementView?.tone === "in" ? "+" : "";
+  const movementTurnId = recent
+    ? await findThreadTurnForTransaction({
+        client: supabase,
+        userId,
+        transactionId: recent.id,
+      })
+    : null;
 
   const orbs: ShellOrb[] = [
     {
@@ -251,6 +265,7 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
             timeLabel: movementTime(recent.occurred_at, ctx.profile.timezone),
             label: movementView.title,
             amountLabel: `${movementSign}${movementView.amount}`,
+            turnId: movementTurnId,
           }
         : null,
     runwayLine:
