@@ -1,5 +1,5 @@
 # M1_REPORT — Ronda 1
-- Rama/commits: stage-m-front · pendiente de commit del reporte
+- Rama/commits: stage-m-front · sin commits de implementación; este reporte vive en el commit actual
 - Estado: BLOQUEADO (ver Preguntas)
 
 ## Qué se construyó
