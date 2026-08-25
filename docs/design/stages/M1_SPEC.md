@@ -135,8 +135,20 @@ reporte como hueco; PROHIBIDO derivar dinero nuevo en UI o tocar
 | Saldo | `mk.saldo.saldo` | `saldo/cap` si `cap > 0`; null si no |
 | Reserva | `mk.saldo.reserva` | null (no existe objetivo declarado de Reserva como hecho del motor) |
 | Metas | Σ capas `metas` + `ahorro_inversion` de `mk.saldo.layers` | null en M1 |
-| Patrimonio | capa `patrimonio` de `layers` (ausente ⇒ null) | null SIEMPRE (crece, no se llena) |
+| Patrimonio | capa `patrimonio` de `layers` (ausente ⇒ null) — **CORREGIDO, ver nota** | null SIEMPRE (crece, no se llena) |
 | Deuda | `briefing.debtHealth.totalDebt` | cobertura del ciclo SOLO si el briefing ya expone `statement_covered`/`statement_total_due` agregables sin lectura nueva; si no ⇒ null y hueco anotado |
+
+> **NOTA CORRECTIVA (auditoría Ronda 2 — corrige esta tabla).** Las capas del
+> motor se OMITEN cuando su monto es 0 (`margen-kipu.ts:520-524`), así que la
+> ausencia de una capa NO significa que el usuario no tenga esa entidad:
+> significa que este ciclo no queda monto reservado. Y `investmentsTotalBase`
+> es LÍQUIDO por diseño (`coaching-signals.ts:1098`, *"SELLABLE value only"*),
+> distinto del patrimonio completo que muestra `/app/wealth`.
+> Reglas vinculantes: **(1)** separa EXISTENCIA de MONTO — si la entidad
+> existe y el ciclo es 0, muestra `0$` (afirmado por el motor) con frase
+> veraz; la invitación de día-1 sólo cuando la entidad NO existe. **(2)** el
+> orbe Patrimonio y su destino `/app/wealth` deben citar el MISMO número, o
+> el orbe debe decir explícitamente qué mide y abrir donde ese número vive.
 
 ### 3.3 El shell (cliente)
 
@@ -168,9 +180,11 @@ reporte como hueco; PROHIBIDO derivar dinero nuevo en UI o tocar
   `/app/settings`. Con esto `/app/debt`, `/app/wealth` y `/app/spending`
   quedan alcanzables por primera vez.
 - **Dock v1:** input real («Anota un gasto o pregúntame…») + botones mic y
-  cámara + enviar. Enviar/tap del input ⇒ navega a `/app/chat` con el texto
-  como prefill vía el mecanismo `?share=` EXISTENTE (jamás auto-envía —
-  contrato de seguridad vigente). Cámara ⇒ `/app/chat` (el attach ya vive
+  cámara + enviar. **CORREGIDO (auditoría Ronda 2):** el input se ESCRIBE en
+  el santuario — tocarlo enfoca y abre el teclado, nunca navega. Sólo Enter o
+  el botón de enviar navegan a `/app/chat` con el texto como prefill vía el
+  mecanismo `?share=` EXISTENTE (jamás auto-envía — contrato de seguridad
+  vigente). Con el input vacío, enviar abre el chat sin `?share=`. Cámara ⇒ `/app/chat` (el attach ya vive
   ahí). Mic ⇒ deshabilitado honesto: tooltip/pill «Pronto — por ahora
   mándame una nota de voz por Telegram». NO toques `ChatView.tsx` (sus
   anchors del gate se actualizan en M3, no aquí).
