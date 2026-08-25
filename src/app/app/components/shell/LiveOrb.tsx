@@ -16,6 +16,14 @@ import {
 } from "./orb-shader";
 
 export type OrbQualityTier = 0 | 1 | 2 | 3;
+export type OrbPauseReason =
+  | "initializing"
+  | "hidden"
+  | "offscreen"
+  | "inactive"
+  | "no-size"
+  | "tier-0"
+  | null;
 export type LiveOrbState =
   | "available"
   | "dawn"
@@ -34,14 +42,15 @@ export interface LiveOrbHandle {
 }
 
 export interface LiveOrbTelemetry {
-  tier: OrbQualityTier;
-  fps: number;
-  medianMs: number;
-  p95Ms: number;
-  dpr: number;
-  bufferPixels: number;
-  liveContexts: number;
+  tier: OrbQualityTier | null;
+  fps: number | null;
+  medianMs: number | null;
+  p95Ms: number | null;
+  dpr: number | null;
+  bufferPixels: number | null;
+  liveContexts: number | null;
   paused: boolean;
+  pauseReason: OrbPauseReason;
 }
 
 interface LiveOrbProps {
@@ -143,8 +152,17 @@ function deriveState(input: {
   return "available";
 }
 
-function telemetryText(value: number): string {
-  return Number.isFinite(value) ? value.toFixed(1) : "0.0";
+function telemetryText(value: number | null): string {
+  return value != null && Number.isFinite(value) ? value.toFixed(1) : "—";
+}
+
+function pauseReasonLabel(reason: OrbPauseReason): string {
+  if (reason === "hidden") return "oculto";
+  if (reason === "offscreen") return "fuera de viewport";
+  if (reason === "inactive") return "capa inactiva";
+  if (reason === "no-size") return "sin tamaño";
+  if (reason === "tier-0") return "tier 0";
+  return "inicializando";
 }
 
 function signalAnimationKey(input: RenderInputs): string {
@@ -184,14 +202,15 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
   const [dawnDay, setDawnDay] = useState<string | null>(null);
   const [tier, setTier] = useState<OrbQualityTier>(0);
   const [telemetry, setTelemetry] = useState<LiveOrbTelemetry>({
-    tier: 0,
-    fps: 0,
-    medianMs: 0,
-    p95Ms: 0,
-    dpr: 1,
-    bufferPixels: 0,
-    liveContexts: 0,
+    tier: null,
+    fps: null,
+    medianMs: null,
+    p95Ms: null,
+    dpr: null,
+    bufferPixels: null,
+    liveContexts: null,
     paused: true,
+    pauseReason: "initializing",
   });
 
   useImperativeHandle(ref, () => ({
@@ -298,37 +317,47 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     const selectedTier = initialTier(forcedTier);
     setTier(selectedTier);
     if (selectedTier === 0) {
-      setTelemetry((current) => ({
-        ...current,
+      setTelemetry({
         tier: 0,
+        fps: null,
+        medianMs: null,
+        p95Ms: null,
+        dpr: null,
+        bufferPixels: null,
         liveContexts: liveWebglContexts,
         paused: true,
-      }));
+        pauseReason: "tier-0",
+      });
       return;
     }
 
     let renderer: OrbRenderer | null = createOrbRenderer(canvas);
     if (!renderer) {
       setTier(0);
-      setTelemetry((current) => ({
-        ...current,
+      setTelemetry({
         tier: 0,
+        fps: null,
+        medianMs: null,
+        p95Ms: null,
+        dpr: null,
+        bufferPixels: null,
         liveContexts: liveWebglContexts,
         paused: true,
-      }));
+        pauseReason: "tier-0",
+      });
       return;
     }
     liveWebglContexts += 1;
     let contextCounted = true;
 
     let currentTier: OrbQualityTier = selectedTier;
-    let buffer: OrbBufferInfo = { dpr: 1, width: 1, height: 1 };
+    let buffer: OrbBufferInfo | null = null;
     let frameRequest = 0;
-    let inViewport = true;
+    let inViewport: boolean | null = null;
+    let loopWasPaused = true;
     let lastDrawAt = 0;
     let lastInteractionAt = performance.now();
     const startAt = performance.now();
-    let paused = true;
     const frameSamples: number[] = [];
     let qualityWindow: number[] = [];
     let slowWindows = 0;
@@ -336,7 +365,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     let upgraded = false;
     let framesThisSecond = 0;
     let fpsWindowAt = performance.now();
-    let fps = 0;
+    let fps: number | null = null;
     let telemetryAt = 0;
     let colorSignature = "";
     let liquid: OrbRgb = [0, 0, 0];
@@ -360,6 +389,50 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
       liveWebglContexts = Math.max(0, liveWebglContexts - 1);
     };
 
+    const getPauseReason = (): OrbPauseReason => {
+      if (currentTier === 0 || renderer == null) return "tier-0";
+      if (document.hidden) return "hidden";
+      if (!renderInputs.current.active) return "inactive";
+      if (inViewport === false) return "offscreen";
+      if (buffer == null) return "no-size";
+      if (inViewport == null) return "initializing";
+      return null;
+    };
+
+    const shouldPause = () => getPauseReason() != null;
+
+    const publishTelemetry = (now: number, force = false) => {
+      if (!force && now - telemetryAt < 500) return;
+      telemetryAt = now;
+      const pauseReason = getPauseReason();
+      setTelemetry({
+        tier: currentTier,
+        fps: pauseReason == null ? fps : null,
+        medianMs: frameSamples.length > 0 ? percentile(frameSamples, 0.5) : null,
+        p95Ms: frameSamples.length > 0 ? percentile(frameSamples, 0.95) : null,
+        dpr: buffer?.dpr ?? null,
+        bufferPixels: buffer == null ? null : buffer.width * buffer.height,
+        liveContexts: liveWebglContexts,
+        paused: pauseReason != null,
+        pauseReason,
+      });
+    };
+
+    const resize = (): boolean => {
+      if (!renderer) return false;
+      const rect = canvas.getBoundingClientRect();
+      const parentRect = canvas.parentElement?.getBoundingClientRect();
+      const cssWidth = rect.width > 1 ? rect.width : (parentRect?.width ?? 0) * 1.52;
+      const cssHeight = rect.height > 1 ? rect.height : (parentRect?.height ?? 0) * 1.52;
+      if (cssWidth <= 1 || cssHeight <= 1) {
+        publishTelemetry(performance.now(), true);
+        return false;
+      }
+      buffer = renderer.resize(cssWidth, cssHeight, window.devicePixelRatio || 1);
+      publishTelemetry(performance.now(), true);
+      return true;
+    };
+
     const onContextLost = (event: Event) => {
       event.preventDefault();
       if (!renderer) return;
@@ -367,41 +440,20 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
       releaseContextCount();
       currentTier = 0;
       setTier(0);
-      paused = true;
+      loopWasPaused = true;
       if (frameRequest) cancelAnimationFrame(frameRequest);
       frameRequest = 0;
       publishTelemetry(performance.now(), true);
     };
     canvas.addEventListener("webglcontextlost", onContextLost);
 
-    const resize = () => {
-      if (!renderer) return;
-      const rect = canvas.getBoundingClientRect();
-      buffer = renderer.resize(rect.width, rect.height, window.devicePixelRatio || 1);
-    };
-    const resizeObserver = new ResizeObserver(resize);
+    const resizeObserver = new ResizeObserver(() => resize());
     resizeObserver.observe(canvas);
+    if (canvas.parentElement) resizeObserver.observe(canvas.parentElement);
     resize();
+    publishTelemetry(performance.now(), true);
 
-    const shouldPause = () =>
-      document.hidden || !renderInputs.current.active || !inViewport || renderer == null;
-
-    const publishTelemetry = (now: number, force = false) => {
-      if (!force && now - telemetryAt < 500) return;
-      telemetryAt = now;
-      setTelemetry({
-        tier: currentTier,
-        fps,
-        medianMs: percentile(frameSamples, 0.5),
-        p95Ms: percentile(frameSamples, 0.95),
-        dpr: buffer.dpr,
-        bufferPixels: buffer.width * buffer.height,
-        liveContexts: liveWebglContexts,
-        paused,
-      });
-    };
-
-    const dropToTier = (nextTier: OrbQualityTier) => {
+    const dropToTier = (nextTier: OrbQualityTier, now: number) => {
       currentTier = nextTier;
       setTier(nextTier);
       slowWindows = 0;
@@ -411,6 +463,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
         renderer = null;
         releaseContextCount();
       }
+      publishTelemetry(now, true);
     };
 
     const evaluateQuality = (now: number) => {
@@ -421,7 +474,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
         slowWindows += 1;
         fastSince = null;
         if (slowWindows >= 2 && currentTier > 0) {
-          dropToTier((currentTier - 1) as OrbQualityTier);
+          dropToTier((currentTier - 1) as OrbQualityTier, now);
         }
         return;
       }
@@ -432,6 +485,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
           currentTier = (currentTier + 1) as OrbQualityTier;
           upgraded = true;
           setTier(currentTier);
+          publishTelemetry(now, true);
         }
       } else {
         fastSince = null;
@@ -440,12 +494,12 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
 
     const draw = (now: number) => {
       frameRequest = 0;
+      if (buffer == null) resize();
       if (shouldPause()) {
-        paused = true;
+        loopWasPaused = true;
         publishTelemetry(now, true);
         return;
       }
-      paused = false;
 
       const idle = now - lastInteractionAt >= IDLE_AFTER_MS;
       const cadence = idle ? 1000 / 30 : 1000 / 60;
@@ -453,14 +507,16 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
         frameRequest = requestAnimationFrame(draw);
         return;
       }
-      const frameDelta = lastDrawAt > 0 ? now - lastDrawAt : cadence;
+      const frameDelta = lastDrawAt > 0 ? now - lastDrawAt : null;
       lastDrawAt = now;
-      frameSamples.push(frameDelta);
-      if (frameSamples.length > 120) frameSamples.shift();
-      if (!idle) qualityWindow.push(frameDelta);
+      if (frameDelta != null) {
+        frameSamples.push(frameDelta);
+        if (frameSamples.length > 120) frameSamples.shift();
+        if (!idle) qualityWindow.push(frameDelta);
+      }
       evaluateQuality(now);
       if (!renderer || currentTier === 0) {
-        paused = true;
+        loopWasPaused = true;
         publishTelemetry(now, true);
         return;
       }
@@ -555,15 +611,29 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     };
 
     const resume = () => {
-      lastInteractionAt = performance.now();
-      if (!frameRequest && !shouldPause()) frameRequest = requestAnimationFrame(draw);
+      const now = performance.now();
+      lastInteractionAt = now;
+      if (buffer == null) resize();
+      if (!frameRequest && !shouldPause()) {
+        if (loopWasPaused) {
+          loopWasPaused = false;
+          lastDrawAt = 0;
+          framesThisSecond = 0;
+          fpsWindowAt = now;
+          fps = null;
+        }
+        frameRequest = requestAnimationFrame(draw);
+      } else {
+        if (shouldPause()) loopWasPaused = true;
+        publishTelemetry(now, true);
+      }
     };
     wakeRef.current = resume;
     const onVisibility = () => {
       if (document.hidden) {
         if (frameRequest) cancelAnimationFrame(frameRequest);
         frameRequest = 0;
-        paused = true;
+        loopWasPaused = true;
         publishTelemetry(performance.now(), true);
       } else {
         resume();
@@ -574,8 +644,13 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
       if (!inViewport && frameRequest) {
         cancelAnimationFrame(frameRequest);
         frameRequest = 0;
-        paused = true;
+        loopWasPaused = true;
+        publishTelemetry(performance.now(), true);
+      } else if (!inViewport) {
+        loopWasPaused = true;
+        publishTelemetry(performance.now(), true);
       } else {
+        resize();
         resume();
       }
     });
@@ -623,11 +698,19 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
       {showPerf && (
         <aside className="kipu-orb-perf" aria-label="Rendimiento del orbe vivo">
           <strong>Orbe vivo</strong>
-          <span>tier {telemetry.tier} · {telemetry.paused ? "pausado" : "activo"}</span>
+          <span>
+            tier {telemetry.tier ?? "—"} · {telemetry.paused
+              ? `pausado: ${pauseReasonLabel(telemetry.pauseReason)}`
+              : "activo"}
+          </span>
           <span>fps {telemetryText(telemetry.fps)}</span>
           <span>frame p50 {telemetryText(telemetry.medianMs)} ms · p95 {telemetryText(telemetry.p95Ms)} ms</span>
-          <span>DPR {telemetryText(telemetry.dpr)} · {telemetry.bufferPixels.toLocaleString("es-419")} px</span>
-          <span>contextos vivos {telemetry.liveContexts}</span>
+          <span>
+            DPR {telemetryText(telemetry.dpr)} · {telemetry.bufferPixels == null
+              ? "—"
+              : telemetry.bufferPixels.toLocaleString("es-419")} px
+          </span>
+          <span>contextos vivos {telemetry.liveContexts ?? "—"}</span>
           <span>estado {state}</span>
         </aside>
       )}

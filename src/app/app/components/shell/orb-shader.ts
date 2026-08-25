@@ -349,7 +349,6 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
 
   const vertex = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SOURCE);
   if (!vertex) {
-    gl.getExtension("WEBGL_lose_context")?.loseContext();
     return null;
   }
   const programs: ProgramBundle[] = [];
@@ -358,7 +357,6 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
     if (!bundle) {
       for (const compiled of programs) gl.deleteProgram(compiled.program);
       gl.deleteShader(vertex);
-      gl.getExtension("WEBGL_lose_context")?.loseContext();
       return null;
     }
     programs.push(bundle);
@@ -368,7 +366,6 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
   const buffer = gl.createBuffer();
   if (!buffer) {
     for (const compiled of programs) gl.deleteProgram(compiled.program);
-    gl.getExtension("WEBGL_lose_context")?.loseContext();
     return null;
   }
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
@@ -416,7 +413,6 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
       disposed = true;
       gl.deleteBuffer(buffer);
       for (const compiled of programs) gl.deleteProgram(compiled.program);
-      gl.getExtension("WEBGL_lose_context")?.loseContext();
     },
   };
 }

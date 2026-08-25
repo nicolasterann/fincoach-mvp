@@ -186,7 +186,7 @@ export function SantuarioShell({
     } else if (preview?.forcedState === "crossing") {
       orb.signalCrossing({ level: 0, to: "reserva", factKey: "preview-crossing" });
     }
-  }, [activeOrb?.level, preview?.forcedState]);
+  }, [activeOrb?.level, preview?.forcedState, preview?.forcedTier]);
 
   const chatHref = (text: string) => {
     const trimmed = text.trim();
@@ -262,6 +262,7 @@ export function SantuarioShell({
           <div className="kipu-shell-track-wrap" data-live-visible={showLiveCanvas ? "true" : "false"}>
             <div className="kipu-shell-live-layer" aria-hidden="true">
               <LiveOrb
+                key={`live-orb-tier-${preview?.forcedTier ?? "auto"}`}
                 ref={liveOrbRef}
                 kind={activeKind}
                 level={activeOrb?.level ?? null}
@@ -368,10 +369,10 @@ export function SantuarioShell({
       {payload.status === "niebla" && preview?.showPerf && (
         <aside className="kipu-orb-perf" aria-label="Rendimiento del orbe estático en niebla">
           <strong>Orbe vivo</strong>
-          <span>tier 0 · pausado</span>
-          <span>fps 0.0</span>
-          <span>frame p50 0.0 ms · p95 0.0 ms</span>
-          <span>DPR 1.0 · 0 px</span>
+          <span>tier 0 · pausado: tier 0</span>
+          <span>fps —</span>
+          <span>frame p50 — ms · p95 — ms</span>
+          <span>DPR — · — px</span>
           <span>contextos vivos 0</span>
           <span>estado fog</span>
         </aside>
