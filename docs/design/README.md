@@ -1,6 +1,27 @@
 # Track M-DISEÑO (Bloque M · rediseño visual desde cero)
 
-**Estado: ACTIVO en paralelo a M0 · research y diseño ONLY — cero código.**
+**Estado: FASE DE BUILD (desde 2026-08-24, M0 cerrado y Bloque M activo).**
+La fase research-only terminó con M_DESIGN_003. Ahora: Claude especifica y
+audita; Codex implementa por stages en la rama `stage-m-front`.
+
+## Protocolo de build (el repo es el canal Claude↔Codex)
+
+Por cada stage Mn, tres archivos de nombre fijo en `stages/`:
+
+| Archivo | Autor | Regla |
+|---|---|---|
+| `Mn_SPEC.md` | Claude | La orden de trabajo completa. Codex jamás lo edita. |
+| `Mn_REPORT.md` | Codex | Append-only por rondas (`## Ronda N`); template en el spec. |
+| `Mn_AUDIT.md` | Claude | Veredicto VERDE/ROJO + órdenes numeradas On si rojo. |
+
+Ciclo: founder pega el prompt corto en el chat de Codex → Codex ejecuta el
+spec y escribe su reporte → founder dice «audita Mn» a Claude → Claude
+verifica por ejecución y emite veredicto → si ROJO, founder dice «corrige
+Mn» a Codex (lee el audit, responde orden por orden en una ronda nueva) →
+repetir hasta VERDE → founder mergea `stage-m-front`. El founder transporta
+señales, nunca contenido. Nadie declara verde sin pegar la salida real de
+los gates. Stages: M1–M9 según M_DESIGN_003 §6; cada spec nuevo llega solo
+después del VERDE del anterior.
 
 Este directorio es el espacio EXCLUSIVO del rediseño de interfaz (Bloque M).
 Existe para que el trabajo de diseño avance en paralelo al Bloque M0 (que corre
@@ -44,3 +65,15 @@ en otro chat) sin contaminar su árbol ni su contexto.
   reservados), patrón líquido/fantasma/hueco, regla de apertura en la capa
   actual con histéresis, dock texto+voz+foto, PWA-first. **Sustituye la §12 de
   M_DESIGN_001.**
+- [stages/M1_SPEC — Cimientos](stages/M1_SPEC.md) · 2026-08-24 · Primer stage
+  de build: flag `KIPU_SHELL`, santuario con carrusel de 5 orbes estáticos
+  honestos, payload de UNA lectura, puertas a todos los detalles, dock v1,
+  harness `/dev/shell-preview`, criterios A1–A14 y protocolo de comunicación.
+- [M_DESIGN_003 — Auditoría de pre-implementación](M_DESIGN_003_AUDITORIA_PREIMPLEMENTACION_2026-08-24.md)
+  · 2026-08-24 (M0 cerrado, Bloque M activo) · Veredicto GO sobre la propuesta,
+  medición del front actual, 7 correcciones factuales de los docs contra el
+  código (multicanal C1, recibos C2, pill C3, bug del digest C4, nombres de
+  Metas C5, niebla C6, voz web C7), análisis first-principles de usuario
+  (Deuda número-vs-líquido, el sueño a dos gestos, estados día-1), decisiones
+  nuevas D8–D14 y plan de stages M1–M9. Pendiente: discusión con el founder →
+  specs por stage en `M_DESIGN_004+`.
