@@ -30,7 +30,7 @@ const normalOrbs: ShellOrb[] = [
   { kind: "saldo", amountLabel: "82.40$", amountRaw: 82.4, subtitle: "Disponible hoy", level: 0.64, levelNote: null, emptyInvite: null },
   { kind: "reserva", amountLabel: "1,200$", amountRaw: 1200, subtitle: "Tu respaldo", level: null, levelNote: null, emptyInvite: null },
   { kind: "metas", amountLabel: "260$", amountRaw: 260, subtitle: "Por aportar este mes", level: null, levelNote: null, emptyInvite: null },
-  { kind: "patrimonio", amountLabel: "3,480$", amountRaw: 3480, subtitle: "Ya invertido", level: null, levelNote: null, emptyInvite: null },
+  { kind: "patrimonio", amountLabel: "3,480$", amountRaw: 3480, subtitle: "Patrimonio total", level: null, levelNote: null, emptyInvite: null },
   { kind: "deuda", amountLabel: "760$", amountRaw: 760, subtitle: "Te falta pagar", level: null, levelNote: null, emptyInvite: null },
 ];
 
@@ -67,9 +67,9 @@ function payloadFor(scenario: Scenario): ShellPayload {
       ...basePayload,
       orbs: normalOrbs.map((orb) => ({
         ...orb,
-        amountLabel: null,
-        amountRaw: null,
-        level: null,
+        amountLabel: orb.kind === "metas" || orb.kind === "patrimonio" ? null : "0$",
+        amountRaw: orb.kind === "metas" || orb.kind === "patrimonio" ? null : 0,
+        level: orb.kind === "saldo" ? 0 : null,
         levelNote: null,
         emptyInvite: dayOneInvites[orb.kind],
       })),
@@ -122,18 +122,23 @@ export default async function ShellPreviewPage({
     : "normal";
 
   return (
-    <div className="min-h-screen bg-zinc-950">
-      <nav className="relative z-[70] mx-auto flex max-w-5xl flex-wrap gap-2 border-b border-line/10 px-4 py-3" aria-label="Estados del santuario">
-        {Object.entries(SCENARIO_LABELS).map(([key, label]) => (
-          <Link
-            key={key}
-            href={key === "normal" ? "/dev/shell-preview" : `/dev/shell-preview?state=${key}`}
-            className={`inline-flex min-h-11 items-center rounded-full px-4 text-xs font-semibold ${scenario === key ? "bg-emerald-400 text-zinc-950" : "border border-line/10 text-zinc-400"}`}
-          >
-            {label}
-          </Link>
-        ))}
-      </nav>
+    <div className="relative min-h-screen bg-zinc-950">
+      <details className="fixed right-3 top-3 z-[70]">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center rounded-full border border-line/10 bg-zinc-950/90 px-4 text-xs font-semibold text-zinc-200 shadow-lg backdrop-blur">
+          Estado: {SCENARIO_LABELS[scenario]}
+        </summary>
+        <nav className="absolute right-0 mt-2 flex w-[min(92vw,360px)] flex-wrap justify-end gap-2 rounded-2xl border border-line/10 bg-zinc-950/95 p-3 shadow-2xl backdrop-blur" aria-label="Estados del santuario">
+          {Object.entries(SCENARIO_LABELS).map(([key, label]) => (
+            <Link
+              key={key}
+              href={key === "normal" ? "/dev/shell-preview" : `/dev/shell-preview?state=${key}`}
+              className={`inline-flex min-h-11 items-center rounded-full px-4 text-xs font-semibold ${scenario === key ? "bg-emerald-400 text-zinc-950" : "border border-line/10 text-zinc-400"}`}
+            >
+              {label}
+            </Link>
+          ))}
+        </nav>
+      </details>
       <SantuarioShell payload={payloadFor(scenario)} />
     </div>
   );
