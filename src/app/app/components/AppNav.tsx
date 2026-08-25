@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import type { ShellMode } from "@/lib/shell-mode";
 import { signOutAction } from "../actions";
 
 // Kipu app navigation. Mental model: dashboard = feed, chat = DMs. Bottom tab
@@ -82,8 +83,9 @@ function activeHref(pathname: string): string | null {
   return PARENT_TAB[segment] ?? null;
 }
 
-export function AppSidebar() {
+export function AppSidebar({ shellMode }: { shellMode: ShellMode }) {
   const pathname = usePathname();
+  if (shellMode === "orbe" && pathname === "/app") return null;
   const active = activeHref(pathname);
   return (
     <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-line/5 px-4 py-7 lg:flex">
@@ -131,8 +133,28 @@ export function AppSidebar() {
   );
 }
 
-export function AppBottomNav() {
+export function AppMain({
+  children,
+  shellMode,
+}: {
+  children: ReactNode;
+  shellMode: ShellMode;
+}) {
   const pathname = usePathname();
+  const santuario = shellMode === "orbe" && pathname === "/app";
+  return (
+    <div className={`mx-auto flex w-full${santuario ? "" : " max-w-7xl"}`}>
+      <AppSidebar shellMode={shellMode} />
+      <main className={santuario ? "min-w-0 flex-1" : "min-w-0 flex-1 px-5 pt-6 sm:px-8"}>
+        {children}
+      </main>
+    </div>
+  );
+}
+
+export function AppBottomNav({ shellMode }: { shellMode: ShellMode }) {
+  const pathname = usePathname();
+  if (shellMode === "orbe" && pathname === "/app") return null;
   // The chat owns the bottom of the screen (input + keyboard); hiding the tab
   // bar there is the native DM pattern and removes the keyboard/nav conflict.
   if (pathname.startsWith("/app/chat")) return null;

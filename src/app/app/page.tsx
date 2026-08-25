@@ -23,6 +23,9 @@ import {
   pickAccion,
 } from "./components/SaldoKipu";
 import { describeMovement } from "./components/app-dashboard-helpers";
+import { SantuarioShell } from "./components/shell/SantuarioShell";
+import { buildShellPayload } from "./components/shell/shell-payload";
+import { getShellMode } from "@/lib/shell-mode";
 
 // Stage D — the redesigned home. Organized around CONCRETE information, no
 // scores, no state section, no metric grid (per the founder's design spec):
@@ -73,6 +76,11 @@ export default async function AppPage({
 
   if (!session) {
     redirect("/login");
+  }
+
+  if (getShellMode() === "orbe") {
+    const payload = await buildShellPayload(session.user.id);
+    return <SantuarioShell payload={payload} />;
   }
 
   const ctx = await buildUserFinancialContext(session.user.id);
