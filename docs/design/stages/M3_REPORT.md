@@ -227,3 +227,263 @@ $ git status --porcelain=v1
 ## Preguntas
 
 Ninguna.
+
+---
+
+# M3_REPORT — Ronda 2
+
+- Rama/commits: `stage-m-front` · auditoría recibida `c0a0b4b` · corrección `f44d49d`
+- Estado: **LISTO PARA RE-AUDITORÍA**
+
+## Respuesta a órdenes de M3_AUDIT — Ronda 1
+
+### O1 · Restaurar el gate por línea de comandos
+
+**HECHO — `f44d49d`.** Elegí la alternativa **(b)** indicada como preferida por el auditor:
+
+- `src/lib/chat-memory/thread-view-contract.ts` contiene ahora el contrato y la lógica pura que ejecuta el gate: formas del hilo/recibo, cursor + CAP+1, identidad/dedupe, status histórico y supresión del centinela.
+- `src/lib/chat-memory/thread-view.ts` conserva `import "server-only"` y sólo agrega la capa que toca Supabase, relee ledger/operaciones y arma el recibo.
+- `/dev/capture-test` importa el contrato puro. Los consumidores de tipos también apuntan al contrato; los lectores productivos siguen importando la capa server-only.
+- No se simuló `server-only`, no se tocó el resolver de los runners y no cambió ninguna aserción.
+
+Las dos invocaciones CLI exigidas y la ruta HTTP pasan 830/830. Las salidas literales están en «Gates».
+
+## Qué cambió
+
+- Se movieron, sin cambiar su comportamiento, 204 líneas de contrato/lógica pura desde `thread-view.ts` al nuevo `thread-view-contract.ts`.
+- Se corrigieron seis aristas de importación: una ejecutable del gate, cuatro consumidores de tipos/lógica y la capa server-only que compone esas funciones.
+- No se tocó ninguna conducta visual, financiera, de autorización, persistencia o dedupe de M3.
+
+## Decisiones tomadas dentro del spec
+
+- Mantener `server-only` como frontera real era parte de la corrección: quitarlo o neutralizarlo en los runners habría dejado que futuras importaciones indebidas pasaran inadvertidas.
+- El módulo puro depende sólo de un `import type` de procedencia. Así los runners ejercitan exactamente el contrato de M3 sin cargar una capa de infraestructura.
+
+## Desviaciones del spec
+
+Ninguna.
+
+## Huecos honestos
+
+Persisten únicamente los límites ya declarados y aceptados en Ronda 1: no hay sesión autenticada para comparar un recibo real con Actividad, provocar una relectura RLS incompleta, comprobar una cinta productiva ligada, contar filas antes/después de «Nueva conversación» ni observar un digest/cierre real. Esos puntos siguen **NO VERIFICABLE EN MI ENTORNO**. O1 sí quedó completamente verificable y ejecutado por sus tres rutas.
+
+## Identidad y dedupe
+
+No cambió ninguna regla de identidad. `threadIdentityKey` y `dedupeThreadRows` se trasladaron íntegros al módulo puro: `operation_key` o claim/fingerprint explícito prueban igualdad; `durableOperation.id`, texto y cercanía temporal no deduplican por sí solos; ante duplicado probado se prefiere web. El gate vuelve a ejecutar estos casos por CLI y HTTP.
+
+## Anclajes tocados
+
+- `M3-1` y `M3-2` ahora alcanzan la lógica pura a través de `thread-view-contract.ts`; sus condiciones y mensajes no cambiaron.
+- `M3-3`, `M3-4`, TG-17, TG-6/M0M143 y PRE-M.4 no se editaron.
+- No se removió, relajó ni renombró ninguna de las 830 aserciones.
+
+## Autochequeo T1–T14 — Ronda 2
+
+| Criterio | Evidencia de esta ronda | Resultado |
+|---|---|---|
+| T1 | Sin cambios funcionales; M3-1 vuelve a ejecutar orden/canales por ambos runners. La integración autenticada mantiene el límite declarado. | **NO VERIFICABLE EN MI ENTORNO — integración real; contrato verificado** |
+| T2 | Sin cambios; los publicadores/claims permanecen fijados por M3-3. | **NO VERIFICABLE EN MI ENTORNO — DB real; cableado verificado** |
+| T3 | `threadIdentityKey`/`dedupeThreadRows` se ejecutan desde el módulo puro en las dos rutas CLI: 830/830. | CUMPLE |
+| T4 | `readCompleteThreadRowsWith` se ejecuta desde el módulo puro para completo/parcial/fallo: 830/830. | CUMPLE |
+| T5 | La cadena server-only operación→pasos→ledger no cambió. Comparación E2E real no disponible. | **NO VERIFICABLE EN MI ENTORNO — E2E ledger; cadena verificada** |
+| T6 | `saldoLabel:null` y la prohibición de flecha no cambiaron; M3-3/M3-4 verdes. | CUMPLE |
+| T7 | La semántica `incomplete` no cambió; caso RLS real no disponible. | **NO VERIFICABLE EN MI ENTORNO — DB irreleíble; contrato verificado** |
+| T8 | `storedTurnStatus` se ejecuta ahora desde el módulo puro; los estados y la supresión de `failed` siguen verdes. | CUMPLE |
+| T9 | Cero cambios de autoridad; M3-4 verde. | CUMPLE |
+| T9b | `visibleThreadText` se ejecuta desde el módulo puro y suprime el centinela: 830/830. | CUMPLE |
+| T9c | Procedencia y copy visible sin cambios; M3-1/M3-4 verdes. | CUMPLE |
+| T10 | Retry/share/adjuntos sin cambios; upload autenticado mantiene el límite declarado. | CUMPLE en contrato; upload real **NO VERIFICABLE EN MI ENTORNO** |
+| T11 | Deep-link/fallback sin cambios; cinta productiva real mantiene el límite declarado. | **NO VERIFICABLE EN MI ENTORNO — cinta real; contrato verificado** |
+| T12 | Clear no destructivo sin cambios; conteo real mantiene el límite declarado. | **NO VERIFICABLE EN MI ENTORNO — requiere persona autenticada** |
+| T13 | No se tocaron las aserciones ni los anclajes de mutación; ambos runners y HTTP vuelven a 830/830. | CUMPLE |
+| T14 | Lint 0 errores, build/TypeScript exitosos, CLI 830/830 por dos runners y HTTP 830/830; cero paquetes, locks, migraciones o `supabase/**`. | CUMPLE |
+
+## Gates — salida real pegada
+
+`node scripts/qa/run-capture-gate.mjs`:
+
+```text
+[kipu.cron.scheduled-changes] finalize failed — recovery lo cerrará n1
+[kipu.route] {"ts":"2026-08-25T12:11:53.697Z","route":"commitment","outcome":"fixed_expense_clarification","dbWrite":false,"transactionType":"fixed_expense_create"}
+[kipu.route] {"ts":"2026-08-25T12:11:53.697Z","route":"commitment","outcome":"fixed_expense_clarification","dbWrite":true,"transactionType":"fixed_expense_create"}
+[kipu.route] {"ts":"2026-08-25T12:11:53.697Z","route":"commitment","outcome":"fixed_expense_clarification","dbWrite":false,"transactionType":"fixed_expense_create"}
+830/830 capture checks
+(node:61456) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/nicot/Projects/fincoach-mvp/src/lib/capture/capture-matching.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/nicot/Projects/fincoach-mvp/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+```
+
+`node scripts/qa/run-static-gate.mjs src/app/dev/capture-test/page.tsx capture`:
+
+```text
+[kipu.cron.scheduled-changes] finalize failed — recovery lo cerrará n1
+[kipu.route] {"ts":"2026-08-25T12:11:54.734Z","route":"commitment","outcome":"fixed_expense_clarification","dbWrite":false,"transactionType":"fixed_expense_create"}
+[kipu.route] {"ts":"2026-08-25T12:11:54.734Z","route":"commitment","outcome":"fixed_expense_clarification","dbWrite":true,"transactionType":"fixed_expense_create"}
+[kipu.route] {"ts":"2026-08-25T12:11:54.734Z","route":"commitment","outcome":"fixed_expense_clarification","dbWrite":false,"transactionType":"fixed_expense_create"}
+830/830 capture
+(node:61454) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/nicot/Projects/fincoach-mvp/src/lib/capture/capture-matching.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/nicot/Projects/fincoach-mvp/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+```
+
+Gate HTTP `curl -sS http://localhost:3000/dev/capture-test …`:
+
+```text
+830/830 aserciones pasan
+```
+
+`npm run lint`:
+
+```text
+> fincoach-mvp@0.1.0 lint
+> eslint
+
+[BABEL] Note: The code generator has deoptimised the styling of /Users/nicot/Projects/fincoach-mvp/src/app/dev/capture-test/page.tsx as it exceeds the max of 500KB.
+
+/Users/nicot/Projects/fincoach-mvp/scripts/qa/m0-loop-122-e2e.mjs
+  39:3  warning  'authorizeAgentOperationManifest' is assigned a value but never used  @typescript-eslint/no-unused-vars
+  40:3  warning  'beginAgentOperationApplication' is assigned a value but never used   @typescript-eslint/no-unused-vars
+  41:3  warning  'beginAgentOperationManifest' is assigned a value but never used      @typescript-eslint/no-unused-vars
+  45:3  warning  'transitionAgentOperation' is assigned a value but never used         @typescript-eslint/no-unused-vars
+  46:3  warning  'verifyAgentLoopManifest' is assigned a value but never used          @typescript-eslint/no-unused-vars
+  47:3  warning  'verifyAgentLoopStep' is assigned a value but never used              @typescript-eslint/no-unused-vars
+
+/Users/nicot/Projects/fincoach-mvp/scripts/qa/m0-loop-123-e2e.mjs
+   37:3   warning  'quarantineAgentLoopOperation' is assigned a value but never used  @typescript-eslint/no-unused-vars
+  107:10  warning  'digest' is defined but never used                                 @typescript-eslint/no-unused-vars
+
+✖ 8 problems (0 errors, 8 warnings)
+```
+
+`npm run build`:
+
+```text
+> fincoach-mvp@0.1.0 build
+> next build
+
+▲ Next.js 16.2.4 (Turbopack)
+- Environments: .env.local
+
+  Creating an optimized production build ...
+Turbopack build encountered 1 warnings:
+./next.config.ts
+Encountered unexpected file in NFT list
+A file was traced that indicates that the whole project was traced unintentionally. Somewhere in the import trace below, there are:
+- filesystem operations (like path.join, path.resolve or fs.readFile), or
+- very dynamic requires (like require('./' + foo)).
+To resolve this, you can
+- remove them if possible, or
+- only use them in development, or
+- make sure they are statically scoped to some subfolder: path.join(process.cwd(), 'data', bar), or
+- add ignore comments: path.join(/*turbopackIgnore: true*/ process.cwd(), bar)
+
+Import trace:
+  Server Component:
+    ./next.config.ts
+    ./src/app/dev/capture-test/page.tsx
+
+✓ Compiled successfully in 2.8s
+  Running TypeScript ...
+  Finished TypeScript in 5.2s ...
+  Collecting page data using 11 workers ...
+  Generating static pages using 11 workers (0/36) ...
+  Generating static pages using 11 workers (9/36)
+  Generating static pages using 11 workers (18/36)
+  Generating static pages using 11 workers (27/36)
+✓ Generating static pages using 11 workers (36/36) in 221ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/cron/ambient-loop
+├ ƒ /api/cron/card-interest
+├ ƒ /api/cron/fx-refresh
+├ ƒ /api/cron/recurring-materialize
+├ ƒ /api/cron/scheduled-changes
+├ ƒ /api/cron/scheduled-payments
+├ ƒ /api/inbound-email
+├ ƒ /api/telegram/webhook
+├ ƒ /app
+├ ƒ /app/activity
+├ ƒ /app/cashflow
+├ ƒ /app/chat
+├ ƒ /app/cuentas
+├ ƒ /app/debt
+├ ƒ /app/fx
+├ ƒ /app/goals
+├ ƒ /app/household
+├ ƒ /app/join/[token]
+├ ƒ /app/kipu-fit
+├ ƒ /app/margen
+├ ƒ /app/mes
+├ ƒ /app/mis-datos
+├ ƒ /app/precision
+├ ƒ /app/readiness
+├ ƒ /app/reality
+├ ƒ /app/saldo
+├ ƒ /app/settings
+├ ƒ /app/settings/export
+├ ƒ /app/spending
+├ ƒ /app/wealth
+├ ƒ /auth/confirm
+├ ƒ /dev/ai-parser-test
+├ ƒ /dev/capture-sim
+├ ƒ /dev/capture-test
+├ ƒ /dev/chat-handler-test
+├ ƒ /dev/chat-preview
+├ ƒ /dev/chat-review
+├ ƒ /dev/coach-response-test
+├ ƒ /dev/m0-agent-eval
+├ ƒ /dev/manual-entry
+├ ƒ /dev/onboarding-loop-test
+├ ƒ /dev/onboarding-sim
+├ ƒ /dev/onboarding-wizard-test
+├ ƒ /dev/parser-test
+├ ƒ /dev/preferences-test
+├ ƒ /dev/shell-preview
+├ ƒ /dev/supabase-test
+├ ƒ /dev/telegram-link-test
+├ ƒ /dev/transaction-test
+├ ƒ /dev/ui-preview
+├ ƒ /dev/user-financial-context-test
+├ ○ /icon.svg
+├ ƒ /login
+├ ƒ /login/reset
+├ ○ /manifest.webmanifest
+├ ƒ /onboarding
+├ ƒ /onboarding/template
+├ ○ /opengraph-image
+├ ƒ /reset-password
+└ ƒ /signup
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+```
+
+TypeScript adicional:
+
+```text
+$ ./node_modules/.bin/tsc --noEmit
+# sin salida; exit 0
+```
+
+Alcance M3:
+
+```text
+$ git diff --stat ac7f436..f44d49d -- package.json package-lock.json pnpm-lock.yaml yarn.lock supabase
+# sin salida
+```
+
+## Cómo verlo (QA manual de la corrección)
+
+1. Ejecutar `node scripts/qa/run-capture-gate.mjs`: debe terminar `830/830 capture checks` sin `ERR_MODULE_NOT_FOUND`.
+2. Ejecutar `node scripts/qa/run-static-gate.mjs src/app/dev/capture-test/page.tsx capture`: debe terminar `830/830 capture` sin `ERR_MODULE_NOT_FOUND`.
+3. Con `npm run dev`, abrir `/dev/capture-test`: debe mostrar `830/830 aserciones pasan`.
+4. Repetir la guía manual completa de Ronda 1 sólo si se desea revalidar la presentación; O1 no cambió DOM ni comportamiento productivo.
+
+## Preguntas
+
+Ninguna.
