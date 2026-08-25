@@ -37,8 +37,9 @@ void main(){
 const FRAGMENT_SOURCE = `
 precision highp float;
 uniform vec2 uRes;
-uniform float uTime, uLevel, uEnergy, uDay, uMat, uVoice, uTier;
+uniform float uTime, uLevel, uEnergy, uDay, uMat, uVoice;
 uniform vec3 uLiq, uDeep, uAcc;
+const float KIPU_TIER = __KIPU_TIER__;
 
 float hash21(vec2 p){
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -125,7 +126,7 @@ void main(){
 
   // Tier 1: no raymarch. It keeps the same level and material semantics with
   // a cheap vertical body, a soft wave and a fixed patrimonio crystal.
-  if(uTier < 1.5){
+  if(KIPU_TIER < 1.5){
     float edge1 = 1.0 - smoothstep(0.90, 1.0, rr);
     float fres1 = pow(smoothstep(0.62, 1.0, r), 2.4);
     if(uMat > 2.5 && uMat < 3.5){
@@ -164,7 +165,7 @@ void main(){
   float fres = pow(1.0 - ndv, 3.4);
 
   vec3 rdi = refract(rd, N, 0.78);
-  float steps = uTier > 2.5 ? 32.0 : 16.0;
+  float steps = KIPU_TIER > 2.5 ? 32.0 : 16.0;
   float dt = (t1 - t0) / steps;
   float thick = 0.0;
   vec3 hp = vec3(0.0);
@@ -193,7 +194,7 @@ void main(){
   float flow2 = fbm(vec2(uv.x*4.6 - uTime*0.03*spd, uv.y*4.1 + uTime*0.025*spd));
   body *= 0.80 + 0.34*flow + 0.12*flow2;
 
-  if(uTier > 2.5){
+  if(KIPU_TIER > 2.5){
     float ca = fbm(hp.xz*5.0 + vec2(uTime*0.26*spd, uTime*0.12*spd));
     body += uAcc * pow(max(ca-0.44, 0.0), 1.8) * 2.4 * hit * (1.0 - below*0.6);
   }
@@ -203,7 +204,7 @@ void main(){
   body += uAcc * sheen * 0.95;
   body += uLiq * pow(max(-uv.y,0.0), 2.0) * 0.34 * d;
 
-  if(uTier > 2.5){
+  if(KIPU_TIER > 2.5){
     float motes = 0.0;
     for(int i=0;i<6;i++){
       float fi = float(i);
@@ -274,6 +275,68 @@ function compileShader(gl: WebGLRenderingContext, type: number, source: string):
   return shader;
 }
 
+type RenderTier = 1 | 2 | 3;
+
+interface ProgramBundle {
+  tier: RenderTier;
+  program: WebGLProgram;
+  locations: {
+    resolution: WebGLUniformLocation | null;
+    time: WebGLUniformLocation | null;
+    level: WebGLUniformLocation | null;
+    energy: WebGLUniformLocation | null;
+    day: WebGLUniformLocation | null;
+    material: WebGLUniformLocation | null;
+    voice: WebGLUniformLocation | null;
+    liquid: WebGLUniformLocation | null;
+    deep: WebGLUniformLocation | null;
+    accent: WebGLUniformLocation | null;
+  };
+}
+
+const RENDER_TIERS: readonly RenderTier[] = [1, 2, 3];
+
+function linkTierProgram(
+  gl: WebGLRenderingContext,
+  vertex: WebGLShader,
+  tier: RenderTier,
+): ProgramBundle | null {
+  const source = FRAGMENT_SOURCE.replace("__KIPU_TIER__", `${tier}.0`);
+  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, source);
+  if (!fragment) return null;
+  const program = gl.createProgram();
+  if (!program) {
+    gl.deleteShader(fragment);
+    return null;
+  }
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.bindAttribLocation(program, 0, "aPos");
+  gl.linkProgram(program);
+  gl.deleteShader(fragment);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    gl.deleteProgram(program);
+    return null;
+  }
+  const uniform = (name: string) => gl.getUniformLocation(program, name);
+  return {
+    tier,
+    program,
+    locations: {
+      resolution: uniform("uRes"),
+      time: uniform("uTime"),
+      level: uniform("uLevel"),
+      energy: uniform("uEnergy"),
+      day: uniform("uDay"),
+      material: uniform("uMat"),
+      voice: uniform("uVoice"),
+      liquid: uniform("uLiq"),
+      deep: uniform("uDeep"),
+      accent: uniform("uAcc"),
+    },
+  };
+}
+
 export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null {
   const gl = canvas.getContext("webgl", {
     alpha: true,
@@ -285,61 +348,35 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
   if (!gl) return null;
 
   const vertex = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SOURCE);
-  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SOURCE);
-  if (!vertex || !fragment) {
-    if (vertex) gl.deleteShader(vertex);
-    if (fragment) gl.deleteShader(fragment);
+  if (!vertex) {
     gl.getExtension("WEBGL_lose_context")?.loseContext();
     return null;
   }
-
-  const program = gl.createProgram();
-  if (!program) {
-    gl.deleteShader(vertex);
-    gl.deleteShader(fragment);
-    gl.getExtension("WEBGL_lose_context")?.loseContext();
-    return null;
+  const programs: ProgramBundle[] = [];
+  for (const tier of RENDER_TIERS) {
+    const bundle = linkTierProgram(gl, vertex, tier);
+    if (!bundle) {
+      for (const compiled of programs) gl.deleteProgram(compiled.program);
+      gl.deleteShader(vertex);
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+      return null;
+    }
+    programs.push(bundle);
   }
-  gl.attachShader(program, vertex);
-  gl.attachShader(program, fragment);
-  gl.linkProgram(program);
   gl.deleteShader(vertex);
-  gl.deleteShader(fragment);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    gl.deleteProgram(program);
-    gl.getExtension("WEBGL_lose_context")?.loseContext();
-    return null;
-  }
 
   const buffer = gl.createBuffer();
   if (!buffer) {
-    gl.deleteProgram(program);
+    for (const compiled of programs) gl.deleteProgram(compiled.program);
     gl.getExtension("WEBGL_lose_context")?.loseContext();
     return null;
   }
-  gl.useProgram(program);
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
-  const position = gl.getAttribLocation(program, "aPos");
-  gl.enableVertexAttribArray(position);
-  gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-
-  const uniform = (name: string) => gl.getUniformLocation(program, name);
-  const locations = {
-    resolution: uniform("uRes"),
-    time: uniform("uTime"),
-    level: uniform("uLevel"),
-    energy: uniform("uEnergy"),
-    day: uniform("uDay"),
-    material: uniform("uMat"),
-    voice: uniform("uVoice"),
-    liquid: uniform("uLiq"),
-    deep: uniform("uDeep"),
-    accent: uniform("uAcc"),
-    tier: uniform("uTier"),
-  };
   let width = 1;
   let height = 1;
   let disposed = false;
@@ -356,7 +393,10 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
     },
     draw(values) {
       if (disposed || gl.isContextLost()) return;
-      gl.useProgram(program);
+      const bundle = programs[values.tier - 1];
+      if (!bundle) return;
+      const { locations } = bundle;
+      gl.useProgram(bundle.program);
       gl.uniform2f(locations.resolution, width, height);
       gl.uniform1f(locations.time, values.time);
       gl.uniform1f(locations.level, values.level);
@@ -367,7 +407,6 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
       gl.uniform3fv(locations.liquid, values.liquid);
       gl.uniform3fv(locations.deep, values.deep);
       gl.uniform3fv(locations.accent, values.accent);
-      gl.uniform1f(locations.tier, values.tier);
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -376,7 +415,7 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
       if (disposed) return;
       disposed = true;
       gl.deleteBuffer(buffer);
-      gl.deleteProgram(program);
+      for (const compiled of programs) gl.deleteProgram(compiled.program);
       gl.getExtension("WEBGL_lose_context")?.loseContext();
     },
   };
