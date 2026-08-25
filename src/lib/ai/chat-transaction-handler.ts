@@ -123,6 +123,8 @@ const LOOP_AGENT_INFRASTRUCTURE_FAILURE_REPLY =
   "No pude procesarlo ahora y no moví dinero. Envíame de nuevo este mismo " +
   "mensaje; no necesitas explicar el contexto otra vez.";
 
+const INTERNAL_WRITE_RECEIPT_SENTINEL = "KIPU_" + "INTERNAL_WRITE_RECEIPT";
+
 // Minimum AI classifier certainty before we let it resolve a pending
 // clarification. Below this we re-ask rather than guess.
 const PENDING_AI_CONFIDENCE_THRESHOLD = 0.75;
@@ -267,9 +269,16 @@ export async function handleChatTransactionMessage(
             redirect && allowedRedirects.has(redirect)
               ? redirect
               : "chat-advisory",
+          status:
+            existing.message.metadata.chatResponseStatus === "needs_clarification" ||
+            existing.message.metadata.chatResponseStatus === "unsupported" ||
+            existing.message.metadata.chatResponseStatus === "failed"
+              ? existing.message.metadata.chatResponseStatus
+              : "success",
           assistantMetadata: {
             ...existing.message.metadata,
             deliveryReplayed: true,
+            assistantMessageId: existing.message.id,
           },
         });
       }
@@ -372,6 +381,12 @@ export async function handleChatTransactionMessage(
         redirectCode: agentRes.outcome.wrote
           ? "chat-correction-created"
           : "chat-advisory",
+        status:
+          agentRes.outcome.needsInfo || agentRes.pendingClarifications.length > 0
+            ? "needs_clarification"
+            : !agentRes.ok || agentRes.outcome.hadError
+              ? "failed"
+              : "success",
         assistantMetadata: {
           agent: true,
           agentMode: "loop",
@@ -403,6 +418,7 @@ export async function handleChatTransactionMessage(
     result = buildChatActionResult({
       message: LOOP_AGENT_INFRASTRUCTURE_FAILURE_REPLY,
       redirectCode: "chat-advisory",
+      status: "failed",
       assistantMetadata: {
         agent: true,
         agentMode: "loop",
@@ -427,6 +443,21 @@ export async function handleChatTransactionMessage(
           requestId: input.requestId,
         }),
     });
+  }
+
+  // The legacy writer may return this internal identity marker instead of
+  // user copy. It is never a chat turn. Embedded occurrences are stripped;
+  // a marker-only response becomes failed delivery UI and remains retryable.
+  const safeAssistantMessage = result.chatResponse.message
+    .replaceAll(INTERNAL_WRITE_RECEIPT_SENTINEL, "")
+    .trim();
+  if (!safeAssistantMessage) {
+    result.chatResponse = { status: "failed", message: "" };
+  } else if (safeAssistantMessage !== result.chatResponse.message) {
+    result.chatResponse = {
+      ...result.chatResponse,
+      message: safeAssistantMessage,
+    };
   }
 
   if (input.evidenceId) {
@@ -459,7 +490,7 @@ export async function handleChatTransactionMessage(
     };
   }
 
-  if (channel) {
+  if (channel && result.chatResponse.status !== "failed") {
     const assistantMessageId = await appendChatMessage({
       userId,
       channel,
@@ -478,6 +509,7 @@ export async function handleChatTransactionMessage(
       metadata: {
         redirectCode: result.redirectCode,
         parserSource: result.parserSource ?? null,
+        chatResponseStatus: result.chatResponse.status,
         ...(result.assistantMetadata ?? {}),
       },
       operationKey: deliveryChatOperationKey(input, "assistant"),
@@ -493,6 +525,11 @@ export async function handleChatTransactionMessage(
       console.error(
         `[chat] assistant memory write failed user=${userId} channel=${channel}`,
       );
+    } else {
+      result.assistantMetadata = {
+        ...(result.assistantMetadata ?? {}),
+        assistantMessageId,
+      };
     }
   }
 

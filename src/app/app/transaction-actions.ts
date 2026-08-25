@@ -4,6 +4,11 @@ import { randomUUID } from "crypto";
 import { redirect } from "next/navigation";
 import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler";
 import { buildLedgerEntryPayload } from "@/lib/ai/apply-chat-transaction-intent";
+import {
+  readFreshThreadTurn,
+  type ThreadTurn,
+  type TurnStatus,
+} from "@/lib/chat-memory/thread-view";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 
@@ -64,6 +69,8 @@ export async function sendChatMessageAndGetReply(
   submissionId?: string,
 ): Promise<{
   reply: string;
+  status: TurnStatus;
+  turn?: ThreadTurn;
   deliveryError?: {
     code: "chat-delivery-rejected";
     message: string;
@@ -81,7 +88,10 @@ export async function sendChatMessageAndGetReply(
 
   const trimmed = String(message ?? "").trim();
   if (!trimmed) {
-    return { reply: "Escribe el mensaje que quieres enviar." };
+    return {
+      reply: "Escribe el mensaje que quieres enviar.",
+      status: "needs_clarification",
+    };
   }
 
   // Only accept a well-formed client submission id; otherwise fall back to a
@@ -99,13 +109,40 @@ export async function sendChatMessageAndGetReply(
       chatId: session.user.id,
       requestId,
     });
-    return { reply: result.chatResponse.message };
+    if (result.chatResponse.status === "failed") {
+      return {
+        reply: "",
+        status: "failed",
+        deliveryError: {
+          code: "chat-delivery-rejected",
+          message:
+            "No pude completar este envío. Reinténtalo: conservaré la misma operación y no duplicaré movimientos.",
+          retryable: true,
+        },
+      };
+    }
+
+    const assistantMessageId = result.assistantMetadata?.assistantMessageId;
+    const turn =
+      typeof assistantMessageId === "string"
+        ? await readFreshThreadTurn({
+            client: supabase,
+            userId: session.user.id,
+            turnId: assistantMessageId,
+          })
+        : null;
+    return {
+      reply: result.chatResponse.message,
+      status: result.chatResponse.status,
+      ...(turn ? { turn } : {}),
+    };
   } catch {
     // Expected delivery/identity rejections are UI state, not an unhandled
     // Server Function exception and not assistant-authored conversation. The
     // same submission id remains safe to retry and preserves idempotency.
     return {
       reply: "",
+      status: "failed",
       deliveryError: {
         code: "chat-delivery-rejected",
         message:
