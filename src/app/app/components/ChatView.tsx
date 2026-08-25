@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ThreadReceipt, ThreadTurn, TurnStatus } from "@/lib/chat-memory/thread-view";
 import {
   clearChatHistoryAction,
   sendChatMessageAndGetReply,
@@ -11,12 +12,6 @@ import {
 // The Kipu conversation — a real DM experience: optimistic user bubble, typing
 // indicator, no page reload, keyboard-safe input. The bottom tab bar is hidden
 // on this route so the input owns the bottom of the screen.
-
-interface ChatMsg {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-}
 
 const SUGGESTIONS = [
   "¿Cuánto puedo gastar hoy?",
@@ -42,6 +37,91 @@ function TypingDots() {
 
 const ACCEPTED_FILES = "image/jpeg,image/png,image/webp,application/pdf";
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+const INTERNAL_RECEIPT_SENTINEL = "KIPU_" + "INTERNAL_WRITE_RECEIPT";
+
+function localTurn(input: {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  status?: TurnStatus | null;
+  attachment?: ThreadTurn["attachment"];
+}): ThreadTurn {
+  return {
+    id: input.id,
+    role: input.role,
+    author: input.role === "user" ? "usuario" : "agente",
+    channel: "web",
+    createdAtISO: new Date().toISOString(),
+    text: input.text,
+    status: input.status ?? null,
+    receipt: null,
+    attachment: input.attachment ?? null,
+  };
+}
+
+function visibleAssistantText(text: string): string {
+  return text.replaceAll(INTERNAL_RECEIPT_SENTINEL, "").trim();
+}
+
+function timeLabel(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return "Ahora";
+  return new Intl.DateTimeFormat("es-419", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(parsed);
+}
+
+function provenanceLabel(turn: ThreadTurn): string | null {
+  const source =
+    turn.author === "calendario"
+      ? "Calendario"
+      : turn.author === "coach"
+        ? "Coach"
+        : turn.author === "cierre_de_mes"
+          ? "Cierre de mes"
+          : null;
+  if (turn.channel === "telegram") {
+    return source ? `Telegram · ${source}` : "Telegram";
+  }
+  return source;
+}
+
+function ReceiptCard({ receipt, createdAtISO }: { receipt: ThreadReceipt; createdAtISO: string }) {
+  return (
+    <div className="mt-2 rounded-2xl border border-emerald-300/15 bg-zinc-950/55 p-3 font-mono">
+      <p className="font-sans text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-300/80">
+        Quedó registrado
+      </p>
+      <div className="mt-2 divide-y divide-line/5">
+        {receipt.lines.map((line, index) => (
+          <div className="grid grid-cols-[1fr_auto] gap-3 py-2" key={`${line.label}-${index}`}>
+            <div className="min-w-0">
+              <p className="truncate text-[11px] text-zinc-300">{line.label}</p>
+              <p className="mt-0.5 text-[10px] text-zinc-600">
+                {timeLabel(createdAtISO)} · {line.kindLabel}
+              </p>
+            </div>
+            <p className="text-xs font-semibold tabular-nums text-zinc-200">
+              {line.amountLabel}
+            </p>
+          </div>
+        ))}
+      </div>
+      {receipt.saldoLabel && (
+        <p className="mt-2 border-t border-line/5 pt-2 font-sans text-xs text-zinc-400">
+          {receipt.saldoLabel}
+        </p>
+      )}
+      {receipt.incomplete && (
+        <p className="mt-2 font-sans text-[11px] leading-5 text-amber-200/80">
+          No pude releer todo el recibo ahora.
+        </p>
+      )}
+    </div>
+  );
+}
 
 // One trusted submission id per send → a double-fire of THIS submission
 // converges to a single financial result server-side (durable idempotency).
@@ -54,13 +134,19 @@ export function ChatView({
   initialMessages,
   firstName,
   initialShareText,
+  initialTurnId,
+  threadComplete,
+  threadReadFailed,
 }: {
-  initialMessages: ChatMsg[];
+  initialMessages: ThreadTurn[];
   firstName: string;
   /** Text shared into Kipu via the PWA share target (?share=). */
   initialShareText?: string;
+  initialTurnId?: string;
+  threadComplete: boolean;
+  threadReadFailed: boolean;
 }) {
-  const [messages, setMessages] = useState<ChatMsg[]>(initialMessages);
+  const [messages, setMessages] = useState<ThreadTurn[]>(initialMessages);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -73,10 +159,24 @@ export function ChatView({
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const turnRefs = useRef(new Map<string, HTMLDivElement>());
+  const deepLinkHandled = useRef(false);
+  const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length, isTyping]);
+
+  useEffect(() => {
+    if (!initialTurnId || deepLinkHandled.current) return;
+    const target = turnRefs.current.get(initialTurnId);
+    if (!target) return;
+    deepLinkHandled.current = true;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightedTurnId(initialTurnId);
+    const timer = window.setTimeout(() => setHighlightedTurnId(null), 2200);
+    return () => window.clearTimeout(timer);
+  }, [initialTurnId, messages.length]);
 
   // Text shared into Kipu (PWA share target or an internal CTA) PREFILLS the
   // box — never auto-sends. ?share= is URL-controllable, so auto-sending would
@@ -102,20 +202,37 @@ export function ChatView({
       }
       setMessages((prev) => [
         ...prev,
-        {
+        localTurn({
           id: `local-${Date.now()}`,
           role: "user",
-          content: file.type === "application/pdf" ? `📄 ${file.name}` : `📷 ${file.name || "Imagen"}`,
-        },
+          text:
+            file.type === "application/pdf"
+              ? `📄 ${file.name}`
+              : `📷 ${file.name || "Imagen"}`,
+          attachment: {
+            kind: file.type === "application/pdf" ? "document" : "image",
+            label: file.name || (file.type === "application/pdf" ? "Documento" : "Imagen"),
+          },
+        }),
       ]);
       setIsTyping(true);
       try {
         const formData = new FormData();
         formData.set("file", file);
         const { reply } = await sendWebEvidenceAction(formData);
+        const safeReply = visibleAssistantText(reply);
+        if (!safeReply) {
+          setFileError("No llegó una respuesta visible. Puedes volver a adjuntarlo.");
+          return;
+        }
         setMessages((prev) => [
           ...prev,
-          { id: `local-${Date.now()}-r`, role: "assistant", content: reply },
+          localTurn({
+            id: `local-${Date.now()}-r`,
+            role: "assistant",
+            text: safeReply,
+            status: "success",
+          }),
         ]);
       } catch {
         // Delivery/validation state belongs to the interface, not to Kipu's
@@ -140,13 +257,13 @@ export function ChatView({
     if (!retry) {
       setMessages((prev) => [
         ...prev,
-        { id: `local-${Date.now()}`, role: "user", content: trimmed },
+        localTurn({ id: `local-${Date.now()}`, role: "user", text: trimmed }),
       ]);
     }
     setIsTyping(true);
     const submissionId = retry?.submissionId ?? makeSubmissionId();
     try {
-      const { reply, deliveryError } = await sendChatMessageAndGetReply(
+      const { reply, status, turn, deliveryError } = await sendChatMessageAndGetReply(
         trimmed,
         submissionId,
       );
@@ -158,9 +275,24 @@ export function ChatView({
         });
         return;
       }
+      const safeReply = visibleAssistantText(reply);
+      if (status === "failed" || !safeReply) {
+        setFailedDelivery({
+          text: trimmed,
+          submissionId,
+          message: "No pude completar este envío. Puedes reintentarlo sin duplicar movimientos.",
+        });
+        return;
+      }
       setMessages((prev) => [
         ...prev,
-        { id: `local-${Date.now()}-r`, role: "assistant", content: reply },
+        turn ??
+          localTurn({
+            id: `local-${Date.now()}-r`,
+            role: "assistant",
+            text: safeReply,
+            status,
+          }),
       ]);
     } catch {
       // Transport state is UI, not Kipu-authored conversation. The durable
@@ -249,7 +381,20 @@ export function ChatView({
       {/* Messages — anchored to the bottom like a real DM, calm scrollbar */}
       <div className="kipu-scroll flex-1 overflow-y-auto overscroll-contain">
         <div className="flex min-h-full flex-col justify-end space-y-3 py-2">
-          {isEmpty ? (
+          {threadReadFailed ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+              <p className="text-sm font-semibold text-zinc-200">
+                No pude leer tu conversación ahora.
+              </p>
+              <button
+                className="rounded-full border border-line/10 px-4 py-2 text-xs font-semibold text-zinc-300 transition hover:bg-line/5"
+                onClick={() => window.location.reload()}
+                type="button"
+              >
+                Reintentar
+              </button>
+            </div>
+          ) : isEmpty ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
               <span className="flex h-16 w-16 items-center justify-center rounded-3xl bg-emerald-400/15 text-2xl font-black text-emerald-300">
                 K
@@ -264,22 +409,65 @@ export function ChatView({
               </div>
             </div>
           ) : (
-            messages.map((m) => (
+            messages
+              .filter((m) => !(m.role === "assistant" && m.status === "failed"))
+              .map((m) => (
               <div
                 key={m.id}
-                className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+                ref={(node) => {
+                  if (node) turnRefs.current.set(m.id, node);
+                  else turnRefs.current.delete(m.id);
+                }}
+                data-turn-id={m.id}
+                className={`flex scroll-m-20 transition duration-700 ${
+                  m.role === "user" ? "justify-end" : "justify-start"
+                } ${highlightedTurnId === m.id ? "rounded-3xl bg-emerald-300/10 ring-1 ring-emerald-300/30" : ""}`}
               >
-                <div
-                  className={`max-w-[82%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-6 ${
-                    m.role === "user"
-                      ? "rounded-br-md bg-emerald-400 text-zinc-950"
-                      : "rounded-bl-md bg-zinc-800 text-zinc-100"
-                  }`}
-                >
-                  {m.content}
+                <div className="max-w-[86%]">
+                  {provenanceLabel(m) && (
+                    <p
+                      className={`mb-1 px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-600 ${
+                        m.role === "user" ? "text-right" : "text-left"
+                      }`}
+                    >
+                      {provenanceLabel(m)}
+                    </p>
+                  )}
+                  <div
+                    className={`whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-6 ${
+                      m.role === "user"
+                        ? "rounded-br-md bg-emerald-400 text-zinc-950"
+                        : "rounded-bl-md bg-zinc-800 text-zinc-100"
+                    }`}
+                  >
+                    {m.status === "needs_clarification" && (
+                      <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-300/80">
+                        Pregunta pendiente
+                      </p>
+                    )}
+                    {m.text}
+                    {m.attachment && (
+                      <div className="mt-2 rounded-xl border border-current/10 px-3 py-2 text-xs opacity-75">
+                        {m.attachment.kind === "document" ? "Documento" : "Imagen"} · {m.attachment.label}
+                      </div>
+                    )}
+                    {m.status === "unsupported" && (
+                      <p className="mt-2 border-t border-line/10 pt-2 text-xs text-zinc-400">
+                        Eso todavía no lo sé hacer.
+                      </p>
+                    )}
+                  </div>
+                  {m.role === "assistant" && m.receipt && (
+                    <ReceiptCard receipt={m.receipt} createdAtISO={m.createdAtISO} />
+                  )}
                 </div>
               </div>
-            ))
+              ))
+          )}
+          {!threadReadFailed && !threadComplete && (
+            <p className="px-3 py-2 text-center text-xs text-zinc-600" role="status">
+              Hay más historial del que puedo mostrar aquí.
+            </p>
           )}
           {isTyping && <TypingDots />}
           <div ref={bottomRef} />
@@ -318,7 +506,7 @@ export function ChatView({
             </button>
           </div>
         )}
-        {isEmpty && (
+        {isEmpty && !threadReadFailed && (
           <div className="mb-3 flex flex-wrap gap-2">
             {SUGGESTIONS.map((s) => (
               <button

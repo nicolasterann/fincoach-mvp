@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { getChatHistory } from "@/lib/chat-memory/chat-messages";
+import { readThreadView } from "@/lib/chat-memory/thread-view";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ChatView } from "../components/ChatView";
 
@@ -14,7 +14,7 @@ export const maxDuration = 300;
 export default async function ChatPage({
   searchParams,
 }: {
-  searchParams: Promise<{ share?: string }>;
+  searchParams: Promise<{ share?: string; turn?: string }>;
 }) {
   const supabase = await createSupabaseServerClient();
   const {
@@ -33,31 +33,28 @@ export default async function ChatPage({
       .maybeSingle(),
   ]);
 
-  const history = await getChatHistory({
+  const thread = await readThreadView({
+    client: supabase,
     userId: session.user.id,
-    channel: "web",
-    chatId: session.user.id,
-    limit: 40,
     since: (prefs?.chat_cleared_at as string | null) ?? null,
   });
 
   const firstName = (profile?.full_name as string | null)?.split(" ")[0] ?? "";
-  const messages = history
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m) => ({
-      id: m.id,
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    }));
-
-  const { share } = await searchParams;
+  const { share, turn } = await searchParams;
   const initialShareText = share?.trim().slice(0, 1000) || undefined;
+  const initialTurnId =
+    typeof turn === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(turn)
+      ? turn
+      : undefined;
 
   return (
     <ChatView
       firstName={firstName}
-      initialMessages={messages}
+      initialMessages={thread.turns}
       initialShareText={initialShareText}
+      initialTurnId={initialTurnId}
+      threadComplete={thread.complete}
+      threadReadFailed={thread.readFailed}
     />
   );
 }
