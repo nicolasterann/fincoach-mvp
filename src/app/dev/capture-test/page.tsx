@@ -223,6 +223,7 @@ import {
   readCompleteThreadRowsWith,
   storedTurnStatus,
   threadIdentityKey,
+  visibleThreadText,
   type ThreadMessageRow,
 } from "@/lib/chat-memory/thread-view";
 import { planStatedAmount } from "@/lib/capture/stated-amount";
@@ -25522,7 +25523,8 @@ assert(
       threadIdentityKey(m3Row("claim-5", "web", null)) === null &&
       storedTurnStatus({ chatResponseStatus: "needs_clarification" }) ===
         "needs_clarification" &&
-      storedTurnStatus({ message_type: "transaction" }) === null,
+      storedTurnStatus({ message_type: "transaction" }) === null &&
+      visibleThreadText("KIPU_INTERNAL_WRITE_RECEIPT") === "",
     JSON.stringify(m3DedupeRows.map(({ id, channel }) => ({ id, channel }))),
   );
 

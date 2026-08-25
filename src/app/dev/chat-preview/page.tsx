@@ -56,6 +56,17 @@ const turns: ThreadTurn[] = [
     receipt: null,
     attachment: null,
   },
+  {
+    id: "m3-failed-must-not-render",
+    role: "assistant",
+    author: "agente",
+    channel: "web",
+    createdAtISO: "2026-08-25T15:06:00.000Z",
+    text: "ESTE TURNO FALLIDO NO DEBE APARECER",
+    status: "failed",
+    receipt: null,
+    attachment: null,
+  },
 ];
 
 export default async function ChatPreviewPage({

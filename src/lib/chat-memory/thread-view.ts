@@ -203,7 +203,7 @@ export function storedTurnStatus(metadata: Record<string, unknown>): TurnStatus 
     : null;
 }
 
-function safeTurnText(content: string): string {
+export function visibleThreadText(content: string): string {
   return content.replaceAll(KIPU_INTERNAL_WRITE_RECEIPT, "").trim();
 }
 
@@ -454,7 +454,7 @@ export async function readThreadView(input: {
 
   const turns = rows.flatMap((row): ThreadTurn[] => {
     const role = row.role as "user" | "assistant";
-    const text = safeTurnText(row.content);
+    const text = visibleThreadText(row.content);
     if (role === "assistant" && !text) return [];
     const status = storedTurnStatus(row.metadata ?? {});
     if (role === "assistant" && status === "failed") return [];
@@ -496,7 +496,7 @@ export async function readFreshThreadTurn(input: {
 
   const row = data as ThreadMessageRow;
   if (row.channel !== "web" && row.channel !== "telegram") return null;
-  const text = safeTurnText(row.content);
+  const text = visibleThreadText(row.content);
   if (!text) return null;
   const operationId = operationIdOf(row);
   const receipts = operationId
