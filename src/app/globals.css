@@ -348,7 +348,7 @@ body {
   flex: 1;
   overflow-x: auto;
   overflow-y: hidden;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
   scroll-snap-type: x mandatory;
   scrollbar-width: none;
   overscroll-behavior-x: contain;
@@ -478,6 +478,16 @@ body {
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.038em;
   line-height: 1;
+}
+
+.kipu-shell-amount--invite {
+  min-height: 0;
+  max-width: 24ch;
+  color: var(--kipu-shell-ink-2);
+  font-size: clamp(16px, 3svh, 20px);
+  font-weight: 520;
+  letter-spacing: 0;
+  line-height: 1.35;
 }
 
 .kipu-shell-subtitle { color: var(--kipu-shell-ink-2); font-size: 12.5px; line-height: 1.35; }

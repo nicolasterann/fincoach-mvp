@@ -106,21 +106,31 @@ export function SantuarioShell({ payload }: { payload: ShellPayload }) {
   const activeKind = activeOrb?.kind ?? "saldo";
   const kinds = payload.orbs.map((orb) => orb.kind);
 
+  const syncActiveFromTrack = (track: HTMLDivElement) => {
+    if (track.clientWidth === 0) return;
+    const observed = Math.max(
+      0,
+      Math.min(payload.orbs.length - 1, Math.round(track.scrollLeft / track.clientWidth)),
+    );
+    setActiveIndex(observed);
+  };
+
   const goToOrb = (index: number) => {
-    setActiveIndex(index);
     const track = trackRef.current;
     if (!track) return;
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    track.scrollTo({ left: index * track.clientWidth, behavior: reduce ? "auto" : "smooth" });
+    track.scrollLeft = index * track.clientWidth;
+    // The label follows the position the browser actually accepted. A failed
+    // programmatic move therefore cannot claim a different layer than the one
+    // still visible.
+    syncActiveFromTrack(track);
   };
 
   const handleScroll = () => {
     if (scrollFrame.current != null) cancelAnimationFrame(scrollFrame.current);
     scrollFrame.current = requestAnimationFrame(() => {
       const track = trackRef.current;
-      if (!track || track.clientWidth === 0) return;
-      const next = Math.max(0, Math.min(payload.orbs.length - 1, Math.round(track.scrollLeft / track.clientWidth)));
-      setActiveIndex(next);
+      if (!track) return;
+      syncActiveFromTrack(track);
     });
   };
 
@@ -135,7 +145,9 @@ export function SantuarioShell({ payload }: { payload: ShellPayload }) {
   };
 
   const pillFor = (orb: ShellOrb) =>
-    orb.emptyInvite ?? (orb.kind === "saldo" ? payload.runwayLine : null) ?? payload.pillLine;
+    orb.amountLabel == null
+      ? null
+      : orb.emptyInvite ?? (orb.kind === "saldo" ? payload.runwayLine : null) ?? payload.pillLine;
 
   return (
     <main className="kipu-santuario" data-layer={activeKind}>
@@ -196,8 +208,12 @@ export function SantuarioShell({ payload }: { payload: ShellPayload }) {
                   <Link href={ORB_META[orb.kind].href} className="kipu-shell-orb-link" aria-label={orbAriaLabel(orb)}>
                     <StaticOrb kind={orb.kind} level={orb.level} />
                     <span className="kipu-shell-readout">
-                      <span className="kipu-shell-amount">{orb.amountLabel ?? ""}</span>
-                      <span className="kipu-shell-subtitle">{orbSubtitle(orb)}</span>
+                      <span className={`kipu-shell-amount${orb.amountLabel == null ? " kipu-shell-amount--invite" : ""}`}>
+                        {orb.amountLabel ?? orb.emptyInvite ?? "Dato no disponible"}
+                      </span>
+                      {orb.amountLabel != null && (
+                        <span className="kipu-shell-subtitle">{orbSubtitle(orb)}</span>
+                      )}
                     </span>
                   </Link>
                   <div className={`kipu-shell-pill${line ? "" : " kipu-shell-pill--empty"}`} aria-hidden={line ? undefined : true}>
@@ -232,8 +248,7 @@ export function SantuarioShell({ payload }: { payload: ShellPayload }) {
                 className="kipu-shell-dock__input"
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
-                onClick={() => router.push(chatHref(draft))}
-                placeholder="Anota un gasto o pregúntame…"
+                placeholder="Anota o pregúntame…"
                 aria-label="Anota un gasto o pregúntale a Kipu"
               />
               <button
