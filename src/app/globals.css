@@ -219,6 +219,7 @@ body {
 
 .kipu-santuario {
   --kipu-layer-accent: var(--layer-saldo);
+  --kipu-layer-accent-text: var(--kipu-layer-accent);
   --kipu-layer-liquid: var(--kipu-liquid-saldo);
   --kipu-layer-deep: var(--kipu-deep-saldo);
   position: relative;
@@ -230,6 +231,10 @@ body {
   color: var(--kipu-shell-ink-1);
   isolation: isolate;
   transition: background-color 0.9s ease, color 0.45s ease;
+}
+
+[data-theme="light"] .kipu-santuario {
+  --kipu-layer-accent-text: color-mix(in srgb, var(--kipu-layer-accent) 90%, black);
 }
 
 .kipu-santuario[data-layer="reserva"] { --kipu-layer-accent: var(--layer-reserva); --kipu-layer-liquid: var(--kipu-liquid-reserva); --kipu-layer-deep: var(--kipu-deep-reserva); }
@@ -272,7 +277,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  color: var(--kipu-shell-ink-3);
+  color: var(--kipu-shell-ink-2);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.15em;
@@ -315,7 +320,7 @@ body {
   border: 1px solid transparent;
   border-radius: 999px;
   padding: 6.5px 11px;
-  color: var(--kipu-shell-ink-3);
+  color: var(--kipu-shell-ink-2);
   font-size: 11.5px;
   font-weight: 500;
   white-space: nowrap;
@@ -523,9 +528,9 @@ body {
 .kipu-shell-cinta--empty { visibility: hidden; }
 .kipu-shell-cinta__time,
 .kipu-shell-cinta__amount { font-family: var(--font-geist-mono), ui-monospace, monospace; font-variant-numeric: tabular-nums; }
-.kipu-shell-cinta__time { color: var(--kipu-shell-ink-3); font-size: 11px; }
+.kipu-shell-cinta__time { color: var(--kipu-shell-ink-2); font-size: 11px; }
 .kipu-shell-cinta__label { min-width: 0; overflow: hidden; color: var(--kipu-shell-ink-1); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.kipu-shell-cinta__amount { color: var(--kipu-layer-accent); font-size: 13px; }
+.kipu-shell-cinta__amount { color: var(--kipu-layer-accent-text); font-size: 13px; }
 
 .kipu-shell-dock-wrap { position: relative; width: 100%; }
 
@@ -555,7 +560,7 @@ body {
   font-size: 13.5px;
 }
 
-.kipu-shell-dock__input::placeholder { color: var(--kipu-shell-ink-3); }
+.kipu-shell-dock__input::placeholder { color: var(--kipu-shell-ink-2); }
 
 .kipu-shell-dock__target {
   display: grid;
