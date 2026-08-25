@@ -225,7 +225,7 @@ import {
   threadIdentityKey,
   visibleThreadText,
   type ThreadMessageRow,
-} from "@/lib/chat-memory/thread-view";
+} from "@/lib/chat-memory/thread-view-contract";
 import { planStatedAmount } from "@/lib/capture/stated-amount";
 import { inferMultiSourceAllocations, planMultiSourcePayment } from "@/lib/capture/multi-source";
 import { retractsMultiSource } from "@/lib/capture/card-payment-draft";

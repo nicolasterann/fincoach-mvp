@@ -6,9 +6,11 @@ import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler"
 import { buildLedgerEntryPayload } from "@/lib/ai/apply-chat-transaction-intent";
 import {
   readFreshThreadTurn,
-  type ThreadTurn,
-  type TurnStatus,
 } from "@/lib/chat-memory/thread-view";
+import type {
+  ThreadTurn,
+  TurnStatus,
+} from "@/lib/chat-memory/thread-view-contract";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 

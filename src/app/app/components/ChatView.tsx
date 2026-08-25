@@ -2,7 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ThreadReceipt, ThreadTurn, TurnStatus } from "@/lib/chat-memory/thread-view";
+import type {
+  ThreadReceipt,
+  ThreadTurn,
+  TurnStatus,
+} from "@/lib/chat-memory/thread-view-contract";
 import {
   clearChatHistoryAction,
   sendChatMessageAndGetReply,

@@ -1,5 +1,5 @@
 import { ChatView } from "@/app/app/components/ChatView";
-import type { ThreadTurn } from "@/lib/chat-memory/thread-view";
+import type { ThreadTurn } from "@/lib/chat-memory/thread-view-contract";
 
 const turns: ThreadTurn[] = [
   {
