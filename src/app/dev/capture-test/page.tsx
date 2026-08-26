@@ -414,6 +414,17 @@ import {
   publishableEvidenceAgentReply,
   STATEMENT_SESSION_MARKER,
 } from "@/lib/capture/evidence-capture";
+import {
+  advanceVoiceEnvelope,
+  baseAudioMime,
+  selectVoiceRecordingFormat,
+  stopMediaStreamTracks,
+  voiceDeliverySucceeded,
+  voiceTarget,
+  VOICE_ATTACK,
+  VOICE_FALL,
+  VOICE_MAX_DURATION_MS,
+} from "@/app/app/components/shell/voice-capture-contract";
 import { normalizeCandidates } from "@/lib/capture/evidence-extraction";
 import {
   ACCOUNT_LABELS_CAP,
@@ -25769,8 +25780,8 @@ assert(
       m3ShellSource.includes('role="dialog"') &&
       m3ShellSource.includes("onPointerMove={(event) => {") &&
       m3ShellSource.includes("onTouchMove={(event) => {") &&
-      m3ShellSource.includes("onMouseDown={() => setDialogOpen(false)}") &&
-      m3ShellSource.includes("onClose={() => setDialogOpen(false)}") &&
+      /onMouseDown=\{\(\) => \{\s*voice\.cancel\(\);\s*setDialogOpen\(false\);\s*\}\}/.test(m3ShellSource) &&
+      /onClose=\{\(\) => \{\s*voice\.cancel\(\);\s*setDialogOpen\(false\);\s*\}\}/.test(m3ShellSource) &&
       m3ShellSource.includes("active={liveSettled && !dialogOpen}") &&
       m3ShellSource.includes("chatRef.current?.scrollToTurn") &&
       pmChatView.includes(
@@ -25814,6 +25825,108 @@ assert(
       m4E2ESource.includes("limpieza: residuo cero verificado en DB y auth") &&
       (m4E2ESource.match(/"M4-E[0-6] ·/g) ?? []).length === 7,
     "client island + canonical E2E + zero residue",
+  );
+
+  // M5 — voice uses the existing evidence action. The pure contract pins MIME
+  // negotiation, aura boundaries and track cleanup; source pins connect those
+  // contracts to real browser lifecycle facts without pretending this runner
+  // owns a microphone.
+  const m5VoiceContractSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/voice-capture-contract.ts`,
+    "utf8",
+  );
+  const m5VoiceHookSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/useVoiceCapture.ts`,
+    "utf8",
+  );
+  const m5PreviewSource = readFileSync(
+    `${process.cwd()}/src/app/dev/shell-preview/page.tsx`,
+    "utf8",
+  );
+  const m5Webm = selectVoiceRecordingFormat((mime) =>
+    mime === "audio/webm;codecs=opus",
+  );
+  const m5Mp4 = selectVoiceRecordingFormat((mime) => mime === "audio/mp4");
+  assert(
+    "M5-1 · el cliente negocia un formato soportado y envía siempre el MIME base aceptado",
+    baseAudioMime("audio/webm;codecs=opus") === "audio/webm" &&
+      baseAudioMime("audio/mp4;codecs=mp4a.40.2") === "audio/mp4" &&
+      baseAudioMime("video/webm;codecs=vp9") === null &&
+      m5Webm?.baseMime === "audio/webm" &&
+      m5Webm.recorderMime === "audio/webm;codecs=opus" &&
+      m5Mp4?.baseMime === "audio/mp4" &&
+      m5VoiceHookSource.includes("type: format.baseMime") &&
+      pmTransactionActions.includes(
+        'const baseMime = file.type.toLowerCase().split(";", 1)[0]?.trim() ?? "";',
+      ),
+    JSON.stringify({ m5Webm, m5Mp4 }),
+  );
+
+  const m5SetVoiceBody = m4LiveOrbSource.match(
+    /setVoice\(nextState, nextLevel\) \{[\s\S]*?\n    \},\n    reset\(\)/,
+  )?.[0] ?? "";
+  assert(
+    "M5-2 · los cuatro registros respetan valores y fronteras; setVoice no puede mover el líquido",
+    voiceTarget("calm") === 0.05 &&
+      voiceTarget("listening", 1) === 0.75 &&
+      voiceTarget("listening", Number.NaN) === 0 &&
+      voiceTarget("thinking", 1) === 0.42 &&
+      voiceTarget("responding", 1) === 0.46 &&
+      VOICE_ATTACK === 0.085 &&
+      VOICE_FALL === 0.04 &&
+      advanceVoiceEnvelope(0.1, 0.8) - 0.1 >
+        0.8 - advanceVoiceEnvelope(0.8, 0.1) &&
+      m5SetVoiceBody.includes("voiceRef.current =") &&
+      !m5SetVoiceBody.includes("setSignal(") &&
+      !m5SetVoiceBody.includes("renderInputs.current.level") &&
+      m4LiveOrbSource.includes("voice: animatedVoice") &&
+      m4LiveOrbSource.includes("data-voice-state={voiceState}") &&
+      m5PreviewSource.includes('voiceQuery === "listening"') &&
+      m5PreviewSource.includes('(["calm", "listening", "thinking", "responding"] as const)'),
+    m5SetVoiceBody || "setVoice ausente",
+  );
+
+  assert(
+    "M5-3 · transcripción fallida es terminal y visible, sin fabricar turno del asistente",
+    voiceDeliverySucceeded({ status: "success" }) &&
+      !voiceDeliverySucceeded({ status: "failed" }) &&
+      !voiceDeliverySucceeded({ status: "success", deliveryError: {} }) &&
+      m4EvidenceSource.includes(
+        'return { ok: false, reply: FRIENDLY_FAIL, status: "failed" };',
+      ) &&
+      pmTransactionActions.includes(
+        '"No pude entender el audio. ¿Me lo escribes?"',
+      ) &&
+      pmChatView.includes('if (result.status === "failed" || !safeReply) {') &&
+      pmChatView.includes("prev.filter((turn) => turn.id !== localId)") &&
+      m4E2ESource.includes(
+        "M5-E7 · audio válido falla como failed honesto sin turno de asistente inventado",
+      ) &&
+      m4E2ESource.includes('failedEvidence?.status === "failed"') &&
+      m4E2ESource.includes("assistantBeforeVoice === assistantAfterVoice"),
+    "terminal failure + UI + disposable persona",
+  );
+
+  let m5StoppedTracks = 0;
+  const m5Released = stopMediaStreamTracks({
+    getTracks: () => [
+      { stop: () => { m5StoppedTracks += 1; } },
+      { stop: () => { m5StoppedTracks += 1; } },
+    ] as MediaStreamTrack[],
+  });
+  assert(
+    "M5-4 · cancelar, cerrar, ocultar y desmontar liberan todas las pistas; el tope cierra honestamente",
+    m5Released === 2 &&
+      m5StoppedTracks === 2 &&
+      VOICE_MAX_DURATION_MS === 120_000 &&
+      m5VoiceHookSource.includes('document.addEventListener("visibilitychange", onVisibility)') &&
+      m5VoiceHookSource.includes("void stopRecorder(false);") &&
+      m5VoiceHookSource.includes("releaseHardware();") &&
+      m5VoiceHookSource.includes("stopMediaStreamTracks(streamRef.current)") &&
+      m5VoiceHookSource.includes("void sendRef.current();") &&
+      (m3ShellSource.match(/voice\.cancel\(\);/g) ?? []).length >= 5 &&
+      m5VoiceContractSource.includes("for (const track of tracks) track.stop();"),
+    JSON.stringify({ m5Released, m5StoppedTracks }),
   );
 
   // M0 closure: the old mixed envelope assertions also pinned live SQL/tools.

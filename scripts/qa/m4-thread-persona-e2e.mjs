@@ -51,6 +51,9 @@ const { applyChatTransactionIntent } = await import(
   "@/lib/ai/apply-chat-transaction-intent"
 );
 const { readThreadView } = await import("@/lib/chat-memory/thread-view");
+const { handleEvidenceCaptureWith } = await import(
+  "@/lib/capture/evidence-capture"
+);
 const {
   beginAgentOperationApplication,
   claimAgentOperation,
@@ -83,6 +86,7 @@ const touched = [
   "chat_messages",
   "transactions",
   "accounts",
+  "capture_evidence",
   "profiles",
 ];
 
@@ -469,6 +473,66 @@ try {
     incompleteTurn?.receipt?.incomplete === true &&
       incompleteTurn.receipt.lines.length === 0,
     JSON.stringify(incompleteTurn?.receipt),
+  );
+
+  const { count: assistantBeforeVoice } = await admin
+    .from("chat_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .eq("role", "assistant");
+  let transcribedMime = null;
+  const voiceFailure = await handleEvidenceCaptureWith(
+    {
+      userId,
+      channel: "web",
+      chatId: userId,
+      source: "web_upload",
+      file: {
+        bytes: new Uint8Array([
+          0x4f, 0x67, 0x67, 0x53, 0x00, 0x02,
+          0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]),
+        mimeType: "audio/ogg",
+        filename: "nota-kipu.ogg",
+      },
+    },
+    {
+      transcribeAudio: async (input) => {
+        transcribedMime = input.mimeType;
+        return { ok: false, error: "transcriptor M5 no disponible" };
+      },
+    },
+  );
+  const { data: failedEvidence, error: failedEvidenceError } = await admin
+    .from("capture_evidence")
+    .select("kind, status, summary")
+    .eq("user_id", userId)
+    .single();
+  if (failedEvidenceError) {
+    throw new Error(`voice evidence: ${failedEvidenceError.message}`);
+  }
+  const { count: assistantAfterVoice } = await admin
+    .from("chat_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .eq("role", "assistant");
+  check(
+    "M5-E7 · audio válido falla como failed honesto sin turno de asistente inventado",
+    transcribedMime === "audio/ogg" &&
+      voiceFailure.ok === false &&
+      voiceFailure.status === "failed" &&
+      Boolean(voiceFailure.reply.trim()) &&
+      failedEvidence?.kind === "audio" &&
+      failedEvidence?.status === "failed" &&
+      failedEvidence?.summary === "transcriptor M5 no disponible" &&
+      assistantBeforeVoice === assistantAfterVoice,
+    JSON.stringify({
+      transcribedMime,
+      voiceFailure,
+      failedEvidence,
+      assistantBeforeVoice,
+      assistantAfterVoice,
+    }),
   );
 
   const { count: beforeClear } = await admin

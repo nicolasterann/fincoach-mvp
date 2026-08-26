@@ -10,6 +10,7 @@ import type {
   ShellOrb,
   ShellPayload,
 } from "@/app/app/components/shell/shell-payload";
+import type { OrbVoiceState } from "@/app/app/components/shell/voice-capture-contract";
 
 type Scenario =
   | "normal"
@@ -179,11 +180,13 @@ function payloadFor(scenario: Scenario): ShellPayload {
 function previewHref(input: {
   scenario?: Scenario;
   tier?: OrbQualityTier;
+  voice?: OrbVoiceState;
   perf?: boolean;
 }): string {
   const params = new URLSearchParams();
   if (input.scenario && input.scenario !== "normal") params.set("state", input.scenario);
   if (input.tier != null) params.set("tier", String(input.tier));
+  if (input.voice) params.set("voice", input.voice);
   if (input.perf) params.set("perf", "1");
   const query = params.toString();
   return query ? `/dev/shell-preview?${query}` : "/dev/shell-preview";
@@ -192,10 +195,10 @@ function previewHref(input: {
 export default async function ShellPreviewPage({
   searchParams,
 }: {
-  searchParams: Promise<{ state?: string; tier?: string; perf?: string }>;
+  searchParams: Promise<{ state?: string; tier?: string; voice?: string; perf?: string }>;
 }) {
   if (process.env.NODE_ENV === "production") notFound();
-  const { state, tier: tierQuery, perf } = await searchParams;
+  const { state, tier: tierQuery, voice: voiceQuery, perf } = await searchParams;
   const normalizedState = typeof state === "string" ? (STATE_ALIASES[state] ?? state) : "normal";
   const scenario: Scenario = Object.prototype.hasOwnProperty.call(SCENARIO_LABELS, normalizedState)
     ? (normalizedState as Scenario)
@@ -205,6 +208,12 @@ export default async function ShellPreviewPage({
       ? Number(tierQuery) as OrbQualityTier
       : undefined;
   const showPerf = perf === "1";
+  const voice: OrbVoiceState =
+    voiceQuery === "listening" ||
+    voiceQuery === "thinking" ||
+    voiceQuery === "responding"
+      ? voiceQuery
+      : "calm";
   const forcedState = state === "dawn" ? "dawn" : FORCED_LIVE_STATE[scenario];
 
   return (
@@ -219,7 +228,7 @@ export default async function ShellPreviewPage({
             {Object.entries(SCENARIO_LABELS).map(([key, label]) => (
               <Link
                 key={key}
-                href={previewHref({ scenario: key as Scenario, tier, perf: showPerf })}
+                href={previewHref({ scenario: key as Scenario, tier, voice, perf: showPerf })}
                 className={`inline-flex min-h-11 items-center rounded-full px-3 text-xs font-semibold ${scenario === key ? "bg-emerald-400 text-zinc-950" : "border border-line/10 text-zinc-400"}`}
               >
                 {label}
@@ -231,18 +240,30 @@ export default async function ShellPreviewPage({
             {([0, 1, 2, 3] as const).map((item) => (
               <Link
                 key={item}
-                href={previewHref({ scenario, tier: item, perf: showPerf })}
+                href={previewHref({ scenario, tier: item, voice, perf: showPerf })}
                 className={`grid size-11 place-items-center rounded-full text-xs font-semibold ${tier === item ? "bg-emerald-400 text-zinc-950" : "border border-line/10 text-zinc-400"}`}
               >
                 {item}
               </Link>
             ))}
             <Link
-              href={previewHref({ scenario, tier, perf: !showPerf })}
+              href={previewHref({ scenario, tier, voice, perf: !showPerf })}
               className={`inline-flex min-h-11 items-center rounded-full px-3 text-xs font-semibold ${showPerf ? "bg-emerald-400 text-zinc-950" : "border border-line/10 text-zinc-400"}`}
             >
               Perf
             </Link>
+          </nav>
+          <p className="mb-2 mt-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Aura</p>
+          <nav className="flex flex-wrap justify-end gap-2" aria-label="Registro de voz del orbe">
+            {(["calm", "listening", "thinking", "responding"] as const).map((item) => (
+              <Link
+                key={item}
+                href={previewHref({ scenario, tier, voice: item, perf: showPerf })}
+                className={`inline-flex min-h-11 items-center rounded-full px-3 text-xs font-semibold ${voice === item ? "bg-emerald-400 text-zinc-950" : "border border-line/10 text-zinc-400"}`}
+              >
+                {item}
+              </Link>
+            ))}
           </nav>
         </div>
       </details>
@@ -251,6 +272,7 @@ export default async function ShellPreviewPage({
         preview={{
           forcedTier: tier,
           forcedState,
+          forcedVoice: voice,
           showPerf,
         }}
       />
