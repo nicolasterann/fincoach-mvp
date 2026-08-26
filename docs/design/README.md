@@ -82,6 +82,13 @@ en otro chat) sin contaminar su árbol ni su contexto.
   identidad durable, fix de lectura del digest invisible (C4), `?turn=` para
   la cinta, y los anclajes del gate re-anclados sin debilitarse. Criterios
   T1–T14.
+- [stages/M4_SPEC — Dock, pill y diálogo en su sitio](stages/M4_SPEC.md) ·
+  2026-08-25 · Capturar sin salir del santuario por la MISMA server action, el
+  orbe moviéndose sólo con nivel calculado en servidor, la pill con su escalera
+  de cuatro fuentes reales (y sin afirmar ausencia cuando no pudo leer), el
+  chat como hoja, la cámara alineada al contrato del texto, y el **E2E de
+  persona desechable** como entregable que salda la deuda de verificación del
+  bloque. Criterios U1–U16.
 - [M_DESIGN_003 — Auditoría de pre-implementación](M_DESIGN_003_AUDITORIA_PREIMPLEMENTACION_2026-08-24.md)
   · 2026-08-24 (M0 cerrado, Bloque M activo) · Veredicto GO sobre la propuesta,
   medición del front actual, 7 correcciones factuales de los docs contra el

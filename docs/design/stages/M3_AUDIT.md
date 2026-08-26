@@ -117,3 +117,70 @@ eso, estas cinco casillas dejan de depender de que alguien mire.
 **M3 no aceptado por una sola orden pequeña.** Cierra O1, entrega Ronda 2 con
 las dos salidas pegadas, y vuelvo a ejecutar; el resto ya está verificado y no
 hay que volver a tocarlo.
+
+---
+
+# M3_AUDIT — Ronda 2 · VEREDICTO: **VERDE**
+
+- **Fecha:** 2026-08-25 · **Árbol auditado:** `stage-m-front` @ `d758018`
+- **Entrada:** `M3_REPORT.md` Ronda 2 (O1 respondida).
+- **Método:** los dos runners headless + el gate por HTTP + lint/build +
+  **mi propia mutación repetida sobre el módulo nuevo** + DOM en Chromium.
+
+## O1 · CERRADA, y por el camino que había que tomar
+
+Codex eligió la opción (b), la preferida: extrajo el contrato puro a
+`src/lib/chat-memory/thread-view-contract.ts` —**sin `server-only`**— y dejó
+`thread-view.ts` como la capa que sí toca servidor. `capture-test` ahora
+importa el contrato. Resultado: el marcador `server-only` **conserva su
+significado** donde importa, y el gate ejercita lógica pura, que es lo que
+debe ejercitar.
+
+Verificado con las dos invocaciones que pedí:
+
+```
+node scripts/qa/run-capture-gate.mjs                                  → 830/830 capture checks
+node scripts/qa/run-static-gate.mjs src/app/dev/capture-test/page.tsx → 830/830 capture
+```
+
+Y por HTTP contra el servidor: **830/830 aserciones pasan**.
+
+## Los dientes sobreviven al refactor
+
+Repetí mi mutación **sobre el módulo nuevo** (borrar la limpieza del centinela
+en `thread-view-contract.ts:196`):
+
+```
+✗ M3-1 · dedupe usa identidad durable y nunca texto…
+829/830 capture checks
+```
+
+Revertido ⇒ **830/830** y árbol limpio. Mover la lógica no aflojó la red: la
+aserción sigue matando un test **con nombre**.
+
+## Sin regresión
+
+`lint` **0 errores** · `build` **exit 0** · y el DOM de `/dev/chat-preview`
+intacto tras el refactor: recibo (`QUEDÓ REGISTRADO · Café · Comida · 11:20 ·
+Gasto · −4,50$`), procedencia `TELEGRAM · CALENDARIO`, `PREGUNTA PENDIENTE`,
+capacidad faltante, **cero** «SIN ATRIBUIR», **cero** centinela, el turno
+`failed` sin renderizar y sólo tres botones (Nueva conversación, Adjuntar,
+Enviar) — **ningún botón de confirmar**.
+
+Todo lo verificado en la Ronda 1 sigue en pie y no hace falta volver a
+tocarlo.
+
+## Estado
+
+**M3 ACEPTADO.** `stage-m-front` acumula M1 + M2 + M3 y puede mergearse cuando
+el founder quiera.
+
+## Lo que M3 deja abierto a propósito
+
+Sigue sin verificarse, por falta de una sesión autenticada con datos: que un
+recibo real coincida con `/app/activity`, una fila de ledger irreleíble
+marcando `incomplete`, la cinta con `turnId` productivo, el conteo de filas
+antes/después de «Nueva conversación», y la aparición real del digest y del
+cierre mensual. **No es un defecto de M3: es deuda de verificación acumulada
+del bloque**, y su solución ya está propuesta — el E2E de persona desechable
+como entregable de M4 (patrón `scripts/qa/j7-persona-e2e.mjs`).
