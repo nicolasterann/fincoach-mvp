@@ -4,6 +4,7 @@ import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import {
   buildCoachingBriefing,
   KipuSaldoUnavailableError,
+  type CoachingBriefing,
 } from "@/lib/financial/coaching-signals";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
@@ -11,9 +12,15 @@ import { formatDateEs } from "@/lib/format/dates-es";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { loadCurrentFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { convert } from "@/lib/fx/fx-rates";
-import { findThreadTurnForTransaction } from "@/lib/chat-memory/thread-view";
+import {
+  findThreadTurnForTransaction,
+  readThreadView,
+} from "@/lib/chat-memory/thread-view";
+import type { ThreadView } from "@/lib/chat-memory/thread-view-contract";
+import { readOpenOccurrences } from "@/lib/financial/recurring-occurrences-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { describeMovement } from "../app-dashboard-helpers";
+import { buildShellPillLines } from "./shell-dialog-contract";
 
 export type ShellStatus = "ok" | "niebla";
 export type OrbKind = "saldo" | "reserva" | "metas" | "patrimonio" | "deuda";
@@ -38,6 +45,7 @@ export interface ShellPayload {
   status: ShellStatus;
   orbs: ShellOrb[];
   pillLine: string | null;
+  pillLines: string[];
   lastMovement: {
     timeLabel: string;
     label: string;
@@ -47,6 +55,7 @@ export interface ShellPayload {
   runwayLine: string | null;
   greetingName: string | null;
   dawn: ShellDawn | null;
+  thread: ThreadView;
 }
 
 interface RecentMovementRow {
@@ -73,7 +82,7 @@ function clampLevel(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-function fogPayload(greetingName: string | null): ShellPayload {
+function fogPayload(greetingName: string | null, thread: ThreadView): ShellPayload {
   const kinds: OrbKind[] = ["saldo", "reserva", "metas", "patrimonio", "deuda"];
   return {
     status: "niebla",
@@ -87,10 +96,12 @@ function fogPayload(greetingName: string | null): ShellPayload {
       emptyInvite: null,
     })),
     pillLine: null,
+    pillLines: [],
     lastMovement: null,
     runwayLine: null,
     greetingName,
     dawn: null,
+    thread,
   };
 }
 
@@ -112,8 +123,24 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
   }
 
   const greetingName = ctx.profile.fullName?.split(" ")[0] || null;
+  const supabase = await createSupabaseServerClient();
+  const [{ data: prefs, error: prefsError }, pendingRead] = await Promise.all([
+    supabase
+      .from("user_financial_preferences")
+      .select("chat_cleared_at")
+      .eq("user_id", userId)
+      .maybeSingle(),
+    readOpenOccurrences(userId),
+  ]);
+  const thread = prefsError
+    ? { turns: [], complete: false, readFailed: true }
+    : await readThreadView({
+        client: supabase,
+        userId,
+        since: (prefs?.chat_cleared_at as string | null) ?? null,
+      });
   const snapshot = deriveAdvisorySnapshot(ctx);
-  let briefing;
+  let briefing: CoachingBriefing;
   try {
     briefing = await buildCoachingBriefing({
       userId,
@@ -122,7 +149,9 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
       surfaceNudges: false,
     });
   } catch (error) {
-    if (error instanceof KipuSaldoUnavailableError) return fogPayload(greetingName);
+    if (error instanceof KipuSaldoUnavailableError) {
+      return fogPayload(greetingName, thread);
+    }
     throw error;
   }
 
@@ -157,7 +186,6 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
   const patrimonioAmount = briefing.goalsIntel.netWorth?.totalNetWorth ?? null;
   const debtAmount = briefing.debtHealth.totalDebt;
 
-  const supabase = await createSupabaseServerClient();
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString();
   const { data: recentRows, error: movementError } = await supabase
     .from("transactions")
@@ -253,12 +281,35 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
     },
   ];
 
+  const nextCommitment = saldo.nextPayment
+    ? `${saldo.nextPayment.label} · ${display(saldo.nextPayment.amount)} · ${formatDateEs(saldo.nextPayment.dateISO)}`
+    : null;
+  const openOccurrences = pendingRead.ok
+    ? pendingRead.complete
+      ? pendingRead.occurrences
+      : pendingRead.partial
+    : [];
+  const pillLines = buildShellPillLines({
+    pending: pendingRead.ok
+      ? {
+          ok: true,
+          first: openOccurrences[0]
+            ? {
+                kind: openOccurrences[0].kind,
+                dateLabel: formatDateEs(openOccurrences[0].occurrenceDate),
+              }
+            : null,
+        }
+      : { ok: false },
+    nextCommitment,
+    signals: briefing.signals,
+  });
+
   return {
     status: "ok",
     orbs,
-    pillLine: saldo.nextPayment
-      ? `${saldo.nextPayment.label} · ${display(saldo.nextPayment.amount)} · ${formatDateEs(saldo.nextPayment.dateISO)}`
-      : null,
+    pillLine: nextCommitment,
+    pillLines,
     lastMovement:
       recent && movementView
         ? {
@@ -283,5 +334,27 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
             dayKey: makeDayKey(ctx.profile.timezone)(new Date()),
           }
         : null,
+    thread,
   };
+}
+
+/** The action consumes the same context→snapshot→briefing chain as the shell.
+ * This is deliberately server-only: a successful write without a publishable
+ * denominator produces null and therefore cannot move the orb. */
+export async function readShellSaldoLevel(userId: string): Promise<number | null> {
+  const ctx = await buildUserFinancialContext(userId);
+  if (!ctx.mainGoal || ctx.accounts.length === 0 || !ctx.dashboard) return null;
+  try {
+    const briefing = await buildCoachingBriefing({
+      userId,
+      ctx,
+      snapshot: deriveAdvisorySnapshot(ctx),
+      surfaceNudges: false,
+    });
+    const saldo = briefing.margenKipu.saldo;
+    return saldo.cap > 0 ? clampLevel(saldo.saldo / saldo.cap) : null;
+  } catch (error) {
+    if (error instanceof KipuSaldoUnavailableError) return null;
+    throw error;
+  }
 }

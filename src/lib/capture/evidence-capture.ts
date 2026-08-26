@@ -72,6 +72,10 @@ export interface EvidenceCaptureInput {
 export interface EvidenceCaptureResult {
   ok: boolean;
   reply: string;
+  /** Durable terminal outcome used by every channel surface. */
+  status?: TerminalEvidenceStatus;
+  /** The persisted assistant turn, when this capture produced one. */
+  assistantMessageId?: string;
   /** true when the failure is transient and the user can safely resend. */
   retryable?: boolean;
 }
@@ -90,6 +94,10 @@ function runEvidenceAgent(
 }
 const RETRY_LATER =
   "Tuve un problema momentáneo procesando tu envío. Reenvíamelo en un momento y lo registro.";
+
+function evidenceChatStatus(status: TerminalEvidenceStatus): string {
+  return status === "processed" ? "success" : status;
+}
 
 /** Evidence is a conversational surface too. A typed agent failure may carry
  * safe model-authored copy; if it does not, reuse the same no-write continuity
@@ -315,6 +323,7 @@ async function runAgentWithDigest(input: {
   ok: boolean;
   reply: string;
   status: TerminalEvidenceStatus;
+  assistantMessageId?: string;
   retryable?: boolean;
 }> {
   const recentRead = await readRecentChatMessages({
@@ -359,6 +368,7 @@ async function runAgentWithDigest(input: {
 
   const reply = publishableEvidenceAgentReply(agentRes);
 
+  const status = evidenceStatusFromAgent(agentRes);
   const assistantMessageId = await appendChatMessage({
     userId: input.userId,
     channel: input.channel,
@@ -366,13 +376,18 @@ async function runAgentWithDigest(input: {
     role: "assistant",
     content: reply,
     messageType: "transaction",
+    metadata: {
+      source: "evidence",
+      chatResponseStatus: evidenceChatStatus(status),
+      durableOperation: agentRes.durableOperation ?? null,
+    },
     operationKey: `evidence:${input.evidenceId}:digest:assistant`,
   });
   if (!assistantMessageId) {
     return { ok: false, reply: "", status: "failed", retryable: true };
   }
 
-  return { ok: agentRes.ok, reply, status: evidenceStatusFromAgent(agentRes) };
+  return { ok: agentRes.ok, reply, status, assistantMessageId };
 }
 
 // Re-upload of a statement that is still awaiting clarification → CONTINUE the
@@ -449,6 +464,7 @@ async function resumeStatementFromReplay(input: {
     deliveryKey: evidenceOperationNamespace(input.evidenceId),
   });
   const reply = publishableEvidenceAgentReply(agentRes);
+  const status = evidenceStatusFromAgent(agentRes);
   const assistantMessageId = await appendChatMessage({
     userId: input.userId,
     channel: input.channel,
@@ -456,6 +472,11 @@ async function resumeStatementFromReplay(input: {
     role: "assistant",
     content: reply,
     messageType: "transaction",
+    metadata: {
+      source: "evidence",
+      chatResponseStatus: evidenceChatStatus(status),
+      durableOperation: agentRes.durableOperation ?? null,
+    },
     operationKey: `evidence:${input.evidenceId}:resume:${version}:assistant`,
   });
   if (!assistantMessageId) {
@@ -467,7 +488,6 @@ async function resumeStatementFromReplay(input: {
     );
     return { ok: false, reply: RETRY_LATER, retryable: true };
   }
-  const status = evidenceStatusFromAgent(agentRes);
   // Keep the session open while still pending; clear it once the import lands.
   const finalized = await updateEvidenceSummary(
     input.evidenceId,
@@ -479,7 +499,7 @@ async function resumeStatementFromReplay(input: {
   if (!finalized) {
     return { ok: false, reply: RETRY_LATER, retryable: true };
   }
-  return { ok: agentRes.ok, reply };
+  return { ok: agentRes.ok, reply, status, assistantMessageId };
 }
 
 export async function handleEvidenceCapture(
@@ -593,7 +613,13 @@ export async function handleEvidenceCapture(
       return { ok: false, reply: FRIENDLY_FAIL, retryable: true };
     }
     const voiceStatus = evidenceStatusFromChatResult(result);
-    return { ok: voiceStatus !== "failed", reply: result.chatResponse.message };
+    const assistantMessageId = result.assistantMetadata?.assistantMessageId;
+    return {
+      ok: voiceStatus !== "failed",
+      reply: result.chatResponse.message,
+      status: voiceStatus,
+      ...(typeof assistantMessageId === "string" ? { assistantMessageId } : {}),
+    };
   }
 
   const extraction =
@@ -723,6 +749,8 @@ export async function handleEvidenceCapture(
   return {
     ok: agentResult.ok,
     reply: agentResult.reply,
+    status: agentResult.status,
+    assistantMessageId: agentResult.assistantMessageId,
     retryable: agentResult.retryable,
   };
 }

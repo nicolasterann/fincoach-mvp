@@ -72,6 +72,11 @@ const basePayload: ShellPayload = {
   status: "ok",
   orbs: normalOrbs,
   pillLine: "Diners · 50.60$ · 27 de agosto",
+  pillLines: [
+    "¿Cuánto cerró tu tarjeta el 25 de agosto?",
+    "Diners · 50.60$ · 27 de agosto",
+    "Comida va al 72% de su objetivo.",
+  ],
   lastMovement: {
     timeLabel: "14:20",
     label: "Café · Produbanco",
@@ -81,6 +86,7 @@ const basePayload: ShellPayload = {
   runwayLine: null,
   greetingName: "Nico",
   dawn: null,
+  thread: { turns: [], complete: true, readFailed: false },
 };
 
 const dayOneInvites: Record<OrbKind, string> = {
@@ -98,6 +104,7 @@ function payloadFor(scenario: Scenario): ShellPayload {
       status: "niebla",
       orbs: normalOrbs.map((orb) => ({ ...orb, amountLabel: null, amountRaw: null, level: null })),
       pillLine: null,
+      pillLines: [],
       lastMovement: null,
     };
   }
@@ -114,6 +121,7 @@ function payloadFor(scenario: Scenario): ShellPayload {
         emptyInvite: dayOneInvites[orb.kind],
       })),
       pillLine: null,
+      pillLines: [],
       lastMovement: null,
     };
   }
