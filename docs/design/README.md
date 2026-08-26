@@ -89,6 +89,12 @@ en otro chat) sin contaminar su árbol ni su contexto.
   chat como hoja, la cámara alineada al contrato del texto, y el **E2E de
   persona desechable** como entregable que salda la deuda de verificación del
   bloque. Criterios U1–U16.
+- [stages/M5_SPEC — Voz y aura](stages/M5_SPEC.md) · 2026-08-25 · La puerta web
+  del micrófono sobre un pipeline ya probado (`transcribeAudio` + el camino de
+  evidencia), el aura ligada al ciclo REAL del agente en sus cuatro registros
+  —y prohibido simular ninguno—, negociación de mime base contra `AUDIO_MIMES`,
+  ciclo de vida del micrófono con liberación de pistas, y fallos de voz dichos
+  en vez de tragados. Criterios V1–V16.
 - [M_DESIGN_003 — Auditoría de pre-implementación](M_DESIGN_003_AUDITORIA_PREIMPLEMENTACION_2026-08-24.md)
   · 2026-08-24 (M0 cerrado, Bloque M activo) · Veredicto GO sobre la propuesta,
   medición del front actual, 7 correcciones factuales de los docs contra el
