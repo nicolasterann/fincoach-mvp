@@ -2,7 +2,15 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type PointerEvent,
+} from "react";
+import { ChatView, type ChatViewHandle } from "../ChatView";
+import type { ChatDeliveryResult } from "../../transaction-actions";
 import {
   LiveOrb,
   type LiveOrbHandle,
@@ -116,6 +124,9 @@ export function SantuarioShell({
   const router = useRouter();
   const trackRef = useRef<HTMLDivElement>(null);
   const liveOrbRef = useRef<LiveOrbHandle>(null);
+  const chatRef = useRef<ChatViewHandle>(null);
+  const dockGestureY = useRef<number | null>(null);
+  const sheetGestureY = useRef<number | null>(null);
   const scrollFrame = useRef<number | null>(null);
   const settleTimer = useRef<number | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -123,8 +134,18 @@ export function SantuarioShell({
   const [liveTier, setLiveTier] = useState<OrbQualityTier>(0);
   const [liveState, setLiveState] = useState<LiveOrbState>("available");
   const [perspectiveOpen, setPerspectiveOpen] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [micHint, setMicHint] = useState(false);
+  const [pillIndex, setPillIndex] = useState(0);
+  const [receiptPill, setReceiptPill] = useState<string | null>(null);
+  const [liveMovement, setLiveMovement] = useState<{
+    timeLabel: string;
+    label: string;
+    amountLabel: string;
+    turnId: string;
+    receiptKey: string;
+  } | null>(null);
   const activeOrb = payload.orbs[activeIndex] ?? payload.orbs[0];
   const activeKind = activeOrb?.kind ?? "saldo";
   const kinds = payload.orbs.map((orb) => orb.kind);
@@ -173,6 +194,14 @@ export function SantuarioShell({
   }, []);
 
   useEffect(() => {
+    if (payload.pillLines.length < 2) return;
+    const timer = window.setInterval(() => {
+      setPillIndex((current) => (current + 1) % payload.pillLines.length);
+    }, 9000);
+    return () => window.clearInterval(timer);
+  }, [payload.pillLines]);
+
+  useEffect(() => {
     const orb = liveOrbRef.current;
     if (!orb) return;
     orb.reset();
@@ -188,14 +217,61 @@ export function SantuarioShell({
     }
   }, [activeOrb?.level, preview?.forcedState, preview?.forcedTier]);
 
-  const chatHref = (text: string) => {
-    const trimmed = text.trim();
-    return trimmed ? `/app/chat?share=${encodeURIComponent(trimmed)}` : "/app/chat";
+  const openDialog = (focus = true) => {
+    setPerspectiveOpen(false);
+    setDialogOpen(true);
+    if (focus) {
+      window.requestAnimationFrame(() => chatRef.current?.focusComposer());
+    }
   };
 
   const submitDock = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    router.push(chatHref(draft));
+    const text = draft.trim();
+    openDialog(!text);
+    if (text) window.requestAnimationFrame(() => void chatRef.current?.sendText(text));
+  };
+
+  const handleDeliverySettled = (result: ChatDeliveryResult | null) => {
+    if (result?.orbSignal) {
+      liveOrbRef.current?.signalWritten(result.orbSignal);
+    } else {
+      liveOrbRef.current?.reset();
+    }
+    const line = result?.turn?.receipt?.lines[0];
+    if (result?.turn?.receipt && line) {
+      const at = new Date(result.turn.createdAtISO);
+      const timeLabel = Number.isNaN(at.getTime())
+        ? "Ahora"
+        : new Intl.DateTimeFormat("es-419", {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          }).format(at);
+      setLiveMovement({
+        timeLabel,
+        label: line.label,
+        amountLabel: line.amountLabel,
+        turnId: result.turn.id,
+        receiptKey: result.orbSignal?.receiptKey ?? result.turn.id,
+      });
+      setReceiptPill(`Listo · ${line.label}`);
+    }
+    if (result) router.refresh();
+  };
+
+  const finishDockGesture = (event: PointerEvent<HTMLDivElement>) => {
+    if (dockGestureY.current != null && dockGestureY.current - event.clientY > 34) {
+      openDialog();
+    }
+    dockGestureY.current = null;
+  };
+
+  const finishSheetGesture = (event: PointerEvent<HTMLElement>) => {
+    if (sheetGestureY.current != null && event.clientY - sheetGestureY.current > 46) {
+      setDialogOpen(false);
+    }
+    sheetGestureY.current = null;
   };
 
   const pillFor = (orb: ShellOrb) =>
@@ -206,6 +282,8 @@ export function SantuarioShell({
           ? `Volvieron ${payload.dawn.fillLabel} al amanecer.`
           : null) ??
         (orb.kind === "saldo" ? payload.runwayLine : null) ??
+        receiptPill ??
+        payload.pillLines[pillIndex % Math.max(1, payload.pillLines.length)] ??
         payload.pillLine;
 
   const imperativePreview =
@@ -213,10 +291,15 @@ export function SantuarioShell({
     preview?.forcedState === "written" ||
     preview?.forcedState === "crossing";
   const forcedRenderState = imperativePreview ? undefined : preview?.forcedState;
-  const showLiveCanvas = liveSettled && liveTier > 0 && liveState !== "fog";
+  const showLiveCanvas = liveSettled && !dialogOpen && liveTier > 0 && liveState !== "fog";
+  const movement = liveMovement ?? payload.lastMovement;
 
   return (
-    <main className="kipu-santuario" data-layer={activeKind}>
+    <main
+      className="kipu-santuario"
+      data-layer={activeKind}
+      data-dialog-open={dialogOpen ? "true" : "false"}
+    >
       <span className="kipu-shell-atmosphere" aria-hidden="true" />
       <div className="kipu-shell-frame">
         <button
@@ -269,7 +352,7 @@ export function SantuarioShell({
                 amountMissing={activeOrb?.amountLabel == null}
                 dawn={activeKind === "saldo" ? payload.dawn : null}
                 runway={activeKind === "saldo" && payload.runwayLine != null}
-                active={liveSettled}
+                active={liveSettled && !dialogOpen}
                 forcedTier={preview?.forcedTier}
                 forcedState={forcedRenderState}
                 showPerf={preview?.showPerf}
@@ -305,7 +388,9 @@ export function SantuarioShell({
                     </Link>
                     <div className={`kipu-shell-pill${line ? "" : " kipu-shell-pill--empty"}`} aria-hidden={line ? undefined : true}>
                       <span className="kipu-shell-pill__dot" />
-                      <span>{line ? <PillText line={line} /> : "Sin novedades"}</span>
+                      <span className="kipu-shell-pill__text" key={line ?? "empty"}>
+                        {line ? <PillText line={line} /> : "Sin novedades"}
+                      </span>
                     </div>
                   </section>
                 );
@@ -315,25 +400,63 @@ export function SantuarioShell({
         )}
 
         <div className="kipu-shell-actions">
-          {payload.lastMovement ? (
-            <Link
-              href={
-                payload.lastMovement.turnId
-                  ? `/app/chat?turn=${encodeURIComponent(payload.lastMovement.turnId)}`
-                  : "/app/activity"
-              }
-              className="kipu-shell-cinta"
-              aria-label={`Último movimiento: ${payload.lastMovement.label}, ${payload.lastMovement.amountLabel}`}
-            >
-              <span className="kipu-shell-cinta__time">{payload.lastMovement.timeLabel}</span>
-              <span className="kipu-shell-cinta__label">{payload.lastMovement.label}</span>
-              <span className="kipu-shell-cinta__amount">{payload.lastMovement.amountLabel}</span>
-            </Link>
+          {movement ? (
+            dialogOpen && movement.turnId ? (
+              <button
+                key={liveMovement?.receiptKey ?? "persisted-movement"}
+                type="button"
+                className="kipu-shell-cinta"
+                aria-label={`Ir al recibo: ${movement.label}, ${movement.amountLabel}`}
+                onClick={() => chatRef.current?.scrollToTurn(movement.turnId as string)}
+              >
+                <span className="kipu-shell-cinta__time">{movement.timeLabel}</span>
+                <span className="kipu-shell-cinta__label">{movement.label}</span>
+                <span className="kipu-shell-cinta__amount">{movement.amountLabel}</span>
+              </button>
+            ) : (
+              <Link
+                key={liveMovement?.receiptKey ?? "persisted-movement"}
+                href={
+                  movement.turnId
+                    ? `/app/chat?turn=${encodeURIComponent(movement.turnId)}`
+                    : "/app/activity"
+                }
+                className="kipu-shell-cinta"
+                aria-label={`Último movimiento: ${movement.label}, ${movement.amountLabel}`}
+              >
+                <span className="kipu-shell-cinta__time">{movement.timeLabel}</span>
+                <span className="kipu-shell-cinta__label">{movement.label}</span>
+                <span className="kipu-shell-cinta__amount">{movement.amountLabel}</span>
+              </Link>
+            )
           ) : (
             <div className="kipu-shell-cinta kipu-shell-cinta--empty" aria-hidden="true" />
           )}
 
-          <div className="kipu-shell-dock-wrap">
+          {!dialogOpen && <div
+            className="kipu-shell-dock-wrap"
+            onPointerDown={(event) => {
+              dockGestureY.current = event.clientY;
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={(event) => {
+              if (dockGestureY.current != null && dockGestureY.current - event.clientY > 34) {
+                dockGestureY.current = null;
+                openDialog();
+              }
+            }}
+            onPointerUp={finishDockGesture}
+            onTouchStart={(event) => {
+              dockGestureY.current = event.touches[0]?.clientY ?? null;
+            }}
+            onTouchMove={(event) => {
+              const y = event.touches[0]?.clientY;
+              if (y != null && dockGestureY.current != null && dockGestureY.current - y > 34) {
+                dockGestureY.current = null;
+                openDialog();
+              }
+            }}
+          >
             {micHint && (
               <p id="kipu-mic-hint" className="kipu-shell-mic-hint" role="status">
                 Pronto — por ahora mándame una nota de voz por Telegram
@@ -344,6 +467,7 @@ export function SantuarioShell({
                 className="kipu-shell-dock__input"
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
+                onClick={() => openDialog()}
                 placeholder="Anota o pregúntame…"
                 aria-label="Anota un gasto o pregúntale a Kipu"
               />
@@ -361,16 +485,19 @@ export function SantuarioShell({
               <button
                 type="button"
                 className="kipu-shell-dock__target"
-                aria-label="Abrir el chat para adjuntar una foto"
-                onClick={() => router.push("/app/chat")}
+                aria-label="Adjuntar una foto sin salir"
+                onClick={() => {
+                  openDialog(false);
+                  chatRef.current?.openFilePicker();
+                }}
               >
                 <span className="kipu-shell-dock__circle"><CameraIcon /></span>
               </button>
-              <button type="submit" className="kipu-shell-dock__target" aria-label="Ir al chat con este texto">
+              <button type="submit" className="kipu-shell-dock__target" aria-label="Enviar a Kipu sin salir">
                 <span className="kipu-shell-dock__circle kipu-shell-dock__circle--send"><SendIcon /></span>
               </button>
             </form>
-          </div>
+          </div>}
         </div>
       </div>
 
@@ -416,6 +543,70 @@ export function SantuarioShell({
           </section>
         </div>
       )}
+
+      <div
+        className="kipu-dialog-backdrop"
+        data-open={dialogOpen ? "true" : "false"}
+        aria-hidden={!dialogOpen}
+        inert={!dialogOpen}
+        onMouseDown={() => setDialogOpen(false)}
+      >
+        <section
+          className="kipu-dialog-sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Conversación con Kipu"
+          onMouseDown={(event) => event.stopPropagation()}
+          onPointerDown={(event) => {
+            sheetGestureY.current = event.clientY;
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            if (sheetGestureY.current != null && event.clientY - sheetGestureY.current > 46) {
+              sheetGestureY.current = null;
+              setDialogOpen(false);
+            }
+          }}
+          onPointerUp={finishSheetGesture}
+          onTouchStart={(event) => {
+            sheetGestureY.current = event.touches[0]?.clientY ?? null;
+          }}
+          onTouchMove={(event) => {
+            const y = event.touches[0]?.clientY;
+            if (y != null && sheetGestureY.current != null && y - sheetGestureY.current > 46) {
+              sheetGestureY.current = null;
+              setDialogOpen(false);
+            }
+          }}
+        >
+          <span className="kipu-dialog-sheet__grip" aria-hidden="true" />
+          {movement?.turnId && (
+            <button
+              type="button"
+              className="kipu-dialog-receipt-jump"
+              onClick={() => chatRef.current?.scrollToTurn(movement.turnId as string)}
+              aria-label={`Ir al recibo: ${movement.label}, ${movement.amountLabel}`}
+            >
+              <span>{movement.timeLabel}</span>
+              <strong>{movement.label}</strong>
+              <span>{movement.amountLabel}</span>
+            </button>
+          )}
+          <ChatView
+            imperativeRef={chatRef}
+            variant="sheet"
+            initialMessages={payload.thread.turns}
+            firstName={payload.greetingName ?? ""}
+            threadComplete={payload.thread.complete}
+            threadReadFailed={payload.thread.readFailed}
+            draftValue={draft}
+            onDraftValueChange={setDraft}
+            onClose={() => setDialogOpen(false)}
+            onCaptureStart={() => liveOrbRef.current?.signalCapture()}
+            onDeliverySettled={handleDeliverySettled}
+          />
+        </section>
+      </div>
     </main>
   );
 }

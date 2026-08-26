@@ -592,6 +592,7 @@ body {
 .kipu-shell-pill--empty { visibility: hidden; }
 .kipu-shell-pill strong { color: var(--kipu-shell-ink-1); font-weight: 600; }
 .kipu-shell-pill__dot { width: 5.5px; height: 5.5px; flex: none; border-radius: 50%; background: var(--kipu-layer-accent); box-shadow: 0 0 9px var(--kipu-layer-accent); }
+.kipu-shell-pill__text { min-width: 0; animation: kipu-shell-pill-copy 0.42s ease both; }
 
 .kipu-shell-actions { display: flex; width: 100%; flex: none; align-items: center; flex-direction: column; gap: 9px; padding: 0 15px; }
 
@@ -741,6 +742,110 @@ body {
 
 .kipu-shell-sheet__link:hover,
 .kipu-shell-sheet__link:focus-visible { background: var(--kipu-shell-glass); }
+
+.kipu-santuario[data-dialog-open="true"] .kipu-shell-frame {
+  filter: blur(5px);
+  transform: scale(0.985);
+}
+
+.kipu-santuario[data-dialog-open="true"] .kipu-orb-perf {
+  visibility: hidden;
+}
+
+/* M4 dialogue stays mounted so refreshes do not erase its local state. */
+.kipu-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  visibility: hidden;
+  align-items: flex-end;
+  justify-content: center;
+  padding: max(12px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom));
+  background: rgba(0, 0, 0, 0.48);
+  opacity: 0;
+  pointer-events: none;
+  backdrop-filter: blur(10px);
+  transition: opacity 0.28s ease, visibility 0.28s step-end;
+}
+
+.kipu-dialog-backdrop[data-open="true"] {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 0.28s ease;
+}
+
+.kipu-dialog-sheet {
+  display: flex;
+  width: min(100%, 680px);
+  height: min(86svh, 780px);
+  min-height: 420px;
+  overflow: hidden;
+  border: 1px solid var(--kipu-shell-glass-line);
+  border-radius: 28px 28px max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-bottom));
+  padding: 10px 14px 0;
+  background: color-mix(in srgb, var(--kipu-shell-bg) 96%, transparent);
+  box-shadow: 0 -22px 70px rgba(0, 0, 0, 0.34), inset 0 1px 0 var(--kipu-shell-glass-highlight);
+  color: var(--kipu-shell-ink-1);
+  flex-direction: column;
+  transform: translate3d(0, 104%, 0);
+  transition: transform 0.34s cubic-bezier(0.22, 0.61, 0.24, 1);
+}
+
+.kipu-dialog-backdrop[data-open="true"] .kipu-dialog-sheet {
+  transform: translate3d(0, 0, 0);
+}
+
+.kipu-dialog-sheet__grip {
+  flex: none;
+  display: block;
+  width: 42px;
+  height: 4px;
+  margin: 0 auto 8px;
+  border-radius: 999px;
+  background: var(--kipu-shell-cord);
+}
+
+.kipu-dialog-receipt-jump {
+  display: grid;
+  width: 100%;
+  min-height: 42px;
+  flex: none;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 7px;
+  border: 1px solid var(--kipu-shell-glass-line);
+  border-radius: 14px;
+  padding: 8px 12px;
+  background: var(--kipu-shell-card);
+  color: var(--kipu-shell-ink-2);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 10px;
+  text-align: left;
+}
+
+.kipu-dialog-receipt-jump strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--kipu-shell-ink-1);
+  font-family: var(--font-geist-sans), ui-sans-serif, sans-serif;
+  font-size: 12px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kipu-dialog-receipt-jump span:last-child {
+  color: var(--kipu-layer-accent-text);
+  font-size: 11px;
+}
+
+@keyframes kipu-shell-pill-copy {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 @keyframes kipu-orb-float {
   0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
@@ -1001,6 +1106,7 @@ textarea:focus-visible {
   .kipu-shell-orb__halo,
   .kipu-shell-atmosphere,
   .kipu-shell-cinta,
+  .kipu-shell-pill__text,
   .animate-bounce {
     animation: none !important;
   }
@@ -1026,6 +1132,11 @@ textarea:focus-visible {
 
   .kipu-shell-track {
     scroll-behavior: auto;
+  }
+
+  .kipu-dialog-backdrop,
+  .kipu-dialog-sheet {
+    transition: none !important;
   }
 }
 

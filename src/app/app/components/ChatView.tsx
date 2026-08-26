@@ -1,7 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import type {
   ThreadReceipt,
   ThreadTurn,
@@ -11,6 +18,7 @@ import {
   clearChatHistoryAction,
   sendChatMessageAndGetReply,
   sendWebEvidenceAction,
+  type ChatDeliveryResult,
 } from "../transaction-actions";
 
 // The Kipu conversation — a real DM experience: optimistic user bubble, typing
@@ -134,14 +142,14 @@ function makeSubmissionId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `sub-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export function ChatView({
-  initialMessages,
-  firstName,
-  initialShareText,
-  initialTurnId,
-  threadComplete,
-  threadReadFailed,
-}: {
+export interface ChatViewHandle {
+  sendText(text: string): Promise<void>;
+  openFilePicker(): void;
+  focusComposer(): void;
+  scrollToTurn(turnId: string): void;
+}
+
+interface ChatViewProps {
   initialMessages: ThreadTurn[];
   firstName: string;
   /** Text shared into Kipu via the PWA share target (?share=). */
@@ -149,9 +157,40 @@ export function ChatView({
   initialTurnId?: string;
   threadComplete: boolean;
   threadReadFailed: boolean;
-}) {
+  variant?: "route" | "sheet";
+  onClose?: () => void;
+  draftValue?: string;
+  onDraftValueChange?: (value: string) => void;
+  imperativeRef?: RefObject<ChatViewHandle | null>;
+  onCaptureStart?: () => void;
+  onDeliverySettled?: (result: ChatDeliveryResult | null) => void;
+}
+
+export function ChatView({
+  initialMessages,
+  firstName,
+  initialShareText,
+  initialTurnId,
+  threadComplete,
+  threadReadFailed,
+  variant = "route",
+  onClose,
+  draftValue,
+  onDraftValueChange,
+  imperativeRef,
+  onCaptureStart,
+  onDeliverySettled,
+}: ChatViewProps) {
   const [messages, setMessages] = useState<ThreadTurn[]>(initialMessages);
-  const [input, setInput] = useState("");
+  const [localInput, setLocalInput] = useState("");
+  const input = draftValue ?? localInput;
+  const setInput = useCallback(
+    (value: string) => {
+      if (onDraftValueChange) onDraftValueChange(value);
+      else setLocalInput(value);
+    },
+    [onDraftValueChange],
+  );
   const [isTyping, setIsTyping] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [failedDelivery, setFailedDelivery] = useState<{
@@ -207,7 +246,7 @@ export function ChatView({
       setInput(initialShareText);
       inputRef.current?.focus();
     }
-  }, [initialShareText]);
+  }, [initialShareText, setInput]);
 
   // Send a file (attach / paste / drop) through the evidence pipeline.
   const sendFile = useCallback(
@@ -234,23 +273,31 @@ export function ChatView({
         }),
       ]);
       setIsTyping(true);
+      onCaptureStart?.();
+      let settled: ChatDeliveryResult | null = null;
       try {
         const formData = new FormData();
         formData.set("file", file);
-        const { reply } = await sendWebEvidenceAction(formData);
-        const safeReply = visibleAssistantText(reply);
+        const result = await sendWebEvidenceAction(formData);
+        settled = result;
+        if (result.deliveryError) {
+          setFileError(result.deliveryError.message);
+          return;
+        }
+        const safeReply = visibleAssistantText(result.reply);
         if (!safeReply) {
           setFileError("No llegó una respuesta visible. Puedes volver a adjuntarlo.");
           return;
         }
         setMessages((prev) => [
           ...prev,
-          localTurn({
-            id: `local-${Date.now()}-r`,
-            role: "assistant",
-            text: safeReply,
-            status: "success",
-          }),
+          result.turn ??
+            localTurn({
+              id: `local-${Date.now()}-r`,
+              role: "assistant",
+              text: safeReply,
+              status: result.status,
+            }),
         ]);
       } catch {
         // Delivery/validation state belongs to the interface, not to Kipu's
@@ -259,9 +306,10 @@ export function ChatView({
         setFileError("No se pudo procesar el archivo. Puedes volver a adjuntarlo.");
       } finally {
         setIsTyping(false);
+        onDeliverySettled?.(settled);
       }
     },
-    [isTyping],
+    [isTyping, onCaptureStart, onDeliverySettled],
   );
 
   async function send(
@@ -279,22 +327,25 @@ export function ChatView({
       ]);
     }
     setIsTyping(true);
+    onCaptureStart?.();
     const submissionId = retry?.submissionId ?? makeSubmissionId();
+    let settled: ChatDeliveryResult | null = null;
     try {
-      const { reply, status, turn, deliveryError } = await sendChatMessageAndGetReply(
+      const result = await sendChatMessageAndGetReply(
         trimmed,
         submissionId,
       );
-      if (deliveryError) {
+      settled = result;
+      if (result.deliveryError) {
         setFailedDelivery({
           text: trimmed,
           submissionId,
-          message: deliveryError.message,
+          message: result.deliveryError.message,
         });
         return;
       }
-      const safeReply = visibleAssistantText(reply);
-      if (status === "failed" || !safeReply) {
+      const safeReply = visibleAssistantText(result.reply);
+      if (result.status === "failed" || !safeReply) {
         setFailedDelivery({
           text: trimmed,
           submissionId,
@@ -304,12 +355,12 @@ export function ChatView({
       }
       setMessages((prev) => [
         ...prev,
-        turn ??
+        result.turn ??
           localTurn({
             id: `local-${Date.now()}-r`,
             role: "assistant",
             text: safeReply,
-            status,
+            status: result.status,
           }),
       ]);
     } catch {
@@ -323,15 +374,36 @@ export function ChatView({
       });
     } finally {
       setIsTyping(false);
+      onDeliverySettled?.(settled);
       inputRef.current?.focus();
     }
   }
+
+  useImperativeHandle(
+    imperativeRef,
+    () => ({
+      sendText: (text) => send(text),
+      openFilePicker: () => fileRef.current?.click(),
+      focusComposer: () => inputRef.current?.focus(),
+      scrollToTurn: (turnId) => {
+        const target = turnRefs.current.get(turnId);
+        if (!target) return;
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        setHighlightedTurnId(turnId);
+        window.setTimeout(() => setHighlightedTurnId(null), 2200);
+      },
+    }),
+  );
 
   const isEmpty = messages.length === 0;
 
   return (
     <div
-      className="relative mx-auto flex h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col"
+      className={
+        variant === "sheet"
+          ? "relative mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col"
+          : "relative mx-auto flex h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col"
+      }
       data-initial-turn-id={initialTurnId}
       data-share-prefill={initialShareText ? "ready" : undefined}
       onDragLeave={(e) => {
@@ -367,15 +439,28 @@ export function ChatView({
       {/* Header */}
       <header className="flex shrink-0 items-center justify-between pb-3">
         <div className="flex items-center gap-3">
-          <Link
-            href="/app"
-            aria-label="Volver"
-            className="flex h-9 w-9 items-center justify-center rounded-full border border-line/10 text-zinc-400 transition hover:bg-line/5 lg:hidden"
-          >
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </Link>
+          {variant === "sheet" ? (
+            <button
+              aria-label="Cerrar conversación"
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-line/10 text-zinc-400 transition hover:bg-line/5"
+              onClick={onClose}
+              type="button"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
+              </svg>
+            </button>
+          ) : (
+            <Link
+              href="/app"
+              aria-label="Volver"
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-line/10 text-zinc-400 transition hover:bg-line/5 lg:hidden"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </Link>
+          )}
           <div className="flex items-center gap-2.5">
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-400/15 text-sm font-black text-emerald-300">
               K
@@ -388,14 +473,14 @@ export function ChatView({
             </div>
           </div>
         </div>
-        <form action={clearChatHistoryAction}>
+        {variant === "route" && <form action={clearChatHistoryAction}>
           <button
             className="rounded-full border border-line/10 px-3 py-1.5 text-[11px] font-semibold text-zinc-500 transition hover:bg-line/5 hover:text-zinc-300"
             type="submit"
           >
             Nueva conversación
           </button>
-        </form>
+        </form>}
       </header>
 
       {/* Messages — anchored to the bottom like a real DM, calm scrollbar */}
