@@ -22,12 +22,13 @@ import {
 export interface ChatDeliveryResult {
   reply: string;
   status: TurnStatus;
+  userTurn?: ThreadTurn;
   turn?: ThreadTurn;
   orbSignal?: ShellOrbWriteSignal;
   deliveryError?: {
     code: "chat-delivery-rejected";
     message: string;
-    retryable: true;
+    retryable: boolean;
   };
 }
 
@@ -199,6 +200,8 @@ export async function sendWebEvidenceAction(
 
   const caption = String(formData.get("caption") ?? "").trim().slice(0, 500);
   const bytes = new Uint8Array(await file.arrayBuffer());
+  const baseMime = file.type.toLowerCase().split(";", 1)[0]?.trim() ?? "";
+  const isAudio = baseMime.startsWith("audio/");
 
   const { handleEvidenceCapture } = await import("@/lib/capture/evidence-capture");
   const result = await handleEvidenceCapture({
@@ -206,7 +209,7 @@ export async function sendWebEvidenceAction(
     channel: "web",
     chatId: session.user.id,
     source: "web_upload",
-    file: { bytes, mimeType: file.type, filename: file.name },
+    file: { bytes, mimeType: baseMime, filename: file.name },
     caption: caption || undefined,
   });
   if (result.retryable || !result.reply.trim()) {
@@ -221,23 +224,47 @@ export async function sendWebEvidenceAction(
       },
     };
   }
-  const turn = result.assistantMessageId
-    ? await readFreshThreadTurn({
-        client: supabase,
-        userId: session.user.id,
-        turnId: result.assistantMessageId,
-      })
-    : null;
-  const orbSignal = await readOrbSignalAfterWrite(session.user.id, turn);
   const status: TurnStatus =
     result.status === "needs_clarification"
       ? "needs_clarification"
       : result.status === "failed" || !result.ok
         ? "failed"
         : "success";
+  if (status === "failed") {
+    return {
+      reply: "",
+      status,
+      deliveryError: {
+        code: "chat-delivery-rejected",
+        message: isAudio
+          ? "No pude entender el audio. ¿Me lo escribes?"
+          : "No pude procesar este archivo. Puedes volver a adjuntarlo.",
+        retryable: false,
+      },
+    };
+  }
+  const [userTurn, turn] = await Promise.all([
+    result.userMessageId
+      ? readFreshThreadTurn({
+          client: supabase,
+          userId: session.user.id,
+          turnId: result.userMessageId,
+          role: "user",
+        })
+      : Promise.resolve(null),
+    result.assistantMessageId
+      ? readFreshThreadTurn({
+          client: supabase,
+          userId: session.user.id,
+          turnId: result.assistantMessageId,
+        })
+      : Promise.resolve(null),
+  ]);
+  const orbSignal = await readOrbSignalAfterWrite(session.user.id, turn);
   return {
     reply: result.reply,
     status,
+    ...(userTurn ? { userTurn } : {}),
     ...(turn ? { turn } : {}),
     ...(orbSignal ? { orbSignal } : {}),
   };

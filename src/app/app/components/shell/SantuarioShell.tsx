@@ -20,6 +20,8 @@ import {
 import { QuipuLayerCord } from "./QuipuLayerCord";
 import type { OrbKind, ShellOrb, ShellPayload } from "./shell-payload";
 import { StaticOrb } from "./StaticOrb";
+import type { OrbVoiceState } from "./voice-capture-contract";
+import { useVoiceCapture } from "./useVoiceCapture";
 
 const ORB_META: Record<OrbKind, { label: string; href: string; ariaPrefix: string }> = {
   saldo: { label: "Saldo", href: "/app/saldo", ariaPrefix: "Saldo disponible" },
@@ -111,6 +113,7 @@ function PillText({ line }: { line: string }) {
 export interface SantuarioPreviewControls {
   forcedTier?: OrbQualityTier;
   forcedState?: LiveOrbState;
+  forcedVoice?: OrbVoiceState;
   showPerf?: boolean;
 }
 
@@ -136,7 +139,6 @@ export function SantuarioShell({
   const [perspectiveOpen, setPerspectiveOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [draft, setDraft] = useState("");
-  const [micHint, setMicHint] = useState(false);
   const [pillIndex, setPillIndex] = useState(0);
   const [receiptPill, setReceiptPill] = useState<string | null>(null);
   const [liveMovement, setLiveMovement] = useState<{
@@ -149,6 +151,15 @@ export function SantuarioShell({
   const activeOrb = payload.orbs[activeIndex] ?? payload.orbs[0];
   const activeKind = activeOrb?.kind ?? "saldo";
   const kinds = payload.orbs.map((orb) => orb.kind);
+  const voice = useVoiceCapture({
+    sendEvidence: (file) =>
+      chatRef.current?.sendEvidence(file) ?? Promise.resolve(null),
+    revealConversation: () => {
+      setPerspectiveOpen(false);
+      setDialogOpen(true);
+    },
+    setAura: (state, level) => liveOrbRef.current?.setVoice(state, level),
+  });
 
   const syncActiveFromTrack = (track: HTMLDivElement) => {
     if (track.clientWidth === 0) return;
@@ -215,9 +226,16 @@ export function SantuarioShell({
     } else if (preview?.forcedState === "crossing") {
       orb.signalCrossing({ level: 0, to: "reserva", factKey: "preview-crossing" });
     }
-  }, [activeOrb?.level, preview?.forcedState, preview?.forcedTier]);
+    if (preview?.forcedVoice) {
+      orb.setVoice(
+        preview.forcedVoice,
+        preview.forcedVoice === "listening" ? 0.68 : undefined,
+      );
+    }
+  }, [activeOrb?.level, preview?.forcedState, preview?.forcedTier, preview?.forcedVoice]);
 
   const openDialog = (focus = true) => {
+    voice.cancel();
     setPerspectiveOpen(false);
     setDialogOpen(true);
     if (focus) {
@@ -269,6 +287,7 @@ export function SantuarioShell({
 
   const finishSheetGesture = (event: PointerEvent<HTMLElement>) => {
     if (sheetGestureY.current != null && event.clientY - sheetGestureY.current > 46) {
+      voice.cancel();
       setDialogOpen(false);
     }
     sheetGestureY.current = null;
@@ -293,6 +312,20 @@ export function SantuarioShell({
   const forcedRenderState = imperativePreview ? undefined : preview?.forcedState;
   const showLiveCanvas = liveSettled && !dialogOpen && liveTier > 0 && liveState !== "fog";
   const movement = liveMovement ?? payload.lastMovement;
+  const forcedVoiceMessage = preview?.forcedVoice
+    ? `Aura ${preview.forcedVoice} · vista QA`
+    : null;
+  const voiceMessage = voice.message ?? forcedVoiceMessage;
+  const voiceCanRestart =
+    voice.state === "idle" ||
+    voice.state === "denied" ||
+    voice.state === "unsupported" ||
+    voice.state === "failed";
+  const voiceBusy =
+    voice.state === "requesting" ||
+    voice.state === "sending" ||
+    voice.state === "transcribing" ||
+    voice.state === "responding";
 
   return (
     <main
@@ -457,10 +490,28 @@ export function SantuarioShell({
               }
             }}
           >
-            {micHint && (
-              <p id="kipu-mic-hint" className="kipu-shell-mic-hint" role="status">
-                Pronto — por ahora mándame una nota de voz por Telegram
-              </p>
+            {voiceMessage && (
+              <div
+                id="kipu-voice-status"
+                className="kipu-shell-voice-status"
+                data-voice-state={preview?.forcedVoice ?? voice.state}
+                role="status"
+              >
+                <p>{voiceMessage}</p>
+                {(voice.state === "requesting" || voice.state === "recording") && (
+                  <span className="kipu-shell-voice-status__actions">
+                    <button type="button" onClick={voice.cancel}>Cancelar</button>
+                    {voice.state === "recording" && (
+                      <button type="button" onClick={() => void voice.send()}>Enviar</button>
+                    )}
+                  </span>
+                )}
+                {(voice.state === "denied" ||
+                  voice.state === "unsupported" ||
+                  voice.state === "failed") && (
+                  <button type="button" onClick={() => openDialog()}>Escribir</button>
+                )}
+              </div>
             )}
             <form className="kipu-shell-dock" onSubmit={submitDock}>
               <input
@@ -474,13 +525,16 @@ export function SantuarioShell({
               <button
                 type="button"
                 className="kipu-shell-dock__target"
-                aria-disabled="true"
-                aria-describedby={micHint ? "kipu-mic-hint" : undefined}
-                title="Pronto — por ahora mándame una nota de voz por Telegram"
-                onClick={() => setMicHint((visible) => !visible)}
+                aria-label={voice.state === "recording" ? "Enviar nota de voz" : "Grabar nota de voz"}
+                aria-pressed={voice.state === "recording"}
+                aria-describedby={voiceMessage ? "kipu-voice-status" : undefined}
+                disabled={voiceBusy}
+                onClick={() => {
+                  if (voice.state === "recording") void voice.send();
+                  else if (voiceCanRestart) void voice.start();
+                }}
               >
-                <span className="kipu-shell-dock__circle"><MicIcon /></span>
-                <span className="sr-only">Micrófono: pronto</span>
+                <span className={`kipu-shell-dock__circle${voice.state === "recording" ? " kipu-shell-dock__circle--recording" : ""}`}><MicIcon /></span>
               </button>
               <button
                 type="button"
@@ -549,7 +603,10 @@ export function SantuarioShell({
         data-open={dialogOpen ? "true" : "false"}
         aria-hidden={!dialogOpen}
         inert={!dialogOpen}
-        onMouseDown={() => setDialogOpen(false)}
+        onMouseDown={() => {
+          voice.cancel();
+          setDialogOpen(false);
+        }}
       >
         <section
           className="kipu-dialog-sheet"
@@ -564,6 +621,7 @@ export function SantuarioShell({
           onPointerMove={(event) => {
             if (sheetGestureY.current != null && event.clientY - sheetGestureY.current > 46) {
               sheetGestureY.current = null;
+              voice.cancel();
               setDialogOpen(false);
             }
           }}
@@ -575,6 +633,7 @@ export function SantuarioShell({
             const y = event.touches[0]?.clientY;
             if (y != null && sheetGestureY.current != null && y - sheetGestureY.current > 46) {
               sheetGestureY.current = null;
+              voice.cancel();
               setDialogOpen(false);
             }
           }}
@@ -601,7 +660,10 @@ export function SantuarioShell({
             threadReadFailed={payload.thread.readFailed}
             draftValue={draft}
             onDraftValueChange={setDraft}
-            onClose={() => setDialogOpen(false)}
+            onClose={() => {
+              voice.cancel();
+              setDialogOpen(false);
+            }}
             onCaptureStart={() => liveOrbRef.current?.signalCapture()}
             onDeliverySettled={handleDeliverySettled}
           />

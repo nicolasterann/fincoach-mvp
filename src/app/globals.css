@@ -658,7 +658,7 @@ body {
   color: var(--kipu-shell-ink-2);
 }
 
-.kipu-shell-dock__target[aria-disabled="true"] { cursor: help; }
+.kipu-shell-dock__target:disabled { cursor: default; opacity: 0.55; }
 
 .kipu-shell-dock__circle {
   display: grid;
@@ -676,11 +676,21 @@ body {
 [data-theme="light"] .kipu-shell-dock__circle--send { background: var(--kipu-layer-accent); color: white; }
 .kipu-shell-dock__circle svg { width: 16px; height: 16px; }
 
-.kipu-shell-mic-hint {
+.kipu-shell-dock__circle--recording {
+  background: color-mix(in srgb, var(--kipu-layer-accent) 20%, transparent);
+  color: var(--kipu-layer-accent-text);
+  animation: kipu-voice-button-pulse 2.8s ease-in-out infinite;
+}
+
+.kipu-shell-voice-status {
   position: absolute;
-  right: 6px;
+  right: 0;
   bottom: calc(100% + 8px);
-  max-width: 270px;
+  display: flex;
+  width: min(100%, 430px);
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   border: 1px solid var(--kipu-shell-glass-line);
   border-radius: 14px;
   padding: 8px 11px;
@@ -690,6 +700,30 @@ body {
   font-size: 12px;
   line-height: 1.4;
   backdrop-filter: blur(20px);
+}
+
+.kipu-shell-voice-status[data-voice-state="recording"],
+.kipu-shell-voice-status[data-voice-state="listening"] {
+  border-color: color-mix(in srgb, var(--kipu-layer-accent) 42%, transparent);
+}
+
+.kipu-shell-voice-status p { flex: 1; }
+
+.kipu-shell-voice-status > button,
+.kipu-shell-voice-status__actions button {
+  min-height: 44px;
+  border-radius: 999px;
+  padding: 0 12px;
+  color: var(--kipu-layer-accent-text);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.kipu-shell-voice-status__actions { display: flex; align-items: center; gap: 2px; }
+
+@keyframes kipu-voice-button-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--kipu-layer-accent) 0%, transparent); }
+  50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--kipu-layer-accent) 14%, transparent); }
 }
 
 .kipu-shell-fog { display: flex; min-height: 0; flex: 1; align-items: center; justify-content: center; flex-direction: column; gap: 14px; padding: 0 22px; }
@@ -1107,6 +1141,7 @@ textarea:focus-visible {
   .kipu-shell-atmosphere,
   .kipu-shell-cinta,
   .kipu-shell-pill__text,
+  .kipu-shell-dock__circle--recording,
   .animate-bounce {
     animation: none !important;
   }

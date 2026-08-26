@@ -144,6 +144,7 @@ function makeSubmissionId(): string {
 
 export interface ChatViewHandle {
   sendText(text: string): Promise<void>;
+  sendEvidence(file: File): Promise<ChatDeliveryResult | null>;
   openFilePicker(): void;
   focusComposer(): void;
   scrollToTurn(turnId: string): void;
@@ -251,25 +252,31 @@ export function ChatView({
   // Send a file (attach / paste / drop) through the evidence pipeline.
   const sendFile = useCallback(
     async (file: File) => {
-      if (isTyping) return;
+      if (isTyping) return null;
       setFileError(null);
       if (file.size > MAX_UPLOAD_BYTES) {
         setFileError("El archivo supera el límite de 12 MB.");
-        return;
+        return null;
       }
+      const isAudio = file.type.toLowerCase().startsWith("audio/");
+      const localId = `local-${Date.now()}`;
       setMessages((prev) => [
         ...prev,
         localTurn({
-          id: `local-${Date.now()}`,
+          id: localId,
           role: "user",
           text:
-            file.type === "application/pdf"
+            isAudio
+              ? "🎙 Nota de voz"
+              : file.type === "application/pdf"
               ? `📄 ${file.name}`
               : `📷 ${file.name || "Imagen"}`,
-          attachment: {
-            kind: file.type === "application/pdf" ? "document" : "image",
-            label: file.name || (file.type === "application/pdf" ? "Documento" : "Imagen"),
-          },
+          attachment: isAudio
+            ? null
+            : {
+                kind: file.type === "application/pdf" ? "document" : "image",
+                label: file.name || (file.type === "application/pdf" ? "Documento" : "Imagen"),
+              },
         }),
       ]);
       setIsTyping(true);
@@ -281,29 +288,47 @@ export function ChatView({
         const result = await sendWebEvidenceAction(formData);
         settled = result;
         if (result.deliveryError) {
+          if (isAudio) {
+            setMessages((prev) => prev.filter((turn) => turn.id !== localId));
+          }
           setFileError(result.deliveryError.message);
-          return;
+          return result;
         }
         const safeReply = visibleAssistantText(result.reply);
-        if (!safeReply) {
+        if (result.status === "failed" || !safeReply) {
+          if (isAudio) {
+            setMessages((prev) => prev.filter((turn) => turn.id !== localId));
+          }
           setFileError("No llegó una respuesta visible. Puedes volver a adjuntarlo.");
-          return;
+          return result;
         }
-        setMessages((prev) => [
-          ...prev,
-          result.turn ??
-            localTurn({
-              id: `local-${Date.now()}-r`,
-              role: "assistant",
-              text: safeReply,
-              status: result.status,
-            }),
-        ]);
+        setMessages((prev) => {
+          const userTurn = result.userTurn;
+          const durableUserTurns =
+            isAudio && userTurn
+              ? prev.map((turn) => (turn.id === localId ? userTurn : turn))
+              : prev;
+          return [
+            ...durableUserTurns,
+            result.turn ??
+              localTurn({
+                id: `local-${Date.now()}-r`,
+                role: "assistant",
+                text: safeReply,
+                status: result.status,
+              }),
+          ];
+        });
+        return result;
       } catch {
         // Delivery/validation state belongs to the interface, not to Kipu's
         // authored conversation. A retryable evidence failure keeps the exact
         // server identity and never fabricates an assistant turn.
+        if (isAudio) {
+          setMessages((prev) => prev.filter((turn) => turn.id !== localId));
+        }
         setFileError("No se pudo procesar el archivo. Puedes volver a adjuntarlo.");
+        return null;
       } finally {
         setIsTyping(false);
         onDeliverySettled?.(settled);
@@ -383,6 +408,7 @@ export function ChatView({
     imperativeRef,
     () => ({
       sendText: (text) => send(text),
+      sendEvidence: (file) => sendFile(file),
       openFilePicker: () => fileRef.current?.click(),
       focusComposer: () => inputRef.current?.focus(),
       scrollToTurn: (turnId) => {

@@ -39,6 +39,7 @@ import {
 } from "@/lib/capture/evidence-store";
 import {
   appendChatMessage,
+  readChatMessageByOperationKey,
   readRecentChatMessages,
 } from "@/lib/chat-memory/chat-messages";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
@@ -76,9 +77,17 @@ export interface EvidenceCaptureResult {
   status?: TerminalEvidenceStatus;
   /** The persisted assistant turn, when this capture produced one. */
   assistantMessageId?: string;
+  /** The persisted transcript turn for an audio capture. */
+  userMessageId?: string;
   /** true when the failure is transient and the user can safely resend. */
   retryable?: boolean;
 }
+
+export interface EvidenceCaptureDeps {
+  transcribeAudio: typeof transcribeAudio;
+}
+
+const liveEvidenceCaptureDeps: EvidenceCaptureDeps = { transcribeAudio };
 
 const FRIENDLY_FAIL =
   "No pude leer eso bien. ¿Me lo reenvías o me lo cuentas en una frase? Con eso lo dejo registrado.";
@@ -502,8 +511,9 @@ async function resumeStatementFromReplay(input: {
   return { ok: agentRes.ok, reply, status, assistantMessageId };
 }
 
-export async function handleEvidenceCapture(
+export async function handleEvidenceCaptureWith(
   input: EvidenceCaptureInput,
+  deps: EvidenceCaptureDeps,
 ): Promise<EvidenceCaptureResult> {
   if (!input.file) {
     return { ok: false, reply: FRIENDLY_FAIL };
@@ -582,14 +592,19 @@ export async function handleEvidenceCapture(
 
   // 3. Extraction by kind.
   if (validation.kind === "audio") {
-    const t = await transcribeAudio({
+    const t = await deps.transcribeAudio({
       bytes: input.file.bytes,
       mimeType: input.file.mimeType,
       filename: input.file.filename,
     });
     if (!t.ok || !t.transcript) {
-      await updateEvidenceSummary(evidenceId, t.error ?? "transcripción fallida", "failed", claimVersion);
-      return { ok: false, reply: FRIENDLY_FAIL };
+      await updateEvidenceSummary(
+        evidenceId,
+        t.error ?? "transcripción fallida",
+        "failed",
+        claimVersion,
+      );
+      return { ok: false, reply: FRIENDLY_FAIL, status: "failed" };
     }
     // A transcript IS user speech → full existing chat pipeline (agent +
     // fallback + telemetry + persistence), exactly like a typed message.
@@ -614,10 +629,21 @@ export async function handleEvidenceCapture(
     }
     const voiceStatus = evidenceStatusFromChatResult(result);
     const assistantMessageId = result.assistantMetadata?.assistantMessageId;
+    const persistedUser = await readChatMessageByOperationKey({
+      userId: input.userId,
+      channel: input.channel,
+      role: "user",
+      operationKey: `evidence:${evidenceId}:user`,
+    });
+    const userMessageId =
+      persistedUser.ok && persistedUser.found
+        ? persistedUser.message.id
+        : undefined;
     return {
       ok: voiceStatus !== "failed",
       reply: result.chatResponse.message,
       status: voiceStatus,
+      ...(userMessageId ? { userMessageId } : {}),
       ...(typeof assistantMessageId === "string" ? { assistantMessageId } : {}),
     };
   }
@@ -753,4 +779,10 @@ export async function handleEvidenceCapture(
     assistantMessageId: agentResult.assistantMessageId,
     retryable: agentResult.retryable,
   };
+}
+
+export async function handleEvidenceCapture(
+  input: EvidenceCaptureInput,
+): Promise<EvidenceCaptureResult> {
+  return handleEvidenceCaptureWith(input, liveEvidenceCaptureDeps);
 }

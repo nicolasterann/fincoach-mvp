@@ -292,42 +292,46 @@ export async function readThreadView(input: {
   return { turns, complete: read.complete, readFailed: false };
 }
 
-/** Reads back the just-persisted assistant turn so the optimistic UI receives
- * the same durable id, status, provenance, timestamp, and ledger receipt that
- * a subsequent full page load will reconstruct. */
+/** Reads back a just-persisted turn so optimistic UI receives the same durable
+ * identity and text that a subsequent full page load will reconstruct. */
 export async function readFreshThreadTurn(input: {
   client: ThreadClient;
   userId: string;
   turnId: string;
+  role?: "user" | "assistant";
 }): Promise<ThreadTurn | null> {
+  const role = input.role ?? "assistant";
   const { data, error } = await input.client
     .from("chat_messages")
     .select("id, role, channel, content, operation_key, metadata, created_at")
     .eq("user_id", input.userId)
     .eq("id", input.turnId)
-    .eq("role", "assistant")
+    .eq("role", role)
     .maybeSingle();
   if (error || !data) return null;
 
   const row = data as ThreadMessageRow;
   if (row.channel !== "web" && row.channel !== "telegram") return null;
   const text = visibleThreadText(row.content);
-  if (!text) return null;
+  if (role === "assistant" && !text) return null;
   const operationId = operationIdOf(row);
-  const receipts = operationId
+  const receipts = role === "assistant" && operationId
     ? await buildThreadReceipts(input.client, input.userId, [operationId])
     : new Map<string, ThreadReceipt>();
 
   return {
     id: row.id,
-    role: "assistant",
+    role,
     author: turnAuthor({ role: row.role, metadata: row.metadata }),
     channel: row.channel,
     createdAtISO: row.created_at,
     text,
-    status: storedTurnStatus(row.metadata ?? {}),
-    receipt: operationId ? (receipts.get(operationId) ?? null) : null,
-    attachment: null,
+    status: role === "assistant" ? storedTurnStatus(row.metadata ?? {}) : null,
+    receipt:
+      role === "assistant" && operationId
+        ? (receipts.get(operationId) ?? null)
+        : null,
+    attachment: attachmentOf(role, row.content),
   };
 }
 

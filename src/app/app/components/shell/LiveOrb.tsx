@@ -9,6 +9,11 @@ import {
 } from "react";
 import type { OrbKind, ShellDawn } from "./shell-payload";
 import {
+  advanceVoiceEnvelope,
+  voiceTarget,
+  type OrbVoiceState,
+} from "./voice-capture-contract";
+import {
   createOrbRenderer,
   type OrbBufferInfo,
   type OrbRenderer,
@@ -38,6 +43,7 @@ export interface LiveOrbHandle {
   signalCapture(): void;
   signalWritten(result: { level: number; receiptKey: string }): void;
   signalCrossing(result: { level: number; to: OrbKind; factKey: string }): void;
+  setVoice(state: OrbVoiceState, level?: number): void;
   reset(): void;
 }
 
@@ -198,7 +204,12 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
 ) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wakeRef = useRef<() => void>(() => undefined);
+  const voiceRef = useRef<{ state: OrbVoiceState; level: number }>({
+    state: "calm",
+    level: 0,
+  });
   const [signal, setSignal] = useState<LocalSignal>(null);
+  const [voiceState, setVoiceState] = useState<OrbVoiceState>("calm");
   const [dawnDay, setDawnDay] = useState<string | null>(null);
   const [tier, setTier] = useState<OrbQualityTier>(0);
   const [telemetry, setTelemetry] = useState<LiveOrbTelemetry>({
@@ -233,6 +244,17 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
         to: result.to,
         factKey: result.factKey,
       });
+    },
+    setVoice(nextState, nextLevel) {
+      voiceRef.current = {
+        state: nextState,
+        level:
+          nextState === "listening" && Number.isFinite(nextLevel)
+            ? clampLevel(nextLevel ?? 0)
+            : 0,
+      };
+      setVoiceState(nextState);
+      wakeRef.current();
     },
     reset() {
       setSignal(null);
@@ -379,6 +401,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     let accentTarget: OrbRgb = accent;
     let colorTransitionAt = 0;
     let animatedLevel = renderInputs.current.level;
+    let animatedVoice = voiceTarget("calm");
     let animationKey = signalAnimationKey(renderInputs.current);
     let animationFrom = animatedLevel;
     let animationAt = startAt;
@@ -587,13 +610,19 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
         : input.state === "written" || input.state === "crossing"
           ? Math.max(0, 1 - (now - animationAt) / 1_100)
           : 0;
+      const voice = voiceRef.current;
+      animatedVoice = advanceVoiceEnvelope(
+        animatedVoice,
+        voiceTarget(voice.state, voice.level),
+        frameDelta == null ? 1 : frameDelta / (1_000 / 60),
+      );
       renderer.draw({
         time: slowTime,
         level: clampLevel(animatedLevel),
         energy,
         day: theme === "light" ? 1 : 0,
         material: MATERIAL_BY_KIND[input.kind],
-        voice: 0,
+        voice: animatedVoice,
         liquid,
         deep,
         accent,
@@ -689,6 +718,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
         className={`kipu-shell-orb kipu-live-orb${canvasVisible ? " kipu-live-orb--visible" : ""}`}
         data-orb-kind={visualKind}
         data-live-state={state}
+        data-voice-state={voiceState}
         data-quality-tier={tier}
       >
         <span className="kipu-shell-orb__halo" />
