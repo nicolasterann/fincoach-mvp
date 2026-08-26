@@ -225,7 +225,12 @@ import {
   threadIdentityKey,
   visibleThreadText,
   type ThreadMessageRow,
+  type ThreadTurn,
 } from "@/lib/chat-memory/thread-view-contract";
+import {
+  buildShellPillLines,
+  verifiedOrbWriteSignal,
+} from "@/app/app/components/shell/shell-dialog-contract";
 import { planStatedAmount } from "@/lib/capture/stated-amount";
 import { inferMultiSourceAllocations, planMultiSourcePayment } from "@/lib/capture/multi-source";
 import { retractsMultiSource } from "@/lib/capture/card-payment-draft";
@@ -21650,7 +21655,13 @@ assert(
         "if (result.retryable || !result.reply.trim()) {",
       ) &&
       pmTransactionActions.includes(
+        'code: "chat-delivery-rejected",',
+      ) &&
+      !pmTransactionActions.includes(
         'throw new Error("KIPU_EVIDENCE_RETRYABLE");',
+      ) &&
+      pmChatView.includes(
+        "if (result.deliveryError) {",
       ) &&
       pmChatView.includes(
         'setFileError("No se pudo procesar el archivo. Puedes volver a adjuntarlo.");',
@@ -25640,6 +25651,169 @@ assert(
       pmTransactionActions.includes("chat_cleared_at: new Date().toISOString()") &&
       !/clearChatHistoryAction[\s\S]{0,900}\.delete\(/.test(pmTransactionActions),
     "status/sentinel/authority/deep-link/view clear",
+  );
+
+  // M4 — dock + pill + dialogue. Pure contracts prove priority and the
+  // money-motion boundary; source pins prove that both sanctuary entry points
+  // still consume the existing chat actions and that refresh preserves the
+  // client island instead of remounting it.
+  const m4PillLines = buildShellPillLines({
+    pending: {
+      ok: true,
+      first: { kind: "expense", dateLabel: "26 de agosto" },
+    },
+    nextCommitment: "Diners · 50.60$ · 27 de agosto",
+    signals: [
+      {
+        kind: "objective_pace",
+        severity: "watch",
+        text: "Comida va al 72% de su objetivo.",
+      },
+      {
+        kind: "transfer_needed",
+        severity: "urgent",
+        text: "Tu cuenta operativa necesita una transferencia.",
+      },
+    ],
+  });
+  const m4FailedPending = buildShellPillLines({
+    pending: { ok: false },
+    nextCommitment: "No debe bajar a este escalón",
+    signals: [
+      { kind: "objective_pace", severity: "urgent", text: "Ni a este." },
+    ],
+  });
+  assert(
+    "M4-1 · pill respeta pendiente→compromiso→objetivo→insight y una lectura caída bloquea toda falsa ausencia",
+    JSON.stringify(m4PillLines) ===
+      JSON.stringify([
+        "¿Cuánto pagaste por el compromiso de 26 de agosto?",
+        "Diners · 50.60$ · 27 de agosto",
+        "Comida va al 72% de su objetivo.",
+        "Tu cuenta operativa necesita una transferencia.",
+      ]) &&
+      JSON.stringify(m4FailedPending) ===
+        JSON.stringify(["No pude revisar tus pendientes ahora."]),
+    JSON.stringify({ m4PillLines, m4FailedPending }),
+  );
+
+  const m4ReceiptTurn: ThreadTurn = {
+    id: "turn-m4-receipt",
+    role: "assistant",
+    author: "agente",
+    channel: "web",
+    createdAtISO: "2026-08-26T12:00:00.000Z",
+    text: "Listo.",
+    status: "success",
+    receipt: {
+      lines: [{ label: "Café", amountLabel: "−7$", kindLabel: "Gasto" }],
+      saldoLabel: null,
+      incomplete: false,
+    },
+    attachment: null,
+  };
+  const m4NoReceiptTurn: ThreadTurn = { ...m4ReceiptTurn, receipt: null };
+  const m4LiveOrbSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/LiveOrb.tsx`,
+    "utf8",
+  );
+  const m4ShellPayloadSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/shell-payload.ts`,
+    "utf8",
+  );
+  assert(
+    "M4-2 · el orbe sólo recibe nivel servidor + recibo durable; capturando conserva el nivel y toda mitad ausente rehúsa movimiento",
+    verifiedOrbWriteSignal({ turn: m4ReceiptTurn, serverLevel: 0.42 })?.level ===
+      0.42 &&
+      verifiedOrbWriteSignal({ turn: m4ReceiptTurn, serverLevel: 0.42 })
+        ?.receiptKey === "turn-m4-receipt" &&
+      verifiedOrbWriteSignal({ turn: m4NoReceiptTurn, serverLevel: 0.42 }) ===
+        null &&
+      verifiedOrbWriteSignal({ turn: m4ReceiptTurn, serverLevel: null }) ===
+        null &&
+      verifiedOrbWriteSignal({ turn: m4ReceiptTurn, serverLevel: 1.2 }) ===
+        null &&
+      m4LiveOrbSource.includes('setSignal({ type: "capturing" });') &&
+      m4LiveOrbSource.includes('} else if (input.state !== "capturing") {') &&
+      m4LiveOrbSource.includes(
+        'input.signal?.type === "written" || input.signal?.type === "crossing"',
+      ) &&
+      m4ShellPayloadSource.includes(
+        "export async function readShellSaldoLevel(userId: string)",
+      ) &&
+      m4ShellPayloadSource.includes("buildUserFinancialContext(userId)") &&
+      m4ShellPayloadSource.includes("buildCoachingBriefing({") &&
+      pmTransactionActions.includes("if (!turn?.receipt) return undefined;") &&
+      pmTransactionActions.includes(
+        "const serverLevel = await readShellSaldoLevel(userId).catch(() => null);",
+      ),
+    "receipt + server level + capturing invariant",
+  );
+
+  const m4StylesSource = readFileSync(
+    `${process.cwd()}/src/app/globals.css`,
+    "utf8",
+  );
+  const m4EvidenceSource = readFileSync(
+    `${process.cwd()}/src/lib/capture/evidence-capture.ts`,
+    "utf8",
+  );
+  assert(
+    "M4-3 · una ChatView persistente abre/cierra la sheet, pausa el orbe y texto/cámara conservan las acciones y recibos existentes",
+    (m3ShellSource.match(/<ChatView\b/g) ?? []).length === 1 &&
+      !m3ShellSource.includes("sendChatMessageAndGetReply") &&
+      (pmChatView.match(/sendChatMessageAndGetReply\(/g) ?? []).length === 1 &&
+      (pmChatView.match(/sendWebEvidenceAction\(/g) ?? []).length === 1 &&
+      pmChatView.includes("result.turn ??") &&
+      pmChatView.includes("if (result.deliveryError) {") &&
+      m3ShellSource.includes('role="dialog"') &&
+      m3ShellSource.includes("onPointerMove={(event) => {") &&
+      m3ShellSource.includes("onTouchMove={(event) => {") &&
+      m3ShellSource.includes("onMouseDown={() => setDialogOpen(false)}") &&
+      m3ShellSource.includes("onClose={() => setDialogOpen(false)}") &&
+      m3ShellSource.includes("active={liveSettled && !dialogOpen}") &&
+      m3ShellSource.includes("chatRef.current?.scrollToTurn") &&
+      pmChatView.includes(
+        'const ACCEPTED_FILES = "image/jpeg,image/png,image/webp,application/pdf";',
+      ) &&
+      pmChatView.includes("const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;") &&
+      m4EvidenceSource.includes("validateEvidenceFile({") &&
+      m4EvidenceSource.includes("assistantMessageId?: string;") &&
+      m4StylesSource.includes("height: 46px;") &&
+      m4StylesSource.includes("max-width: 300px;") &&
+      m4StylesSource.includes("height: min(86svh, 780px);") &&
+      m4StylesSource.includes("env(safe-area-inset-bottom)"),
+    "one ChatView / gestures / pause / typed evidence / fixed geometry",
+  );
+
+  const m4PageSource = readFileSync(
+    `${process.cwd()}/src/app/app/page.tsx`,
+    "utf8",
+  );
+  const m4E2ESource = readFileSync(
+    `${process.cwd()}/scripts/qa/m4-thread-persona-e2e.mjs`,
+    "utf8",
+  );
+  assert(
+    "M4-4 · refresh conserva capa/hoja/borrador y el E2E obligatorio usa writer real, siete pruebas y limpieza sin borrar ledger para fabricar faltantes",
+    m3ShellSource.includes("const [activeIndex, setActiveIndex] = useState(0);") &&
+      m3ShellSource.includes("const [dialogOpen, setDialogOpen] = useState(false);") &&
+      m3ShellSource.includes('const [draft, setDraft] = useState("");') &&
+      m3ShellSource.includes("if (result) router.refresh();") &&
+      m3ShellSource.includes("draftValue={draft}") &&
+      m3ShellSource.includes("onDraftValueChange={setDraft}") &&
+      m4PageSource.includes("<SantuarioShell payload={payload}") &&
+      !m4PageSource.includes("<SantuarioShell key=") &&
+      m4E2ESource.includes("applyChatTransactionIntent({") &&
+      m4E2ESource.includes("readThreadView({ client: admin, userId })") &&
+      m4E2ESource.includes("M4-E1 · write real aparece con recibo") &&
+      m4E2ESource.includes("M4-E6 · chat_cleared_at oculta") &&
+      m4E2ESource.includes("randomUUID(), \"incomplete\"") &&
+      !m4E2ESource.includes('.from("transactions").delete') &&
+      m4E2ESource.includes("admin.auth.admin.deleteUser(userId)") &&
+      m4E2ESource.includes("limpieza: residuo cero verificado en DB y auth") &&
+      (m4E2ESource.match(/"M4-E[0-6] ·/g) ?? []).length === 7,
+    "client island + canonical E2E + zero residue",
   );
 
   // M0 closure: the old mixed envelope assertions also pinned live SQL/tools.
