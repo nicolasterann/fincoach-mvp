@@ -10,7 +10,9 @@ import type {
   ShellOrb,
   ShellPayload,
 } from "@/app/app/components/shell/shell-payload";
+import { buildShellPerspective } from "@/app/app/components/shell/shell-perspective";
 import type { OrbVoiceState } from "@/app/app/components/shell/voice-capture-contract";
+import type { DatedSnapshot } from "@/lib/trends/snapshot-store";
 
 type Scenario =
   | "normal"
@@ -25,6 +27,23 @@ type Scenario =
   | "escrito"
   | "cruce-de-capa"
   | "patrimonio-negativo";
+
+type PerspectiveFixture =
+  | "completo"
+  | "sin-objetivo-reserva"
+  | "sin-meta-principal"
+  | "con-huecos"
+  | "lectura-caida"
+  | "sin-compromisos";
+
+const PERSPECTIVE_FIXTURES: Record<PerspectiveFixture, string> = {
+  completo: "Completo",
+  "sin-objetivo-reserva": "Sin objetivo de Reserva",
+  "sin-meta-principal": "Sin meta principal",
+  "con-huecos": "Huecos en el cordón",
+  "lectura-caida": "Lectura caída",
+  "sin-compromisos": "Sin compromisos",
+};
 
 const SCENARIO_LABELS: Record<Scenario, string> = {
   normal: "Normal",
@@ -69,6 +88,87 @@ const normalOrbs: ShellOrb[] = [
   { kind: "deuda", amountLabel: "760$", amountRaw: 760, subtitle: "Te falta pagar", level: null, levelNote: null, emptyInvite: null },
 ];
 
+const snapshot = (
+  dateISO: string,
+  saldoKipu: number,
+  totalDebt: number,
+  netWorth: number,
+): DatedSnapshot => ({
+  dateISO,
+  saldoKipu,
+  totalDebt,
+  netWorth,
+  margenWeekly: 180,
+  safeWeekly: 170,
+  readiness: 70,
+});
+
+function perspectiveFor(fixture: PerspectiveFixture) {
+  const completeHistory = [
+    snapshot("2026-08-22", 58, 910, 3_100),
+    snapshot("2026-08-23", 72, 860, 3_180),
+    snapshot("2026-08-24", 44, 820, 3_250),
+    snapshot("2026-08-25", 66, 790, 3_360),
+    snapshot("2026-08-26", 82.4, 760, 3_480),
+  ];
+  const gapHistory = [
+    snapshot("2026-08-20", 36, 940, 3_000),
+    snapshot("2026-08-21", 52, 900, 3_080),
+    snapshot("2026-08-24", 49, 830, 3_260),
+    snapshot("2026-08-25", 82.4, 760, 3_480),
+  ];
+  return buildShellPerspective({
+    today: {
+      spent: 18,
+      fill: 24,
+      objectives: [
+        { category: "food", label: "Comida", spent: 184, objective: 300, crossed: false, projectedCrossDateISO: null },
+        { category: "transport", label: "Transporte", spent: 96, objective: 120, crossed: false, projectedCrossDateISO: "2026-08-30" },
+      ],
+    },
+    month: {
+      income: 2_400,
+      fixed: 650,
+      debt: 280,
+      installments: 90,
+      essentials: 520,
+      savings: 180,
+      investment: 100,
+      goals: 240,
+      free: 340,
+    },
+    history: {
+      ok: fixture !== "lectura-caida",
+      snapshots: fixture === "con-huecos" ? gapHistory : completeHistory,
+      todayISO: "2026-08-27",
+    },
+    progress: {
+      primaryGoal:
+        fixture === "sin-meta-principal"
+          ? null
+          : { name: "Brasil", current: 1_260, target: 3_000, percent: 42 },
+      reserve: {
+        readOk: true,
+        amount: 1_200,
+        target: fixture === "sin-objetivo-reserva" ? null : 2_400,
+      },
+      debt: { amount: 760 },
+      wealth: { readOk: true, amount: 3_480 },
+    },
+    upcoming: {
+      cards:
+        fixture === "sin-compromisos"
+          ? []
+          : [{ name: "Diners", inDays: 2, balance: 760, due: 50.6 }],
+      payments:
+        fixture === "sin-compromisos"
+          ? []
+          : [{ name: "Internet", amount: 36, dueDate: "2026-08-31" }],
+    },
+    formatMoney: (amount) => `${new Intl.NumberFormat("es-419", { maximumFractionDigits: 2 }).format(amount)}$`,
+  });
+}
+
 const basePayload: ShellPayload = {
   status: "ok",
   orbs: normalOrbs,
@@ -88,6 +188,7 @@ const basePayload: ShellPayload = {
   greetingName: "Nico",
   dawn: null,
   thread: { turns: [], complete: true, readFailed: false },
+  perspective: perspectiveFor("completo"),
 };
 
 const dayOneInvites: Record<OrbKind, string> = {
@@ -98,21 +199,29 @@ const dayOneInvites: Record<OrbKind, string> = {
   deuda: "Sin deudas registradas. Si tienes una tarjeta, dímelo y la cuidamos juntos.",
 };
 
-function payloadFor(scenario: Scenario): ShellPayload {
+function payloadFor(
+  scenario: Scenario,
+  perspectiveFixture: PerspectiveFixture,
+): ShellPayload {
+  const shellBase = {
+    ...basePayload,
+    perspective: perspectiveFor(perspectiveFixture),
+  };
   if (scenario === "niebla") {
     return {
-      ...basePayload,
+      ...shellBase,
       status: "niebla",
       orbs: normalOrbs.map((orb) => ({ ...orb, amountLabel: null, amountRaw: null, level: null })),
       pillLine: null,
       pillLines: [],
       lastMovement: null,
+      perspective: null,
     };
   }
 
   if (scenario === "dia-1") {
     return {
-      ...basePayload,
+      ...shellBase,
       orbs: normalOrbs.map((orb) => ({
         ...orb,
         amountLabel: orb.kind === "metas" || orb.kind === "patrimonio" ? null : "0$",
@@ -129,14 +238,14 @@ function payloadFor(scenario: Scenario): ShellPayload {
 
   if (scenario === "amanecer") {
     return {
-      ...basePayload,
+      ...shellBase,
       dawn: { levelFrom: 0.52, fillLabel: "24$", dayKey: "preview-dawn" },
     };
   }
 
   if (scenario === "saldo-cero") {
     return {
-      ...basePayload,
+      ...shellBase,
       orbs: normalOrbs.map((orb) =>
         orb.kind === "saldo"
           ? { ...orb, amountLabel: "0$", amountRaw: 0, level: 0, emptyInvite: dayOneInvites.saldo }
@@ -147,14 +256,14 @@ function payloadFor(scenario: Scenario): ShellPayload {
 
   if (scenario === "runway") {
     return {
-      ...basePayload,
+      ...shellBase,
       runwayLine: "Sin ingreso activo: tu plata cubre ~18 días al ritmo actual.",
     };
   }
 
   if (scenario === "deuda-con-cobertura") {
     return {
-      ...basePayload,
+      ...shellBase,
       orbs: normalOrbs.map((orb) =>
         orb.kind === "deuda"
           ? { ...orb, level: 0.62, levelNote: "Ciclo cubierto 62%" }
@@ -165,7 +274,7 @@ function payloadFor(scenario: Scenario): ShellPayload {
 
   if (scenario === "patrimonio-negativo") {
     return {
-      ...basePayload,
+      ...shellBase,
       orbs: normalOrbs.map((orb) =>
         orb.kind === "patrimonio"
           ? { ...orb, amountLabel: "−420$", amountRaw: -420, level: null, emptyInvite: null }
@@ -174,7 +283,7 @@ function payloadFor(scenario: Scenario): ShellPayload {
     };
   }
 
-  return basePayload;
+  return shellBase;
 }
 
 function previewHref(input: {
@@ -182,12 +291,18 @@ function previewHref(input: {
   tier?: OrbQualityTier;
   voice?: OrbVoiceState;
   perf?: boolean;
+  sheet?: boolean;
+  perspective?: PerspectiveFixture;
 }): string {
   const params = new URLSearchParams();
   if (input.scenario && input.scenario !== "normal") params.set("state", input.scenario);
   if (input.tier != null) params.set("tier", String(input.tier));
   if (input.voice) params.set("voice", input.voice);
   if (input.perf) params.set("perf", "1");
+  if (input.sheet) params.set("sheet", "perspectiva");
+  if (input.perspective && input.perspective !== "completo") {
+    params.set("perspective", input.perspective);
+  }
   const query = params.toString();
   return query ? `/dev/shell-preview?${query}` : "/dev/shell-preview";
 }
@@ -195,10 +310,24 @@ function previewHref(input: {
 export default async function ShellPreviewPage({
   searchParams,
 }: {
-  searchParams: Promise<{ state?: string; tier?: string; voice?: string; perf?: string }>;
+  searchParams: Promise<{
+    state?: string;
+    tier?: string;
+    voice?: string;
+    perf?: string;
+    sheet?: string;
+    perspective?: string;
+  }>;
 }) {
   if (process.env.NODE_ENV === "production") notFound();
-  const { state, tier: tierQuery, voice: voiceQuery, perf } = await searchParams;
+  const {
+    state,
+    tier: tierQuery,
+    voice: voiceQuery,
+    perf,
+    sheet,
+    perspective: perspectiveQuery,
+  } = await searchParams;
   const normalizedState = typeof state === "string" ? (STATE_ALIASES[state] ?? state) : "normal";
   const scenario: Scenario = Object.prototype.hasOwnProperty.call(SCENARIO_LABELS, normalizedState)
     ? (normalizedState as Scenario)
@@ -208,6 +337,12 @@ export default async function ShellPreviewPage({
       ? Number(tierQuery) as OrbQualityTier
       : undefined;
   const showPerf = perf === "1";
+  const perspectiveFixture: PerspectiveFixture =
+    typeof perspectiveQuery === "string" &&
+    Object.prototype.hasOwnProperty.call(PERSPECTIVE_FIXTURES, perspectiveQuery)
+      ? perspectiveQuery as PerspectiveFixture
+      : "completo";
+  const perspectiveOpen = sheet === "perspectiva";
   const voice: OrbVoiceState =
     voiceQuery === "listening" ||
     voiceQuery === "thinking" ||
@@ -228,7 +363,7 @@ export default async function ShellPreviewPage({
             {Object.entries(SCENARIO_LABELS).map(([key, label]) => (
               <Link
                 key={key}
-                href={previewHref({ scenario: key as Scenario, tier, voice, perf: showPerf })}
+                href={previewHref({ scenario: key as Scenario, tier, voice, perf: showPerf, sheet: perspectiveOpen, perspective: perspectiveFixture })}
                 className={`inline-flex min-h-11 items-center rounded-full px-3 text-xs font-semibold ${scenario === key ? "bg-emerald-400 text-zinc-950" : "border border-line/10 text-zinc-400"}`}
               >
                 {label}
@@ -240,14 +375,14 @@ export default async function ShellPreviewPage({
             {([0, 1, 2, 3] as const).map((item) => (
               <Link
                 key={item}
-                href={previewHref({ scenario, tier: item, voice, perf: showPerf })}
+                href={previewHref({ scenario, tier: item, voice, perf: showPerf, sheet: perspectiveOpen, perspective: perspectiveFixture })}
                 className={`grid size-11 place-items-center rounded-full text-xs font-semibold ${tier === item ? "bg-emerald-400 text-zinc-950" : "border border-line/10 text-zinc-400"}`}
               >
                 {item}
               </Link>
             ))}
             <Link
-              href={previewHref({ scenario, tier, voice, perf: !showPerf })}
+              href={previewHref({ scenario, tier, voice, perf: !showPerf, sheet: perspectiveOpen, perspective: perspectiveFixture })}
               className={`inline-flex min-h-11 items-center rounded-full px-3 text-xs font-semibold ${showPerf ? "bg-emerald-400 text-zinc-950" : "border border-line/10 text-zinc-400"}`}
             >
               Perf
@@ -258,22 +393,36 @@ export default async function ShellPreviewPage({
             {(["calm", "listening", "thinking", "responding"] as const).map((item) => (
               <Link
                 key={item}
-                href={previewHref({ scenario, tier, voice: item, perf: showPerf })}
+                href={previewHref({ scenario, tier, voice: item, perf: showPerf, sheet: perspectiveOpen, perspective: perspectiveFixture })}
                 className={`inline-flex min-h-11 items-center rounded-full px-3 text-xs font-semibold ${voice === item ? "bg-emerald-400 text-zinc-950" : "border border-line/10 text-zinc-400"}`}
               >
                 {item}
               </Link>
             ))}
           </nav>
+          <p className="mb-2 mt-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Perspectiva</p>
+          <nav className="flex max-h-[34svh] flex-wrap justify-end gap-2 overflow-y-auto" aria-label="Fixtures de perspectiva">
+            {Object.entries(PERSPECTIVE_FIXTURES).map(([key, label]) => (
+              <Link
+                key={key}
+                href={previewHref({ scenario, tier, voice, perf: showPerf, sheet: true, perspective: key as PerspectiveFixture })}
+                className={`inline-flex min-h-11 items-center rounded-full px-3 text-xs font-semibold ${perspectiveOpen && perspectiveFixture === key ? "bg-emerald-400 text-zinc-950" : "border border-line/10 text-zinc-400"}`}
+              >
+                {label}
+              </Link>
+            ))}
+          </nav>
         </div>
       </details>
       <SantuarioShell
-        payload={payloadFor(scenario)}
+        key={`preview-${scenario}-${perspectiveFixture}-${perspectiveOpen ? "open" : "closed"}`}
+        payload={payloadFor(scenario, perspectiveFixture)}
         preview={{
           forcedTier: tier,
           forcedState,
           forcedVoice: voice,
           showPerf,
+          initialPerspectiveOpen: perspectiveOpen,
         }}
       />
     </div>

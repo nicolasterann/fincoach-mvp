@@ -19,6 +19,7 @@ import {
 } from "./LiveOrb";
 import { QuipuLayerCord } from "./QuipuLayerCord";
 import type { OrbKind, ShellOrb, ShellPayload } from "./shell-payload";
+import { PerspectiveSheet } from "./PerspectiveSheet";
 import { StaticOrb } from "./StaticOrb";
 import type { OrbVoiceState } from "./voice-capture-contract";
 import { useVoiceCapture } from "./useVoiceCapture";
@@ -30,14 +31,6 @@ const ORB_META: Record<OrbKind, { label: string; href: string; ariaPrefix: strin
   patrimonio: { label: "Patrimonio", href: "/app/wealth", ariaPrefix: "Patrimonio" },
   deuda: { label: "Deuda", href: "/app/debt", ariaPrefix: "Deuda pendiente" },
 };
-
-const PERSPECTIVE_LINKS = [
-  { label: "Tu mes", href: "/app/mes" },
-  { label: "Gasto", href: "/app/spending" },
-  { label: "Cuentas", href: "/app/cuentas" },
-  { label: "Actividad", href: "/app/activity" },
-  { label: "Tu Kipu", href: "/app/settings" },
-];
 
 function Chevron({ direction = "right" }: { direction?: "right" | "down" | "up" }) {
   const path =
@@ -115,6 +108,7 @@ export interface SantuarioPreviewControls {
   forcedState?: LiveOrbState;
   forcedVoice?: OrbVoiceState;
   showPerf?: boolean;
+  initialPerspectiveOpen?: boolean;
 }
 
 export function SantuarioShell({
@@ -130,13 +124,17 @@ export function SantuarioShell({
   const chatRef = useRef<ChatViewHandle>(null);
   const dockGestureY = useRef<number | null>(null);
   const sheetGestureY = useRef<number | null>(null);
+  const perspectiveHandleY = useRef<number | null>(null);
+  const perspectiveSheetY = useRef<number | null>(null);
   const scrollFrame = useRef<number | null>(null);
   const settleTimer = useRef<number | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [liveSettled, setLiveSettled] = useState(true);
   const [liveTier, setLiveTier] = useState<OrbQualityTier>(0);
   const [liveState, setLiveState] = useState<LiveOrbState>("available");
-  const [perspectiveOpen, setPerspectiveOpen] = useState(false);
+  const [perspectiveOpen, setPerspectiveOpen] = useState(
+    preview?.initialPerspectiveOpen ?? false,
+  );
   const [dialogOpen, setDialogOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [pillIndex, setPillIndex] = useState(0);
@@ -243,6 +241,12 @@ export function SantuarioShell({
     }
   };
 
+  const openPerspective = () => {
+    voice.cancel();
+    setDialogOpen(false);
+    setPerspectiveOpen(true);
+  };
+
   const submitDock = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const text = draft.trim();
@@ -293,6 +297,26 @@ export function SantuarioShell({
     sheetGestureY.current = null;
   };
 
+  const finishPerspectiveOpenGesture = (event: PointerEvent<HTMLButtonElement>) => {
+    if (
+      perspectiveHandleY.current != null &&
+      event.clientY - perspectiveHandleY.current > 34
+    ) {
+      openPerspective();
+    }
+    perspectiveHandleY.current = null;
+  };
+
+  const finishPerspectiveCloseGesture = (event: PointerEvent<HTMLDivElement>) => {
+    if (
+      perspectiveSheetY.current != null &&
+      perspectiveSheetY.current - event.clientY > 42
+    ) {
+      setPerspectiveOpen(false);
+    }
+    perspectiveSheetY.current = null;
+  };
+
   const pillFor = (orb: ShellOrb) =>
     orb.amountLabel == null
       ? null
@@ -332,15 +356,46 @@ export function SantuarioShell({
       className="kipu-santuario"
       data-layer={activeKind}
       data-dialog-open={dialogOpen ? "true" : "false"}
+      data-perspective-open={perspectiveOpen ? "true" : "false"}
+      data-orb-paused={!liveSettled || dialogOpen || perspectiveOpen ? "true" : "false"}
     >
       <span className="kipu-shell-atmosphere" aria-hidden="true" />
       <div className="kipu-shell-frame">
         <button
           type="button"
           className="kipu-shell-handle"
-          onClick={() => setPerspectiveOpen(true)}
+          onClick={openPerspective}
           aria-expanded={perspectiveOpen}
           aria-controls="kipu-perspective-sheet"
+          disabled={!payload.perspective}
+          onPointerDown={(event) => {
+            perspectiveHandleY.current = event.clientY;
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            if (
+              perspectiveHandleY.current != null &&
+              event.clientY - perspectiveHandleY.current > 34
+            ) {
+              perspectiveHandleY.current = null;
+              openPerspective();
+            }
+          }}
+          onPointerUp={finishPerspectiveOpenGesture}
+          onTouchStart={(event) => {
+            perspectiveHandleY.current = event.touches[0]?.clientY ?? null;
+          }}
+          onTouchMove={(event) => {
+            const y = event.touches[0]?.clientY;
+            if (
+              y != null &&
+              perspectiveHandleY.current != null &&
+              y - perspectiveHandleY.current > 34
+            ) {
+              perspectiveHandleY.current = null;
+              openPerspective();
+            }
+          }}
         >
           <span className="kipu-shell-handle__grip" />
           <span>Cómo vas</span>
@@ -385,7 +440,7 @@ export function SantuarioShell({
                 amountMissing={activeOrb?.amountLabel == null}
                 dawn={activeKind === "saldo" ? payload.dawn : null}
                 runway={activeKind === "saldo" && payload.runwayLine != null}
-                active={liveSettled && !dialogOpen}
+                active={liveSettled && !dialogOpen && !perspectiveOpen}
                 forcedTier={preview?.forcedTier}
                 forcedState={forcedRenderState}
                 showPerf={preview?.showPerf}
@@ -567,7 +622,7 @@ export function SantuarioShell({
         </aside>
       )}
 
-      {perspectiveOpen && (
+      {perspectiveOpen && payload.perspective && (
         <div className="kipu-shell-sheet-backdrop" role="presentation" onMouseDown={() => setPerspectiveOpen(false)}>
           <section
             id="kipu-perspective-sheet"
@@ -578,7 +633,37 @@ export function SantuarioShell({
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="kipu-shell-sheet__head">
-              <div>
+              <div
+                className="kipu-shell-sheet__swipe-target"
+                onPointerDown={(event) => {
+                  perspectiveSheetY.current = event.clientY;
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerMove={(event) => {
+                  if (
+                    perspectiveSheetY.current != null &&
+                    perspectiveSheetY.current - event.clientY > 42
+                  ) {
+                    perspectiveSheetY.current = null;
+                    setPerspectiveOpen(false);
+                  }
+                }}
+                onPointerUp={finishPerspectiveCloseGesture}
+                onTouchStart={(event) => {
+                  perspectiveSheetY.current = event.touches[0]?.clientY ?? null;
+                }}
+                onTouchMove={(event) => {
+                  const y = event.touches[0]?.clientY;
+                  if (
+                    y != null &&
+                    perspectiveSheetY.current != null &&
+                    perspectiveSheetY.current - y > 42
+                  ) {
+                    perspectiveSheetY.current = null;
+                    setPerspectiveOpen(false);
+                  }
+                }}
+              >
                 <span className="kipu-shell-sheet__grip" />
                 <h2 id="kipu-perspective-title">Cómo vas</h2>
               </div>
@@ -586,14 +671,10 @@ export function SantuarioShell({
                 <Chevron direction="up" />
               </button>
             </div>
-            <nav aria-label="Perspectiva financiera">
-              {PERSPECTIVE_LINKS.map((item) => (
-                <Link key={item.href} href={item.href} className="kipu-shell-sheet__link">
-                  <span>{item.label}</span>
-                  <Chevron />
-                </Link>
-              ))}
-            </nav>
+            <PerspectiveSheet
+              perspective={payload.perspective}
+              onRetry={() => router.refresh()}
+            />
           </section>
         </div>
       )}
