@@ -18,9 +18,14 @@ import {
 } from "@/lib/chat-memory/thread-view";
 import type { ThreadView } from "@/lib/chat-memory/thread-view-contract";
 import { readOpenOccurrences } from "@/lib/financial/recurring-occurrences-store";
+import { loadSnapshotSeriesRead } from "@/lib/trends/snapshot-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { describeMovement } from "../app-dashboard-helpers";
 import { buildShellPillLines } from "./shell-dialog-contract";
+import {
+  buildShellPerspective,
+  type ShellPerspective,
+} from "./shell-perspective";
 
 export type ShellStatus = "ok" | "niebla";
 export type OrbKind = "saldo" | "reserva" | "metas" | "patrimonio" | "deuda";
@@ -56,6 +61,7 @@ export interface ShellPayload {
   greetingName: string | null;
   dawn: ShellDawn | null;
   thread: ThreadView;
+  perspective: ShellPerspective | null;
 }
 
 interface RecentMovementRow {
@@ -102,6 +108,7 @@ function fogPayload(greetingName: string | null, thread: ThreadView): ShellPaylo
     greetingName,
     dawn: null,
     thread,
+    perspective: null,
   };
 }
 
@@ -123,11 +130,12 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
   }
 
   const greetingName = ctx.profile.fullName?.split(" ")[0] || null;
+  const now = new Date();
   const supabase = await createSupabaseServerClient();
   const [{ data: prefs, error: prefsError }, pendingRead] = await Promise.all([
     supabase
       .from("user_financial_preferences")
-      .select("chat_cleared_at")
+      .select("chat_cleared_at, emergency_reserve_target")
       .eq("user_id", userId)
       .maybeSingle(),
     readOpenOccurrences(userId),
@@ -186,7 +194,83 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
   const patrimonioAmount = briefing.goalsIntel.netWorth?.totalNetWorth ?? null;
   const debtAmount = briefing.debtHealth.totalDebt;
 
-  const since = new Date(Date.now() - 30 * 86_400_000).toISOString();
+  // M6 — one bounded history read after the briefing has archived today's
+  // snapshot. Its typed result keeps an outage distinct from a new user with
+  // fewer than two recorded days.
+  const snapshotRead = await loadSnapshotSeriesRead(
+    userId,
+    18,
+    now.getTime(),
+  );
+  const primaryGoal = briefing.goalsIntel.portfolio.primary;
+  const perspective = buildShellPerspective({
+    today: {
+      spent: saldo.todaySpent,
+      fill: saldo.todayFill,
+      objectives: briefing.objectives.states.map((objective) => ({
+        category: objective.category,
+        label: objective.labelEs,
+        spent: objective.spentMTD,
+        objective: objective.objectiveBase,
+        crossed: objective.crossed,
+        projectedCrossDateISO: objective.projectedCrossDateISO,
+      })),
+    },
+    month: {
+      income: briefing.margenKipu.capacity.monthlyIncome,
+      fixed: briefing.margenKipu.capacity.monthlyFixed,
+      debt: briefing.margenKipu.capacity.monthlyDebtService,
+      installments: briefing.margenKipu.capacity.monthlyInstallments,
+      essentials: briefing.margenKipu.capacity.monthlyEssentials,
+      savings: briefing.margenKipu.capacity.monthlyProtected.savings,
+      investment: briefing.margenKipu.capacity.monthlyProtected.investment,
+      goals: briefing.margenKipu.capacity.monthlyProtected.goals,
+      free: briefing.margenKipu.capacity.monthlyTrulyFree,
+    },
+    history: {
+      ok: snapshotRead.ok,
+      snapshots: snapshotRead.snapshots,
+      todayISO: makeDayKey(ctx.profile.timezone)(now),
+    },
+    progress: {
+      primaryGoal: primaryGoal
+        ? {
+            name: primaryGoal.goal.name,
+            current: primaryGoal.goal.currentAmount,
+            target: primaryGoal.goal.targetAmount,
+            percent:
+              primaryGoal.goal.targetAmount > 0
+                ? primaryGoal.progressPct
+                : null,
+          }
+        : null,
+      reserve: {
+        readOk: !prefsError,
+        amount: saldo.reserva,
+        target:
+          prefsError || prefs?.emergency_reserve_target == null
+            ? null
+            : Number(prefs.emergency_reserve_target),
+      },
+      debt: { amount: debtAmount },
+      wealth: {
+        readOk: briefing.goalsIntel.wealthAvailable,
+        amount: patrimonioAmount,
+      },
+    },
+    upcoming: {
+      cards: briefing.cardsDueSoon.map((card) => ({
+        name: card.name,
+        inDays: card.inDays,
+        balance: card.balance,
+        due: card.due,
+      })),
+      payments: briefing.upcomingPayments,
+    },
+    formatMoney: display,
+  });
+
+  const since = new Date(now.getTime() - 30 * 86_400_000).toISOString();
   const { data: recentRows, error: movementError } = await supabase
     .from("transactions")
     .select("id, description, category, base_amount, base_currency, type, occurred_at, debt_account_id, goal_id")
@@ -335,6 +419,7 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
           }
         : null,
     thread,
+    perspective,
   };
 }
 
