@@ -344,7 +344,14 @@ import {
 } from "@/lib/financial/recurring-occurrence";
 import { formatDisplay } from "@/lib/financial/display-money";
 import { advanceCadence, applyAmountChange, applyCommitmentChange } from "@/lib/scheduled/scheduled-changes-store";
-import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib/financial/tu-mes";
+import {
+  buildTuMesFlows,
+  buildTuMesMetrics,
+  foreignGoalReserveMonthly,
+  goalMonthlyEquivalent,
+} from "@/lib/financial/tu-mes";
+import { buildActivityDetail } from "@/lib/financial/activity-detail";
+import { buildGoalLayerSources } from "@/lib/financial/goal-layer-sources";
 import { installmentProgress, monthlyInstallmentLoad, deferredByCard, readInstallmentPlansWith, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
 import { effectiveEssential, isEssentialByDefaultCategory } from "@/lib/onboarding/wizard-constants";
 import {
@@ -26168,6 +26175,162 @@ assert(
       briefingCalls: (m6PayloadBuildBody.match(/buildCoachingBriefing\(\{/g) ?? []).length,
       snapshotCalls: (m6PayloadBuildBody.match(/loadSnapshotSeriesRead\(/g) ?? []).length,
     }),
+  );
+
+  // M7 — the detail redesign is intentionally source-heavy but money-light.
+  // These checks pin the complete surface inventory, execute the two extracted
+  // calculations, preserve contextual weekly language and prove C5 identity.
+  const m7PageLayers = [
+    ["saldo", "saldo"],
+    ["cuentas", "reserva"],
+    ["mes", "reserva"],
+    ["spending", "saldo"],
+    ["debt", "deuda"],
+    ["wealth", "patrimonio"],
+    ["goals", "metas"],
+    ["activity", "saldo"],
+    ["fx", "patrimonio"],
+    ["household", "metas"],
+    ["settings", "patrimonio"],
+    ["kipu-fit", "patrimonio"],
+    ["mis-datos", "patrimonio"],
+  ] as const;
+  const m7PageSources = new Map(
+    m7PageLayers.map(([route]) => [
+      route,
+      readFileSync(`${process.cwd()}/src/app/app/${route}/page.tsx`, "utf8"),
+    ]),
+  );
+  const m7ReportSource = readFileSync(
+    `${process.cwd()}/docs/design/stages/M7_REPORT.md`,
+    "utf8",
+  );
+  const m7CashflowSource = readFileSync(
+    `${process.cwd()}/src/app/app/cashflow/page.tsx`,
+    "utf8",
+  );
+  const m7TouchedPages = [...m7PageSources.values()].join("\n");
+  assert(
+    "M7-1 · el inventario cubre once superficies y cada ruta viste el acento correcto sin absorber ni enlazar cashflow",
+    (m7ReportSource.match(/^\| (?:[1-9]|1[01]) \|/gmu) ?? []).length === 11 &&
+      m7PageLayers.every(([route, layer]) =>
+        m7PageSources.get(route)?.includes(`<DetailSurface layer="${layer}"`),
+      ) &&
+      !m7TouchedPages.includes('/app/cashflow') &&
+      !m7CashflowSource.includes("DetailSurface") &&
+      m7ReportSource.includes("## Inventario de superficies") &&
+      m7ReportSource.includes("## Campos leídos, antes y después") &&
+      m7ReportSource.includes("## Hallazgos"),
+    JSON.stringify({
+      inventoried: (m7ReportSource.match(/^\| (?:[1-9]|1[01]) \|/gmu) ?? []).length,
+      missingLayers: m7PageLayers.filter(([route, layer]) =>
+        !m7PageSources.get(route)?.includes(`<DetailSurface layer="${layer}"`),
+      ),
+    }),
+  );
+
+  const m7Activity = buildActivityDetail({
+    rows: [
+      { id: "r1", description: "Reversa", category: null, base_amount: 10, base_currency: "USD", type: "reversal", occurred_at: "2026-08-27T12:00:00Z", debt_account_id: null, goal_id: null, related_transaction_id: "e1" },
+      { id: "e1", description: "Café", category: "other", base_amount: 10, base_currency: "USD", type: "expense", occurred_at: "2026-08-27T11:00:00Z", debt_account_id: null, goal_id: null, related_transaction_id: null },
+      { id: "d1", description: "Tarjeta", category: null, base_amount: 5, base_currency: "USD", type: "debt_payment", occurred_at: "2026-08-27T10:00:00Z", debt_account_id: "card", goal_id: null, related_transaction_id: null },
+      { id: "i1", description: "Ingreso", category: null, base_amount: 20, base_currency: "USD", type: "income", occurred_at: "2026-08-26T10:00:00Z", debt_account_id: null, goal_id: null, related_transaction_id: null },
+    ],
+    filter: "all",
+    formatDay: (iso) => iso.slice(0, 10),
+    nowMs: Date.parse("2026-08-27T13:00:00Z"),
+  });
+  const m7ForeignGoals = foreignGoalReserveMonthly({
+    goals: [
+      { contributionAmount: 7, cadence: "weekly", currency: "USD", protected: true },
+      { contributionAmount: 20, cadence: "monthly", currency: "USD", protected: true },
+      { contributionAmount: 99, cadence: "monthly", currency: "ARS", protected: true },
+    ],
+    baseCurrency: "USD",
+    protectedGoalsMonthly: 80,
+  });
+  const m7MesPageSource = m7PageSources.get("mes") ?? "";
+  const m7ActivityPageSource = m7PageSources.get("activity") ?? "";
+  const m7RedistributeSource = readFileSync(
+    `${process.cwd()}/src/app/app/mes/MesRedistribute.tsx`,
+    "utf8",
+  );
+  const m7ChatViewSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/ChatView.tsx`,
+    "utf8",
+  );
+  const m7GoalsPageSource = m7PageSources.get("goals") ?? "";
+  assert(
+    "M7-2 · las derivaciones salen de las páginas sin cambiar resultado y el framing semanal muere sólo donde enmarca",
+    m7Activity.groups.length === 2 &&
+      m7Activity.groups[0]?.dayTotal === 0 &&
+      m7Activity.weekOut === 5 &&
+      m7Activity.weekIn === 20 &&
+      m7Activity.dayTotalLabel === "Gastado" &&
+      m7ForeignGoals === 30 &&
+      m7MesPageSource.includes("foreignGoalReserveMonthly({") &&
+      !m7MesPageSource.includes("goalMonthlyEquivalent(") &&
+      m7ActivityPageSource.includes("buildActivityDetail({") &&
+      !m7ActivityPageSource.includes("weekOut +=") &&
+      m7RedistributeSource.includes("reversible,\n// unsaved form preview only") &&
+      !m7PageSources.get("spending")?.includes("Tu semana") &&
+      !m7ChatViewSource.includes("¿Cómo voy esta semana?") &&
+      (m7GoalsPageSource.match(/\/semana/g) ?? []).length === 3,
+    JSON.stringify({ m7Activity, m7ForeignGoals, goalWeeklyCadences: (m7GoalsPageSource.match(/\/semana/g) ?? []).length }),
+  );
+
+  const m7GoalSources = buildGoalLayerSources({
+    goals: [{ id: "goal", name: "Viaje" }],
+    savingsPlans: [{ id: "save", kind: "savings", name: "Reserva viaje" }],
+    investments: [
+      { id: "fund", name: "Fondo futuro" },
+      { id: "unnamed", name: null },
+    ],
+    readable: { goals: true, savingsPlans: true, investments: true },
+  });
+  const m7CoachingSource = readFileSync(
+    `${process.cwd()}/src/lib/financial/coaching-signals.ts`,
+    "utf8",
+  );
+  assert(
+    "M7-3 · Metas une las tres identidades reales y una fuente sin nombre se declara, nunca recibe etiqueta inventada",
+    m7GoalSources.items.map((item) => item.label).join("|") ===
+      "Viaje|Reserva viaje|Fondo futuro|Nombre no disponible" &&
+      m7GoalSources.items.at(-1)?.nameAvailable === false &&
+      m7CoachingSource.includes("goals: goalsIntel.portfolio.goals.map") &&
+      m7CoachingSource.includes("savingsPlans: savingsPlansRaw.map") &&
+      m7CoachingSource.includes("name: investment.sourceName ?? null") &&
+      m7GoalsPageSource.includes("briefing.goalLayerSources") &&
+      m7GoalsPageSource.includes("source.label") &&
+      m4E2ESource.includes("M7-E10 · Metas muestra meta, ahorro e inversión por nombre") &&
+      m4E2ESource.includes('unnamedM7.items[0]?.label === "Nombre no disponible"'),
+    JSON.stringify(m7GoalSources),
+  );
+
+  const m7ShellSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/living/shell.tsx`,
+    "utf8",
+  );
+  const m7SpendingSource = m7PageSources.get("spending") ?? "";
+  assert(
+    "M7-4 · detalle hereda tokens/capa, vuelta visible, Tu Kipu único, semáforo único y reducción de movimiento en ambos temas",
+    m7ShellSource.includes('export function DetailSurface({') &&
+      m7ShellSource.includes('href: "/app/settings"') &&
+      m7ShellSource.includes('href: "/app/kipu-fit"') &&
+      m7ShellSource.includes('href: "/app/mis-datos"') &&
+      m7ShellSource.includes('aria-label="Volver"') &&
+      ["saldo", "reserva", "metas", "patrimonio", "deuda"].every((layer) =>
+        m4StylesSource.includes(`[data-detail-layer="${layer}"]`),
+      ) &&
+      m4StylesSource.includes('[data-theme="light"] .kipu-detail__atmosphere') &&
+      m4StylesSource.includes(".kipu-detail *,") &&
+      m4StylesSource.includes('.kipu-tone[data-tone="good"]') &&
+      m4StylesSource.includes('.kipu-tone[data-tone="watch"]') &&
+      m4StylesSource.includes('.kipu-tone[data-tone="over"]') &&
+      !m7SpendingSource.includes("STATUS_BAR") &&
+      !m7SpendingSource.includes('text: "justo"') &&
+      m7SpendingSource.includes('className="kipu-tone-fill h-full rounded-full"'),
+    "shared detail tokens / navigation / semantic states / reduced motion",
   );
 
   // M0 closure: the old mixed envelope assertions also pinned live SQL/tools.
