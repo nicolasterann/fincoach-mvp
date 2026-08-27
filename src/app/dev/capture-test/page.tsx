@@ -26446,6 +26446,9 @@ assert(
     m8LayoutSource.includes('{ color: "#edf2f6", media: "(prefers-color-scheme: light)" }') &&
       m8LayoutSource.includes('{ color: "#060a10", media: "(prefers-color-scheme: dark)" }') &&
       [m8FrameCss, m8PerspectiveCss, m8DialogueCss, m8DetailCss, m8PublicCss].every(m8FourInsets) &&
+      ["top", "right", "bottom", "left"].every((side) =>
+        m8PublicCss.includes(`max(20px, env(safe-area-inset-${side}))`),
+      ) &&
       m8AppNavSource.includes("pl-[env(safe-area-inset-left)]") &&
       m8AppNavSource.includes("pr-[env(safe-area-inset-right)]") &&
       m4StylesSource.includes(".kipu-detail *,") &&
