@@ -93,9 +93,9 @@ export async function loadSnapshotSeriesRead(
       // atrás pareciendo un Saldo que dejó de moverse.
       .limit(days + 2);
     // { data: null, error } no lanza: sin este chequeo un fallo se dibuja igual que
-    // un usuario sin historia. Se colapsa a [] igual (la curva solo se pinta con 2+
-    // puntos, así que el fallo ESCONDE el gráfico, no lo falsea, y ninguna
-    // superficie deriva una afirmación de esta serie), pero queda registrado.
+    // un usuario sin historia. La lista queda vacía, pero `ok: false` conserva la
+    // diferencia para que el shell muestre fallo de lectura y jamás lo presente
+    // como ausencia legítima de datos.
     if (error) {
       console.error("[kipu.snapshot] snapshot series read failed", userId, error.message);
       return { ok: false, snapshots: [], error: error.message };
