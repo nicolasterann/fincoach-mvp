@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { PwaServiceWorker } from "./PwaServiceWorker";
 import "./globals.css";
 
 // O12 — set the theme before first paint so there is no flash. Dark is the
@@ -55,7 +56,10 @@ export const metadata: Metadata = {
 // Native-feel mobile: edge-to-edge with safe-area support and a dark chrome
 // that matches the app background.
 export const viewport: Viewport = {
-  themeColor: "#09090b",
+  themeColor: [
+    { color: "#edf2f6", media: "(prefers-color-scheme: light)" },
+    { color: "#060a10", media: "(prefers-color-scheme: dark)" },
+  ],
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
@@ -75,7 +79,10 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
       </head>
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        {children}
+        <PwaServiceWorker />
+      </body>
     </html>
   );
 }
