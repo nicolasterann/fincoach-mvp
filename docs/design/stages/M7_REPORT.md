@@ -265,3 +265,60 @@ console error/warning: []
 ## Preguntas
 
 Ninguna.
+
+## Ronda 2
+
+- Rama/commits: `stage-m-front` · `1d69099` · esta ronda del reporte
+- Estado: O1 CUMPLIDA · M7 ACEPTADO
+
+### Respuesta a las órdenes de Ronda 1
+
+- **O1: hecho — sólo documentación.** Se registran abajo las dos desviaciones aprobadas por el auditor. No hubo ningún cambio de código en esta ronda.
+
+### Qué se construyó/corrigió
+
+- `docs/design/stages/M7_SPEC.md`: corrección del auditor que resuelve la contradicción entre la prohibición heredada de M1 y D-M7.2/D-M7.4; versionada sin editar en `1d69099`.
+- `docs/design/stages/M7_AUDIT.md`: Ronda 1 VERDE con O1 documental; versionada sin editar en `1d69099`.
+- `docs/design/stages/M7_REPORT.md`: esta Ronda 2 append-only corrige el registro de desviaciones de Ronda 1.
+
+### Decisiones tomadas dentro del spec
+
+- Ninguna nueva. La corrección de `M7_SPEC §4.1` recibida del auditor hace explícito el permiso aditivo que D-M7.2 y D-M7.4 ya necesitaban.
+
+### Desviaciones del spec
+
+1. **Entrada aprobada en `src/lib/financial/**`.** M7 añadió `activity-detail.ts` y `goal-layer-sources.ts`, añadió el helper de presentación `foreignGoalReserveMonthly` a `tu-mes.ts` y agregó campos de identidad/lectura en `coaching-signals.ts`, `goals-intelligence.ts` y `goals-wealth-store.ts`. Fue necesario porque D-M7.2 ordenaba sacar de las páginas el neteo/agrupación de Actividad y la reserva mensual extranjera, y D-M7.4 exigía unir nombres que sólo existen en la capa financiera. **No se cambió ninguna fórmula, monto, lectura financiera existente ni writer:** la matemática fue trasladada sin variar resultado, y `goalLayerSources` sólo transporta identidad y honestidad de lectura.
+2. **Ajuste mecánico aprobado en `src/lib/ai/agent/kipu-agent.ts`.** `buildUnavailableBriefingPlaceholder` recibió el nuevo campo tipado `goalLayerSources` con lista vacía y `readable: { goals:false, savingsPlans:false, investments:false }`. Fue necesario para que el placeholder compile y diga «no pude leer» ante la nueva forma aditiva del briefing. **No se cambió ningún prompt, tool, decisión, ruta, autorización, writer ni comportamiento del agente.**
+
+Estas son las dos desviaciones que Ronda 1 debió declarar en vez de «Ninguna».
+
+### Huecos honestos
+
+- Permanecen exactamente los de Ronda 1: las once rutas autenticadas, ambos temas y la continuidad perceptual requieren una sesión disponible para la pasada manual del founder.
+
+### Autochequeo X1–X16
+
+| Criterio | Cómo se probó en esta corrección | Resultado |
+|---|---|---|
+| X1–X16 | O1 no modifica código ni artefactos ejecutables. La evidencia real de Ronda 1 permanece en este mismo reporte; el auditor volvió a ejecutar lint, build, ambos runners de captura (846/846), E2E (11/11, residuo cero) y una mutación antes de emitir VERDE. | SIN CAMBIOS · M7 ACEPTADO |
+
+### Gates (salida real pegada)
+
+No se reejecutaron: O1 ordena **sólo documentación** y esta ronda no modifica código. La salida real completa permanece pegada en Ronda 1. La auditoría independiente registrada en `M7_AUDIT.md` verificó:
+
+```text
+lint: 0 errores
+build: exit 0
+capture Node: 846/846
+capture HTTP: 846/846
+E2E disposable: 11/11, residuo cero
+mutación resta→suma: M7-2 rojo 845/846; restauración 846/846
+```
+
+### Cómo verlo (guía de QA manual)
+
+Sin cambios respecto de Ronda 1. Para revisar O1, comparar esta sección «Desviaciones del spec» con `M7_AUDIT.md` Ronda 1: deben figurar las dos áreas, su necesidad y las prohibiciones que permanecieron intactas.
+
+### Preguntas
+
+Ninguna.
