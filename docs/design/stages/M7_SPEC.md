@@ -139,6 +139,15 @@ derivaciones de D‑M7.2 resueltas o declaradas.
 ## 4. Prohibiciones duras
 
 1. Todo lo de `M1_SPEC §4`; cero migraciones; cero dependencias npm.
+   **CORRECCIÓN (auditoría M7 Ronda 1 — contradicción de este spec):** D‑M7.2
+   ordena mover el dinero derivado «al servidor» y D‑M7.4 exige unir nombres
+   que **viven en `src/lib/financial/**`**, área que `M1_SPEC §4` declara de
+   sólo lectura. Las dos cosas no podían cumplirse a la vez. Queda resuelto
+   así: se permite **añadir** módulos y **campos aditivos de identidad o
+   presentación** en esa capa —jamás tocar una fórmula, un monto o una lectura
+   de dinero existente— y **toda entrada en esa capa se declara en
+   §Desviaciones con su razón**. Lo mismo vale para el ajuste mecánico que un
+   campo nuevo obligue en un placeholder tipado.
 2. **Ningún número cambia de valor** (D‑M7.1). Nada de «de paso lo arreglo».
 3. Cero aritmética de dinero nueva en páginas (D‑M7.2).
 4. Nada de find/replace sobre vocabulario (D‑M7.3).
