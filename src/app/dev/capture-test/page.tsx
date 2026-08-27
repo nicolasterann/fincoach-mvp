@@ -231,6 +231,11 @@ import {
   buildShellPillLines,
   verifiedOrbWriteSignal,
 } from "@/app/app/components/shell/shell-dialog-contract";
+import {
+  buildReserveProgress,
+  buildSaldoCord,
+  buildShellPerspective,
+} from "@/app/app/components/shell/shell-perspective";
 import { planStatedAmount } from "@/lib/capture/stated-amount";
 import { inferMultiSourceAllocations, planMultiSourcePayment } from "@/lib/capture/multi-source";
 import { retractsMultiSource } from "@/lib/capture/card-payment-draft";
@@ -25782,7 +25787,9 @@ assert(
       m3ShellSource.includes("onTouchMove={(event) => {") &&
       /onMouseDown=\{\(\) => \{\s*voice\.cancel\(\);\s*setDialogOpen\(false\);\s*\}\}/.test(m3ShellSource) &&
       /onClose=\{\(\) => \{\s*voice\.cancel\(\);\s*setDialogOpen\(false\);\s*\}\}/.test(m3ShellSource) &&
-      m3ShellSource.includes("active={liveSettled && !dialogOpen}") &&
+      m3ShellSource.includes(
+        "active={liveSettled && !dialogOpen && !perspectiveOpen}",
+      ) &&
       m3ShellSource.includes("chatRef.current?.scrollToTurn") &&
       pmChatView.includes(
         'const ACCEPTED_FILES = "image/jpeg,image/png,image/webp,application/pdf";',
@@ -25927,6 +25934,240 @@ assert(
       (m3ShellSource.match(/voice\.cancel\(\);/g) ?? []).length >= 5 &&
       m5VoiceContractSource.includes("for (const track of tracks) track.stop();"),
     JSON.stringify({ m5Released, m5StoppedTracks }),
+  );
+
+  // M6 — perspective is a server-resolved view model. These checks exercise
+  // denominators and sparse geometry as behavior, then pin the DOM/doors and
+  // the one-heavy-read wiring that connect that behavior to the sanctuary.
+  const m6FormatMoney = (amount: number) => `${amount}$`;
+  const m6Snapshot = (
+    dateISO: string,
+    saldoKipu: number,
+    totalDebt: number,
+    netWorth: number,
+  ) => ({
+    dateISO,
+    saldoKipu,
+    totalDebt,
+    netWorth,
+    margenWeekly: 100,
+    safeWeekly: 90,
+    readiness: 50,
+  });
+  const m6History = [
+    m6Snapshot("2026-08-22", 30, 1_000, 2_000),
+    m6Snapshot("2026-08-23", 40, 950, 2_100),
+    m6Snapshot("2026-08-24", 35, 900, 2_180),
+    m6Snapshot("2026-08-25", 55, 850, 2_260),
+  ];
+  const m6Complete = buildShellPerspective({
+    today: {
+      spent: 18,
+      fill: 24,
+      objectives: [
+        { category: "food", label: "Comida", spent: 180, objective: 300, crossed: false, projectedCrossDateISO: null },
+        { category: "transport", label: "Transporte", spent: 96, objective: 120, crossed: false, projectedCrossDateISO: "2026-08-30" },
+      ],
+    },
+    month: {
+      income: 2_000,
+      fixed: 500,
+      debt: 200,
+      installments: 100,
+      essentials: 400,
+      savings: 150,
+      investment: 100,
+      goals: 200,
+      free: 350,
+    },
+    history: { ok: true, snapshots: m6History, todayISO: "2026-08-27" },
+    progress: {
+      primaryGoal: { name: "Brasil", current: 1_200, target: 3_000, percent: 40 },
+      reserve: { readOk: true, amount: 600, target: 1_200 },
+      debt: { amount: 800 },
+      wealth: { readOk: true, amount: 2_300 },
+    },
+    upcoming: {
+      cards: [{ name: "Diners", inDays: 2, balance: 800, due: 120 }],
+      payments: [{ name: "Internet", amount: 30, dueDate: "2026-08-31" }],
+    },
+    formatMoney: m6FormatMoney,
+  });
+  const m6NoReserveTarget = buildReserveProgress({
+    readOk: true,
+    amount: 600,
+    target: null,
+    formatMoney: m6FormatMoney,
+  });
+  const m6PerspectiveUiSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/PerspectiveSheet.tsx`,
+    "utf8",
+  );
+  const m6PerspectiveModelSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/shell-perspective.ts`,
+    "utf8",
+  );
+  assert(
+    "M6-1 · anillos y barras sólo publican porcentajes con su denominador; Reserva sin objetivo conserva cifra sin porcentaje",
+    m6Complete.today.rings.length === 3 &&
+      m6Complete.today.rings.every(
+        (ring) => ring.percentLabel != null && ring.denominatorLabel != null,
+      ) &&
+      m6Complete.month.denominatorLabel === "Ingreso mensual: 2000$" &&
+      m6Complete.month.segments.every((segment) => segment.shareLabel != null) &&
+      m6Complete.progress.items.every(
+        (item) => item.percentLabel == null || item.denominatorLabel != null,
+      ) &&
+      m6NoReserveTarget.amountLabel === "600$" &&
+      m6NoReserveTarget.percentLabel === null &&
+      m6NoReserveTarget.widthCss === null &&
+      m6NoReserveTarget.denominatorLabel === null &&
+      m6NoReserveTarget.detailLabel ===
+        "Tu respaldo va en 600$. Dime cuánto quieres tener y te muestro cuánto te falta." &&
+      m4StylesSource.includes("width: 94px; height: 94px;") &&
+      m6PerspectiveUiSource.includes("kipu-perspective-ring") &&
+      m6PerspectiveUiSource.includes("kipu-perspective-progress__track"),
+    JSON.stringify({
+      rings: m6Complete.today.rings,
+      month: m6Complete.month,
+      progress: m6Complete.progress.items,
+      noTarget: m6NoReserveTarget,
+    }),
+  );
+
+  const m6GapSnapshots = [
+    m6Snapshot("2026-08-20", 20, 1_000, 2_000),
+    m6Snapshot("2026-08-21", 30, 950, 2_100),
+    m6Snapshot("2026-08-24", 25, 900, 2_180),
+    m6Snapshot("2026-08-25", 45, 850, 2_260),
+  ];
+  const m6GapCord = buildSaldoCord({
+    read: { ok: true, snapshots: m6GapSnapshots },
+    todayISO: "2026-08-27",
+    formatMoney: m6FormatMoney,
+  });
+  const m6FailedCord = buildSaldoCord({
+    read: { ok: false, snapshots: [] },
+    todayISO: "2026-08-27",
+    formatMoney: m6FormatMoney,
+  });
+  const m6ShortCord = buildSaldoCord({
+    read: { ok: true, snapshots: m6GapSnapshots.slice(0, 1) },
+    todayISO: "2026-08-27",
+    formatMoney: m6FormatMoney,
+  });
+  const m6GapDay = m6GapCord.status === "ready"
+    ? m6GapCord.knots.find((knot) => knot.dateISO === "2026-08-22")
+    : null;
+  const m6ResumeDay = m6GapCord.status === "ready"
+    ? m6GapCord.knots.find((knot) => knot.dateISO === "2026-08-24")
+    : null;
+  assert(
+    "M6-2 · el cordón crea subtrazos separados por cada hueco, jamás interpola y distingue fallo de historia corta",
+    m6GapCord.status === "ready" &&
+      m6GapCord.paths.length === 2 &&
+      m6GapDay?.y === null &&
+      m6GapDay.amountLabel === null &&
+      m6ResumeDay?.connectedToPrevious === false &&
+      m6GapCord.gapCopy ===
+        "Los días sin registro quedan en blanco, no inventados." &&
+      m6FailedCord.status === "failed" &&
+      m6FailedCord.message === "No pude leer esto ahora." &&
+      m6ShortCord.status === "hidden",
+    JSON.stringify({ m6GapCord, m6FailedCord, m6ShortCord }),
+  );
+
+  const m6ShellSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/SantuarioShell.tsx`,
+    "utf8",
+  );
+  const m6ModuleOrder = [
+    'data-perspective-module="today"',
+    'data-perspective-module="month"',
+    'data-perspective-module="saldo-history"',
+    'data-perspective-module="progress"',
+    'data-perspective-module="upcoming"',
+  ].map((anchor) => m6PerspectiveUiSource.indexOf(anchor));
+  const m6DoorRoutes = [
+    "/app/saldo",
+    "/app/mes",
+    "/app/spending",
+    "/app/debt",
+    "/app/wealth",
+    "/app/cuentas",
+    "/app/goals",
+    "/app/activity",
+    "/app/chat",
+  ];
+  const m6SurfaceSource = `${m6PerspectiveUiSource}\n${m6PerspectiveModelSource}`;
+  assert(
+    "M6-3 · cinco preguntas en orden abren las nueve superficies y la meta principal conserva su nombre sin puntajes retirados",
+    m6ModuleOrder.every((position) => position >= 0) &&
+      m6ModuleOrder.every(
+        (position, index) => index === 0 || position > m6ModuleOrder[index - 1]!,
+      ) &&
+      m6DoorRoutes.every((route) =>
+        `${m6ShellSource}\n${m6PerspectiveUiSource}\n${m6PerspectiveModelSource}`.includes(route),
+      ) &&
+      m6PerspectiveUiSource.includes("href={perspective.progress.wealth.href}") &&
+      m6Complete.progress.items[0]?.title === "Brasil" &&
+      !/Pulso|Flexibilidad|Precisión|Realidad|Holgado|Justo|Estirando/u.test(
+        m6SurfaceSource,
+      ) &&
+      !m6PerspectiveUiSource.includes("formatMoney") &&
+      !m6PerspectiveUiSource.includes("Math."),
+    JSON.stringify({ m6ModuleOrder, m6DoorRoutes, goal: m6Complete.progress.items[0] }),
+  );
+
+  const m6PayloadSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/shell-payload.ts`,
+    "utf8",
+  );
+  const m6PayloadBuildBody = m6PayloadSource.match(
+    /export async function buildShellPayload[\s\S]*?\n\}\n\n\/\*\*/u,
+  )?.[0] ?? "";
+  const m6PreviewSource = readFileSync(
+    `${process.cwd()}/src/app/dev/shell-preview/page.tsx`,
+    "utf8",
+  );
+  const m6SnapshotSource = readFileSync(
+    `${process.cwd()}/src/lib/trends/snapshot-store.ts`,
+    "utf8",
+  );
+  assert(
+    "M6-4 · tap/swipe/cierres pausan el orbe; payload, fixtures y E2E fijan una lectura pesada y degradación honesta",
+    m6ShellSource.includes("onClick={openPerspective}") &&
+      m6ShellSource.includes("perspectiveHandleY.current") &&
+      m6ShellSource.includes("finishPerspectiveCloseGesture") &&
+      m6ShellSource.includes('role="dialog"') &&
+      m6ShellSource.includes(
+        "active={liveSettled && !dialogOpen && !perspectiveOpen}",
+      ) &&
+      m6ShellSource.includes(
+        'data-orb-paused={!liveSettled || dialogOpen || perspectiveOpen ? "true" : "false"}',
+      ) &&
+      (m6PayloadBuildBody.match(/buildCoachingBriefing\(\{/g) ?? []).length === 1 &&
+      (m6PayloadBuildBody.match(/loadSnapshotSeriesRead\(/g) ?? []).length === 1 &&
+      m6SnapshotSource.includes("export type SnapshotSeriesRead") &&
+      [
+        "completo",
+        "sin-objetivo-reserva",
+        "sin-meta-principal",
+        "con-huecos",
+        "lectura-caida",
+        "sin-compromisos",
+      ].every((fixture) => m6PreviewSource.includes(`\"${fixture}\"`)) &&
+      m4StylesSource.includes(".kipu-shell-sheet,") &&
+      m4E2ESource.includes(
+        "M6-E8 · persona sin objetivo de Reserva publica cifra e invitación, nunca porcentaje",
+      ) &&
+      m4E2ESource.includes(
+        "M6-E9 · snapshots con día faltante conservan hueco y jamás interpolan el cordón",
+      ),
+    JSON.stringify({
+      briefingCalls: (m6PayloadBuildBody.match(/buildCoachingBriefing\(\{/g) ?? []).length,
+      snapshotCalls: (m6PayloadBuildBody.match(/loadSnapshotSeriesRead\(/g) ?? []).length,
+    }),
   );
 
   // M0 closure: the old mixed envelope assertions also pinned live SQL/tools.

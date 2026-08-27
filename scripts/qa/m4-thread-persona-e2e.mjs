@@ -65,6 +65,10 @@ const {
 const { describeMovement } = await import(
   "@/app/app/components/app-dashboard-helpers"
 );
+const { buildReserveProgress, buildSaldoCord } = await import(
+  "@/app/app/components/shell/shell-perspective"
+);
+const { loadSnapshotSeries } = await import("@/lib/trends/snapshot-store");
 
 let passed = 0;
 const failed = [];
@@ -87,6 +91,7 @@ const touched = [
   "transactions",
   "accounts",
   "capture_evidence",
+  "daily_financial_snapshots",
   "profiles",
 ];
 
@@ -127,6 +132,92 @@ try {
   if (accountError || !account) {
     throw new Error(`account: ${accountError?.message ?? "sin id"}`);
   }
+
+  // M6 — two real-data assertions on the same disposable persona. The first
+  // proves that absence of a declared reserve target stays absence; the second
+  // persists a sparse daily series and feeds the exact production cord builder.
+  const { data: reservePrefs, error: reservePrefsError } = await admin
+    .from("user_financial_preferences")
+    .select("emergency_reserve_target")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (reservePrefsError) {
+    throw new Error(`reserve prefs: ${reservePrefsError.message}`);
+  }
+  const reserveProgress = buildReserveProgress({
+    readOk: true,
+    amount: 42,
+    target:
+      reservePrefs?.emergency_reserve_target == null
+        ? null
+        : Number(reservePrefs.emergency_reserve_target),
+    formatMoney: (amount) => `${amount}$`,
+  });
+  check(
+    "M6-E8 · persona sin objetivo de Reserva publica cifra e invitación, nunca porcentaje",
+    reservePrefs?.emergency_reserve_target == null &&
+      reserveProgress.amountLabel === "42$" &&
+      reserveProgress.percentLabel === null &&
+      reserveProgress.widthCss === null &&
+      reserveProgress.denominatorLabel === null &&
+      reserveProgress.detailLabel ===
+        "Tu respaldo va en 42$. Dime cuánto quieres tener y te muestro cuánto te falta.",
+    JSON.stringify({ reservePrefs, reserveProgress }),
+  );
+
+  const dayISO = (daysAgo) => {
+    const date = new Date();
+    date.setUTCDate(date.getUTCDate() - daysAgo);
+    return date.toISOString().slice(0, 10);
+  };
+  const sparseSnapshots = [
+    { daysAgo: 5, saldo: 28 },
+    { daysAgo: 4, saldo: 34 },
+    { daysAgo: 2, saldo: 31 },
+    { daysAgo: 1, saldo: 46 },
+  ];
+  const { error: snapshotsError } = await admin
+    .from("daily_financial_snapshots")
+    .insert(
+      sparseSnapshots.map((item) => ({
+        user_id: userId,
+        snapshot_date: dayISO(item.daysAgo),
+        margen_weekly: 120,
+        safe_weekly: 110,
+        net_worth: 500,
+        total_debt: 80,
+        readiness: 50,
+        base_currency: "USD",
+        saldo_kipu: item.saldo,
+      })),
+    );
+  if (snapshotsError) {
+    throw new Error(`snapshots M6: ${snapshotsError.message}`);
+  }
+  const loadedSnapshots = await loadSnapshotSeries(userId, 18, Date.now());
+  const cord = buildSaldoCord({
+    read: { ok: true, snapshots: loadedSnapshots },
+    todayISO: dayISO(0),
+    formatMoney: (amount) => `${amount}$`,
+  });
+  const missingDay = cord.status === "ready"
+    ? cord.knots.find((knot) => knot.dateISO === dayISO(3))
+    : null;
+  const resumedDay = cord.status === "ready"
+    ? cord.knots.find((knot) => knot.dateISO === dayISO(2))
+    : null;
+  check(
+    "M6-E9 · snapshots con día faltante conservan hueco y jamás interpolan el cordón",
+    loadedSnapshots.length === 4 &&
+      cord.status === "ready" &&
+      cord.paths.length === 2 &&
+      missingDay?.amountLabel === null &&
+      missingDay.y === null &&
+      resumedDay?.connectedToPrevious === false &&
+      cord.gapCopy ===
+        "Los días sin registro quedan en blanco, no inventados.",
+    JSON.stringify({ loadedSnapshots, cord, missingDay, resumedDay }),
+  );
 
   const domainAccount = {
     id: account.id,
