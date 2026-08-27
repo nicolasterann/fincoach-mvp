@@ -95,6 +95,13 @@ en otro chat) sin contaminar su árbol ni su contexto.
   —y prohibido simular ninguno—, negociación de mime base contra `AUDIO_MIMES`,
   ciclo de vida del micrófono con liberación de pistas, y fallos de voz dichos
   en vez de tragados. Criterios V1–V16.
+- [stages/M6_SPEC — Perspectiva](stages/M6_SPEC.md) · 2026-08-25 · Los cinco
+  módulos como preguntas humanas (Hoy · Tu mes · cordón del Saldo · Progresos ·
+  Lo que viene), anillos vs barras, **cero scores**, ningún porcentaje sin
+  denominador declarado (verificadas las fuentes: el objetivo de reserva es
+  opcional y la historia de deuda/patrimonio vive en los snapshots), el sueño
+  con nombre al frente, y **el cierre del hallazgo más viejo del roadmap: que
+  no quede ninguna superficie sin puerta**. Criterios W1–W16.
 - [M_DESIGN_003 — Auditoría de pre-implementación](M_DESIGN_003_AUDITORIA_PREIMPLEMENTACION_2026-08-24.md)
   · 2026-08-24 (M0 cerrado, Bloque M activo) · Veredicto GO sobre la propuesta,
   medición del front actual, 7 correcciones factuales de los docs contra el
