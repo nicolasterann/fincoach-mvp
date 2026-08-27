@@ -5,12 +5,12 @@ import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
 import { formatKipuMoney } from "@/lib/financial/money";
-import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib/financial/tu-mes";
+import { buildTuMesFlows, buildTuMesMetrics, foreignGoalReserveMonthly } from "@/lib/financial/tu-mes";
 import { loadCurrentFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { listScheduledChanges, type ScheduledChange } from "@/lib/scheduled/scheduled-changes-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { MonthSankey } from "../components/living/MonthSankey";
-import { Chevron, ChatCta, MetricShell, PressCard, Section } from "../components/living/shell";
+import { Chevron, ChatCta, DetailSurface, MetricShell, PressCard, Section } from "../components/living/shell";
 import { LearningState } from "../components/living/states";
 import { MesRedistribute, type MesGoalRow } from "./MesRedistribute";
 
@@ -72,7 +72,7 @@ export default async function TuMesPage() {
 
   if (capacity.monthlyIncome <= 0) {
     return (
-      <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
+      <DetailSurface layer="reserva">
         <MetricShell kicker="Planificación" title="Tu mes" />
         <div className="mt-5">
           <LearningState
@@ -83,7 +83,7 @@ export default async function TuMesPage() {
             ctaPrompt="Quiero registrar mi ingreso mensual"
           />
         </div>
-      </div>
+      </DetailSurface>
     );
   }
 
@@ -100,10 +100,11 @@ export default async function TuMesPage() {
       currency: (g.currency ?? base).toUpperCase(),
       protected: g.cashflowProtected !== false,
     }));
-  const baseGoalsMonthly = goalRows
-    .filter((g) => g.protected && g.currency === base.toUpperCase())
-    .reduce((sum, g) => sum + goalMonthlyEquivalent(g.contributionAmount, g.cadence), 0);
-  const foreignGoalsMonthlyBase = Math.max(0, Math.round((capacity.monthlyProtected.goals - baseGoalsMonthly) * 100) / 100);
+  const foreignGoalsMonthlyBase = foreignGoalReserveMonthly({
+    goals: goalRows,
+    baseCurrency: base,
+    protectedGoalsMonthly: capacity.monthlyProtected.goals,
+  });
 
   const pendingPlans = scheduled.filter(
     (s) => s.status === "pending" && s.targetType !== "reminder" && s.changeKind !== "reminder",
@@ -124,7 +125,7 @@ export default async function TuMesPage() {
   ];
 
   return (
-    <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
+    <DetailSurface layer="reserva">
       <MetricShell
         kicker="Planificación"
         title="Tu mes"
@@ -230,6 +231,6 @@ export default async function TuMesPage() {
           prompt="Quiero redistribuir mi mes: revisemos cuánto aparto a ahorro, inversión y metas."
         />
       </div>
-    </div>
+    </DetailSurface>
   );
 }

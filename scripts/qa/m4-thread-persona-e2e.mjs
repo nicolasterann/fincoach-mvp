@@ -69,6 +69,15 @@ const { buildReserveProgress, buildSaldoCord } = await import(
   "@/app/app/components/shell/shell-perspective"
 );
 const { loadSnapshotSeries } = await import("@/lib/trends/snapshot-store");
+const { loadGoalsWealthData } = await import(
+  "@/lib/financial/goals-wealth-store"
+);
+const { readActiveSavingsPlans } = await import(
+  "@/lib/financial/savings-plans-store"
+);
+const { buildGoalLayerSources } = await import(
+  "@/lib/financial/goal-layer-sources"
+);
 
 let passed = 0;
 const failed = [];
@@ -92,6 +101,9 @@ const touched = [
   "accounts",
   "capture_evidence",
   "daily_financial_snapshots",
+  "savings_plans",
+  "investment_accounts",
+  "goals",
   "profiles",
 ];
 
@@ -132,6 +144,90 @@ try {
   if (accountError || !account) {
     throw new Error(`account: ${accountError?.message ?? "sin id"}`);
   }
+
+  // M7 · C5 — real rows pass through the production readers used by the Metas
+  // detail; the view model only joins identity and must declare a missing name.
+  const { error: goalM7Error } = await admin.from("goals").insert({
+    user_id: userId,
+    name: "Viaje M7 E2E",
+    target_amount: 900,
+    current_amount: 90,
+    currency: "USD",
+    target_date: "2027-03-01",
+    goal_account_id: account.id,
+    status: "active",
+  });
+  if (goalM7Error) throw new Error(`goal M7: ${goalM7Error.message}`);
+  const { error: savingsM7Error } = await admin.from("savings_plans").insert({
+    user_id: userId,
+    kind: "savings",
+    name: "Reserva viaje M7 E2E",
+    amount_base: 25,
+    original_amount: 25,
+    original_currency: "USD",
+    base_currency: "USD",
+    frequency: "monthly",
+    expected_day: 5,
+    source_account_id: account.id,
+  });
+  if (savingsM7Error) throw new Error(`savings M7: ${savingsM7Error.message}`);
+  const { error: investmentM7Error } = await admin
+    .from("investment_accounts")
+    .insert({
+      user_id: userId,
+      name: "Fondo futuro M7 E2E",
+      asset_class: "investment",
+      value_base: 75,
+      value_original: 75,
+      currency: "USD",
+      liquid: false,
+      include_in_net_worth: true,
+    });
+  if (investmentM7Error) {
+    throw new Error(`investment M7: ${investmentM7Error.message}`);
+  }
+  const [goalsWealthM7, savingsReadM7] = await Promise.all([
+    loadGoalsWealthData(userId),
+    readActiveSavingsPlans(userId),
+  ]);
+  const savingsM7 =
+    savingsReadM7.ok && savingsReadM7.complete
+      ? savingsReadM7.plans
+      : savingsReadM7.ok
+        ? savingsReadM7.partial
+        : [];
+  const sourcesM7 = buildGoalLayerSources({
+    goals: goalsWealthM7.goals.map((goal) => ({ id: goal.id, name: goal.name })),
+    savingsPlans: savingsM7.map((plan) => ({
+      id: plan.id,
+      kind: plan.kind,
+      name: plan.name,
+    })),
+    investments: goalsWealthM7.investments.map((investment, index) => ({
+      id: investment.sourceId ?? `investment-${index}`,
+      name: investment.sourceName ?? null,
+    })),
+    readable: {
+      goals: goalsWealthM7.goalsOk,
+      savingsPlans: savingsReadM7.ok && savingsReadM7.complete,
+      investments: goalsWealthM7.wealthOk,
+    },
+  });
+  const unnamedM7 = buildGoalLayerSources({
+    goals: [],
+    savingsPlans: [],
+    investments: [{ id: "sin-nombre", name: null }],
+    readable: { goals: true, savingsPlans: true, investments: true },
+  });
+  check(
+    "M7-E10 · Metas muestra meta, ahorro e inversión por nombre y declara la identidad ausente",
+    sourcesM7.items.some((item) => item.label === "Viaje M7 E2E" && item.kind === "goal") &&
+      sourcesM7.items.some((item) => item.label === "Reserva viaje M7 E2E" && item.kind === "savings") &&
+      sourcesM7.items.some((item) => item.label === "Fondo futuro M7 E2E" && item.kind === "investment") &&
+      unnamedM7.items[0]?.label === "Nombre no disponible" &&
+      unnamedM7.items[0]?.nameAvailable === false,
+    JSON.stringify({ sourcesM7, unnamedM7 }),
+  );
 
   // M6 — two real-data assertions on the same disposable persona. The first
   // proves that absence of a declared reserve target stays absence; the second

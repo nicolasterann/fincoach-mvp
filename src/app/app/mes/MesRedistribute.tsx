@@ -9,7 +9,11 @@ import { updateGoalContributionAction, updateReservesAction } from "./actions";
 
 // Stage 37 — redistribute "Tu mes" directly from the page. Controlled inputs with
 // a LIVE "quedaría libre" preview (mirrors the engine's reserve math), one save
-// for everything dirty. Over-repartir warns honestly, never blocks (founder rule).
+// for everything dirty. M7 declaration: this client arithmetic is a reversible,
+// unsaved form preview only; the two server actions remain the write authority
+// and router.refresh() replaces it with the engine's canonical result. It never
+// feeds Saldo, moves money or authorizes a write. Over-repartir warns honestly,
+// never blocks (founder rule).
 
 export interface MesGoalRow {
   id: string;

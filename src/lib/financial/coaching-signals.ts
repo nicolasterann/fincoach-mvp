@@ -86,6 +86,10 @@ import { writeDailySnapshot, loadPriorSnapshot } from "@/lib/trends/snapshot-sto
 import { buildPersonalizationIntelligence, type PersonalizationIntelligence } from "@/lib/financial/personalization-intelligence";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { UserFinancialContext } from "@/lib/financial/user-financial-context-builder";
+import {
+  buildGoalLayerSources,
+  type GoalLayerSources,
+} from "@/lib/financial/goal-layer-sources";
 
 // Stage 4 — the proactive coaching layer. A DETERMINISTIC engine that reads the
 // user's whole state (Saldo, cashflow, days left, upcoming payments, receivables, card
@@ -216,6 +220,9 @@ export interface CoachingBriefing {
   // Committed goal contributions reserve money via the same Margen recarve; the
   // rest is advisory truth the agent phrases simply. Never double-counts.
   goalsIntel: GoalsIntelligence;
+  /** M7 · identity-only composition behind the Metas orb. Amounts remain owned
+   *  by goalsIntel/margenKipu; this list only lets the detail name its sources. */
+  goalLayerSources: GoalLayerSources;
   // Stage 18 — the personalization layer: a cautious profile (life philosophy,
   // tone, detail, orientation, risk posture, usage style, nudge sensitivity) +
   // safe decisions. The agent reads `personalization.digest` to adapt TONE,
@@ -1440,6 +1447,26 @@ export async function buildCoachingBriefingWith(
     currentReserve: emergencyGoalReserve,
     nowMs: now.getTime(),
   });
+  const goalLayerSources = buildGoalLayerSources({
+    goals: goalsIntel.portfolio.goals.map((item) => ({
+      id: item.goal.id,
+      name: item.goal.name,
+    })),
+    savingsPlans: savingsPlansRaw.map((plan) => ({
+      id: plan.id,
+      kind: plan.kind,
+      name: plan.name,
+    })),
+    investments: goalsWealth.investments.map((investment, index) => ({
+      id: investment.sourceId ?? `investment-${index}`,
+      name: investment.sourceName ?? null,
+    })),
+    readable: {
+      goals: goalsWealth.goalsOk,
+      savingsPlans: moneyReadPublishable(savingsPlansRead),
+      investments: goalsWealth.wealthOk,
+    },
+  });
 
   // Signals, most important first. Margin = Margen Kipu (not liquid cash).
   const signals: CoachingSignal[] = [];
@@ -1739,6 +1766,7 @@ export async function buildCoachingBriefingWith(
     timezone: engagement.timezone ?? null,
     objectives: objectivesResult,
     goalsIntel,
+    goalLayerSources,
     personalization: personalizationIntel,
     household: householdIntel,
     trend,

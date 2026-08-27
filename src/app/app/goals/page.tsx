@@ -12,6 +12,7 @@ import { updateGoalDateAction } from "./actions";
 import { getGoalStatusColor } from "../components/app-dashboard-helpers";
 import { LivingThread } from "@/app/app/components/living/LivingThread";
 import { ProgressStrand } from "@/app/app/components/living/ProgressStrand";
+import { DetailSurface, MetricShell } from "../components/living/shell";
 
 // Known ?message codes → calm human copy. Anything else renders NOTHING (raw
 // codes or DB errors never leak into the UI). Codes come from
@@ -80,6 +81,7 @@ export default async function GoalsPage({
     surfaceNudges: false,
   });
   const gi = briefing.goalsIntel;
+  const layerSources = briefing.goalLayerSources;
   const mainIntel = gi.portfolio.goals.find((g) => g.goal.id === mainGoal.id) ?? null;
   // S34 — the portfolio plan is the SOURCE OF TRUTH for feasibility: it receives
   // the essential burn + essentialsKnown (the context's bare goalPlan does not),
@@ -131,13 +133,8 @@ export default async function GoalsPage({
     : null;
 
   return (
-    <div className="kipu-stagger mx-auto w-full max-w-2xl pb-28 lg:pb-12">
-      <header>
-        <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">
-          Hacia dónde vas
-        </p>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight text-zinc-50">Metas</h1>
-      </header>
+    <DetailSurface layer="metas">
+      <MetricShell kicker="Hacia dónde vas" title="Metas" />
 
       {/* One-shot notice from a redirect (?message=...) — known codes only */}
       {notice && (
@@ -226,6 +223,31 @@ export default async function GoalsPage({
         )}
 
         <p className="mt-4 text-sm leading-6 text-zinc-400">{goalPlan.message}</p>
+      </section>
+
+      {/* C5 — identity, not a new financial calculation: names from the three
+          existing sources that make up the Metas layer. */}
+      <section className="mt-4 rounded-3xl border border-line/5 bg-zinc-900 p-5">
+        <p className="text-xs font-semibold uppercase tracking-widest text-violet-300/70">
+          Qué forma esta capa
+        </p>
+        <div className="mt-3 divide-y divide-line/5">
+          {layerSources.items.map((source) => (
+            <div key={`${source.kind}-${source.id}`} className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
+              <p className={source.nameAvailable ? "text-sm font-semibold text-zinc-100" : "text-sm font-medium text-zinc-500"}>
+                {source.label}
+              </p>
+              <span className="rounded-full border border-line/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                {source.kind === "goal" ? "Meta" : source.kind === "savings" ? "Ahorro" : "Inversión"}
+              </span>
+            </div>
+          ))}
+        </div>
+        {(!layerSources.readable.goals || !layerSources.readable.savingsPlans || !layerSources.readable.investments) && (
+          <p className="mt-3 text-xs leading-5 text-amber-300">
+            No pude leer todos los nombres de esta capa ahora.
+          </p>
+        )}
       </section>
 
       {/* Celebration — the goal is complete */}
@@ -439,6 +461,6 @@ export default async function GoalsPage({
       >
         ¿Dudas con tu meta? Pregúntale a Kipu
       </Link>
-    </div>
+    </DetailSurface>
   );
 }
