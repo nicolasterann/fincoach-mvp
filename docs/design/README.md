@@ -108,6 +108,12 @@ en otro chat) sin contaminar su árbol ni su contexto.
   declarado, el framing semanal muerto donde enmarca y **vivo donde es cadencia
   elegida** (lección J-6: por contexto, jamás find/replace), C5 cerrado con los
   nombres del detalle de Metas, y poda de prosa. Criterios X1–X16.
+- [stages/M8_SPEC — PWA de verdad y la primera impresión](stages/M8_SPEC.md) ·
+  2026-08-25 · Salda D1: íconos 192/512/maskable generados con `next/og` sin
+  dependencias, `theme_color` por tema, safe areas, y un **service worker que
+  JAMÁS cachea dinero** (sin conexión = página honesta, nunca una cifra vieja).
+  Mata el esqueleto que todavía dibuja el dashboard retirado y el anillo del
+  landing. Criterios Y1–Y16.
 - [M_DESIGN_003 — Auditoría de pre-implementación](M_DESIGN_003_AUDITORIA_PREIMPLEMENTACION_2026-08-24.md)
   · 2026-08-24 (M0 cerrado, Bloque M activo) · Veredicto GO sobre la propuesta,
   medición del front actual, 7 correcciones factuales de los docs contra el
