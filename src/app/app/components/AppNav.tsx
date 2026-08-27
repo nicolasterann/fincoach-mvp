@@ -160,7 +160,7 @@ export function AppBottomNav({ shellMode }: { shellMode: ShellMode }) {
   if (pathname.startsWith("/app/chat")) return null;
   const active = activeHref(pathname);
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-line/10 bg-zinc-950/90 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden">
+    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-line/10 bg-zinc-950/90 pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] backdrop-blur lg:hidden">
       <div className="mx-auto flex max-w-md items-stretch justify-around px-2 py-1.5">
         {BOTTOM_NAV_ITEMS.map((item) => (
           <Link

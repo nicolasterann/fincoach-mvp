@@ -1,5 +1,6 @@
-import { DashboardSkeleton } from "@/app/app/components/living/states";
+import { DashboardSkeleton, LegacyDashboardSkeleton } from "@/app/app/components/living/states";
+import { getShellMode } from "@/lib/shell-mode";
 
 export default function Loading() {
-  return <DashboardSkeleton />;
+  return getShellMode() === "orbe" ? <DashboardSkeleton /> : <LegacyDashboardSkeleton />;
 }

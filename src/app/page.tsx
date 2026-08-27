@@ -9,14 +9,14 @@ import type { ReactNode } from "react";
 
 export default function Home() {
   return (
-    <main className="relative min-h-screen overflow-hidden bg-zinc-950 text-zinc-50">
+    <main className="relative min-h-screen overflow-hidden bg-[var(--kipu-shell-bg)] text-[var(--kipu-shell-ink-1)]">
       {/* Ambient background glow */}
       <div aria-hidden className="pointer-events-none absolute inset-0">
         <div className="kipu-breathe absolute -top-40 left-1/2 h-[42rem] w-[42rem] -translate-x-1/2 rounded-full bg-emerald-500/15 blur-[120px]" />
         <div className="absolute -right-40 top-1/3 h-[30rem] w-[30rem] rounded-full bg-emerald-400/8 blur-[120px]" />
       </div>
 
-      <div className="relative mx-auto w-full max-w-6xl px-5">
+      <div className="kipu-public-safe relative mx-auto w-full max-w-6xl">
         <SiteNav />
         <Hero />
         <TrustStrip />
@@ -37,9 +37,10 @@ function Wordmark({ className = "" }: { className?: string }) {
   return (
     <span className={`inline-flex items-center gap-2 font-black tracking-tight ${className}`}>
       <svg aria-hidden viewBox="0 0 64 64" className="h-6 w-6">
-        <rect width="64" height="64" rx="16" fill="#0a0a0b" />
-        <circle cx="32" cy="32" r="22" fill="none" stroke="#34d399" strokeWidth="5" strokeLinecap="round" strokeDasharray="104 138" transform="rotate(-90 32 32)" />
-        <path d="M26 20v24M26 32l12-11M26 32l13 12" fill="none" stroke="#e4e4e7" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
+        <rect width="64" height="64" rx="16" fill="var(--kipu-shell-bg-deep)" />
+        <circle cx="32" cy="32" r="21" fill="var(--kipu-shell-card)" stroke="var(--kipu-shell-ink-2)" strokeWidth="2" />
+        <path d="M11 33h42v21H11z" fill="var(--layer-saldo)" opacity=".72" />
+        <path d="M15 33h34" stroke="var(--kipu-shell-ink-1)" strokeOpacity=".55" strokeWidth="1.5" strokeLinecap="round" />
       </svg>
       <span className="text-emerald-300">Kipu</span>
     </span>
@@ -52,7 +53,7 @@ function SiteNav() {
     <nav className="flex items-center justify-between py-5">
       <Wordmark className="text-lg" />
       <div className="flex items-center gap-2 sm:gap-3">
-        <Link href="/login" className="rounded-full px-4 py-2 text-sm font-semibold text-zinc-300 transition hover:text-white">
+        <Link href="/login" className="rounded-full px-4 py-2 text-sm font-semibold text-zinc-300 transition hover:text-[var(--kipu-shell-ink-1)]">
           Entrar
         </Link>
         <Link href="/signup" className="rounded-full bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950 transition hover:bg-emerald-300">
@@ -89,7 +90,7 @@ function Hero() {
           </Link>
           <Link
             href="/login"
-            className="rounded-2xl border border-white/15 px-6 py-3.5 text-center text-sm font-semibold text-zinc-200 transition hover:border-white/30"
+            className="rounded-2xl border border-[var(--kipu-shell-glass-line)] px-6 py-3.5 text-center text-sm font-semibold text-zinc-200 transition hover:border-emerald-400/30"
           >
             Ya tengo cuenta
           </Link>
@@ -102,44 +103,23 @@ function Hero() {
   );
 }
 
-// The signature: a calm, breathing Margen ring with the one number that matters.
+// The signature: the same calm Saldo orb that greets people inside Kipu.
 function HeroVisual() {
-  const size = 300;
-  const stroke = 14;
-  const r = (size - stroke) / 2;
-  const c = 2 * Math.PI * r;
-  const fraction = 0.62;
   return (
-    <div className="relative mx-auto flex w-full max-w-sm items-center justify-center">
+    <div className="relative mx-auto flex w-full max-w-sm items-center justify-center" data-product-image="orbe">
       <div className="kipu-breathe absolute inset-6 rounded-full bg-emerald-500/20 blur-3xl" />
-      <div className="relative rounded-[2rem] border border-white/10 bg-gradient-to-b from-zinc-900 to-zinc-950 p-7 shadow-2xl">
+      <div className="relative w-full rounded-[2rem] border border-[var(--kipu-shell-glass-line)] bg-[var(--kipu-shell-card)] p-7 shadow-[var(--kipu-shell-shadow)] backdrop-blur-xl">
         <p className="text-center text-xs font-semibold uppercase tracking-widest text-zinc-500">Tu Saldo Kipu</p>
-        <div className="relative mt-4 flex items-center justify-center" style={{ width: size - 56, height: size - 56 }}>
-          <svg className="-rotate-90" width={size - 56} height={size - 56} viewBox={`0 0 ${size} ${size}`}>
-            <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth={stroke} />
-            <circle
-              cx={size / 2}
-              cy={size / 2}
-              r={r}
-              fill="none"
-              stroke="#34d399"
-              strokeWidth={stroke}
-              strokeLinecap="round"
-              strokeDasharray={`${c * fraction} ${c}`}
-              style={{ filter: "drop-shadow(0 0 14px rgba(52,211,153,0.45))" }}
-            />
-          </svg>
-          <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <p className="text-4xl font-black tracking-tight text-emerald-300">268$</p>
-            <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">para tus gustos</p>
-          </div>
+        <div className="relative mx-auto mt-6 h-60 w-60 overflow-hidden rounded-full border border-[color-mix(in_srgb,var(--kipu-shell-ink-1)_45%,transparent)] bg-[linear-gradient(145deg,var(--kipu-shell-glass-2),var(--kipu-shell-bg-deep))] shadow-[0_0_64px_color-mix(in_srgb,var(--layer-saldo)_22%,transparent)]">
+          <div className="absolute inset-x-0 bottom-0 h-[48%] bg-[linear-gradient(180deg,var(--kipu-liquid-saldo),var(--kipu-deep-saldo))]" />
+          <div className="absolute left-[11%] top-[48%] h-px w-[78%] rounded-full bg-[color-mix(in_srgb,var(--kipu-shell-ink-1)_55%,transparent)]" />
+          <div className="absolute left-[24%] top-[18%] h-1.5 w-[31%] -rotate-[24deg] rounded-full bg-[color-mix(in_srgb,var(--kipu-shell-ink-1)_68%,transparent)]" />
         </div>
-        <p className="mt-4 text-center text-sm text-zinc-400">≈ 67$ por día, sin tocar tus pagos ni tu meta.</p>
-        <div className="mt-5 rounded-2xl bg-zinc-900/80 p-3.5">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-600">Kipu</p>
-          <p className="mt-1 text-sm leading-6 text-zinc-300">
-            “Almuerzo de 25$ anotado. Tu Saldo Kipu queda en 243$ — vas bien.”
-          </p>
+        <p className="mt-5 text-center text-sm font-semibold text-[var(--layer-saldo)]">Lo disponible hoy, sin tocar lo importante.</p>
+        <div className="mt-5 flex flex-wrap justify-center gap-2 rounded-2xl border border-[var(--kipu-shell-glass-line)] bg-[var(--kipu-shell-glass)] p-3.5 text-[11px] font-semibold text-[var(--kipu-shell-ink-2)]">
+          {["Saldo", "Reserva", "Metas", "Ahorro", "Patrimonio", "Deuda"].map((layer) => (
+            <span key={layer} className="rounded-full border border-[var(--kipu-shell-glass-line)] px-2.5 py-1">{layer}</span>
+          ))}
         </div>
       </div>
     </div>
@@ -150,7 +130,7 @@ function HeroVisual() {
 function TrustStrip() {
   const items = ["Privado por diseño", "Tú decides qué compartes", "Verdad del dinero, no a ojo", "Hecho para Latinoamérica"];
   return (
-    <section className="border-y border-white/5 py-5">
+    <section className="border-y border-[var(--kipu-shell-glass-line)] py-5">
       <div className="flex flex-wrap items-center justify-center gap-x-8 gap-y-2 text-center">
         {items.map((t) => (
           <span key={t} className="text-xs font-medium text-zinc-500">{t}</span>
@@ -171,7 +151,7 @@ function HowItWorks() {
     <Section eyebrow="Cómo funciona" title="Tres pasos y estás dentro.">
       <div className="grid gap-4 sm:grid-cols-3">
         {steps.map((s) => (
-          <div key={s.n} className="rounded-3xl border border-white/5 bg-zinc-900/60 p-6">
+          <div key={s.n} className="rounded-3xl border border-[var(--kipu-shell-glass-line)] bg-[var(--kipu-shell-card)] p-6">
             <span className="flex h-9 w-9 items-center justify-center rounded-2xl bg-emerald-400/15 text-sm font-black text-emerald-300">{s.n}</span>
             <h3 className="mt-4 text-lg font-bold text-zinc-50">{s.title}</h3>
             <p className="mt-2 text-sm leading-6 text-zinc-400">{s.body}</p>
@@ -185,8 +165,8 @@ function HowItWorks() {
 // ── Features ─────────────────────────────────────────────────────────────────
 function Features() {
   const features: { icon: ReactNode; title: string; body: string }[] = [
-    { icon: <IconRing />, title: "Saldo Kipu", body: "Tu plata para gustos: se recarga sola cada día, con todo lo importante ya apartado." },
-    { icon: <IconPulse />, title: "Tus capas", body: "Reserva, metas, ahorro y deuda en orden — y Kipu te avisa antes de que un gasto cruce a una peor." },
+    { icon: <IconOrb />, title: "Saldo Kipu", body: "Tu plata para gustos: se recarga sola cada día, con todo lo importante ya apartado." },
+    { icon: <IconLayers />, title: "Tus capas", body: "Reserva, metas, ahorro y deuda en orden — y Kipu te avisa antes de que un gasto cruce a una peor." },
     { icon: <IconShield />, title: "Cuida tus deudas", body: "Te avisa de pagos antes de que venzan y te ayuda a decidir qué pagar primero. Sin sermones." },
     { icon: <IconTarget />, title: "Metas y mini-metas", body: "Llega a lo que quieres —un viaje, unos audífonos— sin dejar de vivir." },
     { icon: <IconCapture />, title: "Captura sin fricción", body: "Escríbele por chat en la web, o por Telegram mándale foto, PDF o nota de voz. Tú eliges cómo le cuentas." },
@@ -196,7 +176,7 @@ function Features() {
     <Section eyebrow="Lo que hace" title="Un coach, no una app de contabilidad.">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {features.map((f) => (
-          <div key={f.title} className="rounded-3xl border border-white/5 bg-zinc-900/60 p-6 transition hover:border-emerald-400/20">
+          <div key={f.title} className="rounded-3xl border border-[var(--kipu-shell-glass-line)] bg-[var(--kipu-shell-card)] p-6 transition hover:border-emerald-400/20">
             <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-400/12 text-emerald-300">{f.icon}</span>
             <h3 className="mt-4 text-base font-bold text-zinc-50">{f.title}</h3>
             <p className="mt-2 text-sm leading-6 text-zinc-400">{f.body}</p>
@@ -238,7 +218,7 @@ function Privacy() {
 
 function PrivacyCard({ title, body }: { title: string; body: string }) {
   return (
-    <div className="rounded-3xl border border-white/5 bg-zinc-900/60 p-6">
+    <div className="rounded-3xl border border-[var(--kipu-shell-glass-line)] bg-[var(--kipu-shell-card)] p-6">
       <div className="flex items-center gap-2 text-emerald-300">
         <IconLock />
         <h3 className="text-sm font-bold text-zinc-50">{title}</h3>
@@ -259,7 +239,7 @@ function Faq() {
   ];
   return (
     <Section eyebrow="Preguntas" title="Lo que la gente pregunta primero.">
-      <div className="mx-auto max-w-3xl divide-y divide-white/5 overflow-hidden rounded-3xl border border-white/5 bg-zinc-900/40">
+      <div className="mx-auto max-w-3xl divide-y divide-[var(--kipu-shell-glass-line)] overflow-hidden rounded-3xl border border-[var(--kipu-shell-glass-line)] bg-[var(--kipu-shell-glass)]">
         {qa.map((item) => (
           <details key={item.q} className="group px-6 py-4">
             <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold text-zinc-100">
@@ -277,7 +257,7 @@ function Faq() {
 // ── Final CTA ────────────────────────────────────────────────────────────────
 function FinalCta() {
   return (
-    <section className="my-10 rounded-[2rem] border border-white/10 bg-gradient-to-b from-zinc-900 to-zinc-950 px-6 py-14 text-center lg:my-14">
+    <section className="my-10 rounded-[2rem] border border-[var(--kipu-shell-glass-line)] bg-[var(--kipu-shell-card)] px-6 py-14 text-center shadow-[var(--kipu-shell-shadow)] lg:my-14">
       <h2 className="mx-auto max-w-2xl text-3xl font-black tracking-tight sm:text-4xl">
         Empieza a gastar con tranquilidad.
       </h2>
@@ -288,7 +268,7 @@ function FinalCta() {
         <Link href="/signup" className="rounded-2xl bg-emerald-400 px-7 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300">
           Crear mi cuenta
         </Link>
-        <Link href="/login" className="rounded-2xl border border-white/15 px-7 py-3.5 text-sm font-semibold text-zinc-200 transition hover:border-white/30">
+        <Link href="/login" className="rounded-2xl border border-[var(--kipu-shell-glass-line)] px-7 py-3.5 text-sm font-semibold text-zinc-200 transition hover:border-emerald-400/30">
           Entrar
         </Link>
       </div>
@@ -300,12 +280,12 @@ function FinalCta() {
 // ── Footer ───────────────────────────────────────────────────────────────────
 function Footer() {
   return (
-    <footer className="flex flex-col items-center gap-4 border-t border-white/5 py-10 text-center">
+    <footer className="flex flex-col items-center gap-4 border-t border-[var(--kipu-shell-glass-line)] py-10 text-center">
       <Wordmark className="text-base" />
       <p className="text-sm text-zinc-500">Tu coach financiero de bolsillo.</p>
       <div className="flex items-center gap-5 text-xs font-semibold text-zinc-400">
-        <Link href="/login" className="transition hover:text-white">Entrar</Link>
-        <Link href="/signup" className="transition hover:text-white">Crear cuenta</Link>
+        <Link href="/login" className="transition hover:text-[var(--kipu-shell-ink-1)]">Entrar</Link>
+        <Link href="/signup" className="transition hover:text-[var(--kipu-shell-ink-1)]">Crear cuenta</Link>
         <span className="text-zinc-600">soykipu.com</span>
       </div>
       <p className="max-w-md text-[11px] leading-5 text-zinc-600">
@@ -334,8 +314,8 @@ function Svg({ d }: { d: string }) {
     </svg>
   );
 }
-const IconRing = () => <Svg d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-5a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />;
-const IconPulse = () => <Svg d="M3 12h4l2-6 4 12 2-6h6" />;
+const IconOrb = () => <Svg d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM4 13h16M5 16h14" />;
+const IconLayers = () => <Svg d="m4 8 8-4 8 4-8 4-8-4Zm0 4 8 4 8-4M4 16l8 4 8-4" />;
 const IconShield = () => <Svg d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3Z" />;
 const IconTarget = () => <Svg d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-5a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0-3.5a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1Z" />;
 const IconCapture = () => <Svg d="M4 5h16v14H4zM4 9h16M9 5v4" />;

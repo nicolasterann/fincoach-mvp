@@ -74,8 +74,44 @@ export function DetailPageSkeleton({ layer = "saldo" }: { layer?: DetailLayer })
   );
 }
 
-// Dashboard skeleton: greeting, hero ring card, orb + metric grid.
+// The sanctuary skeleton mirrors its real spatial anchors and never invents a
+// financial value while the server is loading.
 export function DashboardSkeleton() {
+  return (
+    <div className="kipu-shell-frame kipu-skeleton-sanctuary" role="status" aria-label="Cargando">
+      <div className="flex min-h-11 shrink-0 items-center justify-center">
+        <SkeletonBlock className="h-1 w-9 rounded-full" />
+      </div>
+      <div className="grid shrink-0 grid-cols-5 gap-1.5 px-3">
+        {["saldo", "reserva", "metas", "patrimonio", "deuda"].map((layer) => (
+          <SkeletonBlock key={layer} className="h-8 w-full rounded-full" />
+        ))}
+      </div>
+      <div className="mt-2 flex min-h-0 flex-1 flex-col items-center justify-center px-5">
+        <div className="mb-3 flex w-full max-w-56 items-center gap-2">
+          <SkeletonBlock className="h-1 flex-1 rounded-full" />
+          <SkeletonBlock className="h-2 w-2 rounded-full" />
+        </div>
+        <SkeletonCircle size={236} />
+        <SkeletonBlock className="mt-5 h-10 w-44 rounded-2xl" />
+        <SkeletonBlock className="mt-3 h-7 w-28 rounded-full" />
+        <SkeletonBlock className="mt-3 h-5 w-52 rounded-full" />
+      </div>
+      <div className="shrink-0 px-4 pb-1">
+        <div className="flex items-center justify-center gap-3 rounded-[1.75rem] border border-line/5 bg-zinc-900/60 p-3">
+          {["chat", "camera", "voice"].map((action) => (
+            <SkeletonBlock key={action} className="h-11 w-11 rounded-full" />
+          ))}
+        </div>
+      </div>
+      <span className="sr-only">Cargando…</span>
+    </div>
+  );
+}
+
+// The feature flag still has a legacy branch during Bloque M. Its loading
+// state stays paired with that branch until M9 removes the old shell.
+export function LegacyDashboardSkeleton() {
   return (
     <div className="mx-auto w-full max-w-2xl pb-28 lg:max-w-none lg:pb-12" role="status" aria-label="Cargando">
       <div className="flex items-center justify-between">
