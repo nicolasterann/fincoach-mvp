@@ -26333,6 +26333,127 @@ assert(
     "shared detail tokens / navigation / semantic states / reduced motion",
   );
 
+  const m8ManifestSource = readFileSync(`${process.cwd()}/src/app/manifest.ts`, "utf8");
+  const m8IconSource = readFileSync(`${process.cwd()}/src/app/icon.tsx`, "utf8");
+  const m8AppleIconSource = readFileSync(`${process.cwd()}/src/app/apple-icon.tsx`, "utf8");
+  const m8IconArtSource = readFileSync(`${process.cwd()}/src/app/pwa-icon-art.tsx`, "utf8");
+  assert(
+    "M8-1 · manifest e ImageResponse publican PNG 192/512, Apple y maskable con zona segura; SVG any sobrevive",
+    m8ManifestSource.includes('src: "/pwa/icon/192"') &&
+      m8ManifestSource.includes('sizes: "192x192"') &&
+      m8ManifestSource.includes('src: "/pwa/icon/512"') &&
+      m8ManifestSource.includes('sizes: "512x512"') &&
+      m8ManifestSource.includes('src: "/pwa/icon/maskable"') &&
+      m8ManifestSource.includes('purpose: "maskable"') &&
+      m8ManifestSource.includes('src: "/icon.svg"') &&
+      m8ManifestSource.includes('type: "image/svg+xml"') &&
+      m8IconSource.includes('id: "192"') &&
+      m8IconSource.includes('id: "512"') &&
+      m8AppleIconSource.includes("createKipuIcon(size.width)") &&
+      m8IconArtSource.includes("maskable ? 0.56 : 0.7") &&
+      m8IconArtSource.includes('import { ImageResponse } from "next/og"'),
+    "manifest sizes / next-og generation / maskable inset",
+  );
+
+  const m8WorkerSource = readFileSync(`${process.cwd()}/public/sw.js`, "utf8");
+  const m8WorkerClientSource = readFileSync(
+    `${process.cwd()}/src/app/PwaServiceWorker.tsx`,
+    "utf8",
+  );
+  const m8OfflineSource = readFileSync(`${process.cwd()}/public/offline.html`, "utf8");
+  const m8OfflineVisible = m8OfflineSource
+    .replace(/<style[\s\S]*?<\/style>/gu, "")
+    .replace(/<[^>]+>/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  assert(
+    "M8-2 · SW sólo precachea cinco estáticos sin dinero; app/api/actions son NetworkOnly y offline nunca muestra cifras",
+    m8WorkerSource.includes(
+      'const PRECACHE_URLS = Object.freeze([\n  OFFLINE_URL,\n  "/icon.svg",\n  "/pwa/icon/192",\n  "/pwa/icon/512",\n  "/pwa/icon/maskable",\n]);',
+    ) &&
+      m8WorkerSource.includes('request.method !== "GET" || request.headers.has(SERVER_ACTION_HEADER)') &&
+      m8WorkerSource.includes('url.pathname === "/app"') &&
+      m8WorkerSource.includes('url.pathname.startsWith("/app/")') &&
+      m8WorkerSource.includes('url.pathname.startsWith("/api/")') &&
+      m8WorkerSource.includes("PRECACHE_URLS.includes(url.pathname)") &&
+      m8WorkerSource.includes("fetch(request).catch(() => caches.match(OFFLINE_URL))") &&
+      !m8WorkerSource.includes("cache.put(") &&
+      !m8WorkerSource.includes('addEventListener("sync"') &&
+      !m8WorkerSource.includes('addEventListener("push"') &&
+      m8WorkerClientSource.includes('process.env.NODE_ENV !== "production"') &&
+      m8WorkerClientSource.includes('updateViaCache: "none"') &&
+      m8WorkerClientSource.includes("uninstallKipuServiceWorker") &&
+      m8WorkerSource.includes('event.data?.type === "KIPU_UNINSTALL"') &&
+      m8OfflineVisible.includes("Tus números viven en el servidor") &&
+      !/\d/u.test(m8OfflineVisible) &&
+      m8ManifestSource.includes('action: "/app/chat"') &&
+      (m8ManifestSource.match(/^\s+url: "\/app(?:\/chat)?"/gmu) ?? []).length === 2,
+    JSON.stringify({ offlineVisible: m8OfflineVisible }),
+  );
+
+  const m8StatesSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/living/states.tsx`,
+    "utf8",
+  );
+  const m8DashboardSkeleton = m8StatesSource
+    .split("export function DashboardSkeleton()", 2)[1]
+    ?.split("export function LegacyDashboardSkeleton()", 1)[0] ?? "";
+  const m8LoadingSource = readFileSync(`${process.cwd()}/src/app/app/loading.tsx`, "utf8");
+  const m8LandingSource = readFileSync(`${process.cwd()}/src/app/page.tsx`, "utf8");
+  const m8NotFoundSource = readFileSync(`${process.cwd()}/src/app/not-found.tsx`, "utf8");
+  const m8ErrorSource = readFileSync(`${process.cwd()}/src/app/error.tsx`, "utf8");
+  assert(
+    "M8-3 · skeleton del santuario, landing con orbe estático y tres superficies públicas tokenizadas sin WebGL",
+    m8DashboardSkeleton.includes("kipu-skeleton-sanctuary") &&
+      m8DashboardSkeleton.includes('["saldo", "reserva", "metas", "patrimonio", "deuda"]') &&
+      m8DashboardSkeleton.includes('["chat", "camera", "voice"]') &&
+      !m8DashboardSkeleton.includes("size={168}") &&
+      !m8DashboardSkeleton.includes("[0, 1, 2, 3, 4, 5]") &&
+      m8LoadingSource.includes('getShellMode() === "orbe"') &&
+      m8LoadingSource.includes("LegacyDashboardSkeleton") &&
+      m8LandingSource.includes('data-product-image="orbe"') &&
+      m8LandingSource.includes("IconOrb") &&
+      m8LandingSource.includes("IconLayers") &&
+      !/IconRing|IconPulse|Margen ring/u.test(m8LandingSource) &&
+      !/WebGL|getContext|<canvas|mediaDevices|getUserMedia/u.test(m8LandingSource) &&
+      [m8LandingSource, m8NotFoundSource, m8ErrorSource].every(
+        (source) => !/white\/[0-9]/u.test(source) && source.includes("--kipu-shell"),
+      ),
+    "sanctuary loading anchors / static orb / theme tokens",
+  );
+
+  const m8LayoutSource = readFileSync(`${process.cwd()}/src/app/layout.tsx`, "utf8");
+  const m8AppNavSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/AppNav.tsx`,
+    "utf8",
+  );
+  const m8CssBlock = (start: string, end: string) =>
+    m4StylesSource.slice(m4StylesSource.indexOf(start), m4StylesSource.indexOf(end));
+  const m8FrameCss = m8CssBlock(".kipu-shell-frame {", ".kipu-shell-handle {");
+  const m8PerspectiveCss = m8CssBlock(
+    ".kipu-shell-sheet-backdrop {",
+    ".kipu-shell-sheet {",
+  );
+  const m8DialogueCss = m8CssBlock(".kipu-dialog-backdrop {", '.kipu-dialog-backdrop[data-open="true"]');
+  const m8DetailCss = m8CssBlock(".kipu-detail {", '.kipu-detail[data-detail-layer="saldo"]');
+  const m8PublicCss = m8CssBlock(".kipu-public-safe {", ".kipu-breathe {");
+  const m8FourInsets = (source: string) =>
+    ["top", "right", "bottom", "left"].every((side) =>
+      source.includes(`env(safe-area-inset-${side})`),
+    );
+  assert(
+    "M8-4 · viewport día/noche y safe areas cubren cuatro orillas del santuario, ambas hojas, detalle y superficies públicas",
+    m8LayoutSource.includes('{ color: "#edf2f6", media: "(prefers-color-scheme: light)" }') &&
+      m8LayoutSource.includes('{ color: "#060a10", media: "(prefers-color-scheme: dark)" }') &&
+      [m8FrameCss, m8PerspectiveCss, m8DialogueCss, m8DetailCss, m8PublicCss].every(m8FourInsets) &&
+      m8AppNavSource.includes("pl-[env(safe-area-inset-left)]") &&
+      m8AppNavSource.includes("pr-[env(safe-area-inset-right)]") &&
+      m4StylesSource.includes(".kipu-detail *,") &&
+      m4StylesSource.includes(".kipu-dialog-backdrop,") &&
+      !m7TouchedPages.includes("/app/cashflow"),
+    "light/dark chrome / sanctuary + perspective + dialogue + detail + public insets",
+  );
+
   // M0 closure: the old mixed envelope assertions also pinned live SQL/tools.
   // Preserve those live pins one-for-one after removing their dead planner clauses.
   const m0ClosureAnchorSource = new Map<string, string>();
