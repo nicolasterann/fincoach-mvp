@@ -1252,6 +1252,186 @@ a.kipu-perspective-module__head:focus-visible { background: var(--kipu-shell-gla
   outline-offset: 2px;
 }
 
+/* ── M7: detail surfaces are rooms of the same sanctuary ───────────────── */
+
+.kipu-detail {
+  --kipu-detail-accent: var(--layer-saldo);
+  --kipu-detail-liquid: var(--kipu-liquid-saldo);
+  --kipu-detail-deep: var(--kipu-deep-saldo);
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  max-width: 42rem;
+  min-height: calc(100svh - 1.5rem);
+  margin-inline: auto;
+  padding-bottom: 7rem;
+  color: var(--kipu-shell-ink-1);
+}
+
+.kipu-detail[data-detail-layer="saldo"] {
+  --kipu-detail-accent: var(--layer-saldo);
+  --kipu-detail-liquid: var(--kipu-liquid-saldo);
+  --kipu-detail-deep: var(--kipu-deep-saldo);
+}
+
+.kipu-detail[data-detail-layer="reserva"] {
+  --kipu-detail-accent: var(--layer-reserva);
+  --kipu-detail-liquid: var(--kipu-liquid-reserva);
+  --kipu-detail-deep: var(--kipu-deep-reserva);
+}
+
+.kipu-detail[data-detail-layer="metas"] {
+  --kipu-detail-accent: var(--layer-metas);
+  --kipu-detail-liquid: var(--kipu-liquid-metas);
+  --kipu-detail-deep: var(--kipu-deep-metas);
+}
+
+.kipu-detail[data-detail-layer="patrimonio"] {
+  --kipu-detail-accent: var(--layer-patrimonio);
+  --kipu-detail-liquid: var(--kipu-liquid-patrimonio);
+  --kipu-detail-deep: var(--kipu-deep-patrimonio);
+}
+
+.kipu-detail[data-detail-layer="deuda"] {
+  --kipu-detail-accent: var(--layer-deuda);
+  --kipu-detail-liquid: var(--kipu-liquid-deuda);
+  --kipu-detail-deep: var(--kipu-deep-deuda);
+}
+
+.kipu-detail__atmosphere {
+  position: absolute;
+  inset: -1.5rem -1.25rem 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(68% 26rem at 50% 2%, color-mix(in srgb, var(--kipu-detail-liquid) 14%, transparent), transparent 76%),
+    linear-gradient(180deg, color-mix(in srgb, var(--kipu-shell-bg) 82%, transparent), transparent 34rem);
+  opacity: 0.9;
+  animation: kipu-shell-aura-drift 27s ease-in-out infinite;
+}
+
+.kipu-detail__content { position: relative; }
+
+.kipu-detail-header {
+  min-height: 3.5rem;
+  padding-bottom: 0.25rem;
+}
+
+.kipu-detail-back {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--kipu-shell-glass-line);
+  border-radius: 16px;
+  background: var(--kipu-shell-glass);
+  box-shadow: inset 0 1px 0 var(--kipu-shell-glass-highlight);
+  color: var(--kipu-shell-ink-2);
+  font-size: 15px;
+}
+
+.kipu-detail-back:hover,
+.kipu-detail-back:focus-visible {
+  border-color: color-mix(in srgb, var(--kipu-detail-accent) 38%, var(--kipu-shell-glass-line));
+  color: var(--kipu-detail-accent);
+}
+
+.kipu-detail-kicker {
+  color: color-mix(in srgb, var(--kipu-detail-accent) 72%, var(--kipu-shell-ink-2));
+  font-size: 10px;
+  font-weight: 680;
+  letter-spacing: 0.14em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.kipu-detail-title {
+  color: var(--kipu-shell-ink-1);
+  font-size: 1.55rem;
+  font-weight: 680;
+  letter-spacing: -0.035em;
+  line-height: 1.15;
+}
+
+.kipu-detail-card,
+.kipu-detail [class*="bg-zinc-900"] {
+  border-color: var(--kipu-shell-glass-line);
+  background-color: var(--kipu-shell-card);
+  box-shadow: inset 0 1px 0 var(--kipu-shell-glass-highlight);
+  backdrop-filter: blur(16px);
+}
+
+.kipu-detail-card {
+  border: 1px solid var(--kipu-shell-glass-line);
+  border-radius: 24px;
+}
+
+.kipu-detail :is(.tabular-nums, code),
+.kipu-detail input[inputmode="decimal"],
+.kipu-detail input[type="number"] {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.kipu-detail-cta {
+  min-height: 48px;
+  border: 1px solid color-mix(in srgb, var(--kipu-detail-accent) 28%, var(--kipu-shell-glass-line));
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--kipu-detail-accent) 7%, var(--kipu-shell-glass));
+  color: var(--kipu-shell-ink-1);
+}
+
+.kipu-detail-cta:hover,
+.kipu-detail-cta:focus-visible {
+  background: color-mix(in srgb, var(--kipu-detail-accent) 12%, var(--kipu-shell-glass));
+}
+
+.kipu-tu-kipu-nav {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 14px;
+  padding: 4px;
+  border: 1px solid var(--kipu-shell-glass-line);
+  border-radius: 18px;
+  background: var(--kipu-shell-glass);
+  box-shadow: inset 0 1px 0 var(--kipu-shell-glass-highlight);
+}
+
+.kipu-tu-kipu-nav a {
+  display: grid;
+  min-height: 40px;
+  place-items: center;
+  border-radius: 14px;
+  color: var(--kipu-shell-ink-2);
+  font-size: 11px;
+  font-weight: 650;
+  text-align: center;
+}
+
+.kipu-tu-kipu-nav a[aria-current="page"] {
+  background: color-mix(in srgb, var(--kipu-detail-accent) 12%, var(--kipu-shell-glass-2));
+  color: var(--kipu-detail-accent);
+}
+
+.kipu-tone { color: var(--kipu-shell-ink-2); }
+.kipu-tone[data-tone="good"] { color: var(--good); }
+.kipu-tone[data-tone="watch"] { color: var(--watch); }
+.kipu-tone[data-tone="over"] { color: var(--over); }
+.kipu-tone[data-tone="accent"] { color: var(--kipu-detail-accent); }
+.kipu-tone-fill { background: var(--kipu-shell-cord); }
+.kipu-tone-fill[data-tone="good"] { background: var(--good); }
+.kipu-tone-fill[data-tone="watch"] { background: var(--watch); }
+.kipu-tone-fill[data-tone="over"] { background: var(--over); }
+.kipu-tone-fill[data-tone="accent"] { background: var(--kipu-detail-accent); }
+
+[data-theme="light"] .kipu-detail__atmosphere { opacity: 0.44; }
+
+@media (min-width: 1024px) {
+  .kipu-detail { padding-bottom: 3rem; }
+}
+
 /* Form controls carry their own focus treatment — skip the double outline. */
 input:focus-visible,
 select:focus-visible,
@@ -1277,6 +1457,7 @@ textarea:focus-visible {
   .kipu-shell-orb,
   .kipu-shell-orb__halo,
   .kipu-shell-atmosphere,
+  .kipu-detail__atmosphere,
   .kipu-shell-cinta,
   .kipu-shell-pill__text,
   .kipu-shell-dock__circle--recording,
@@ -1297,6 +1478,10 @@ textarea:focus-visible {
   .kipu-santuario *,
   .kipu-santuario *::before,
   .kipu-santuario *::after,
+  .kipu-detail,
+  .kipu-detail *,
+  .kipu-detail *::before,
+  .kipu-detail *::after,
   .kipu-shell-pill,
   .kipu-shell-chip,
   .kipu-shell-cord__knot,

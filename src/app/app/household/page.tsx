@@ -13,6 +13,7 @@ import { createHouseholdInviteAction } from "./actions";
 import { CopyInviteButton } from "./CopyInviteButton";
 import { ProgressStrand } from "@/app/app/components/living/ProgressStrand";
 import type { CurrencyCode } from "@/types/financial";
+import { DetailSurface, MetricShell } from "../components/living/shell";
 
 // Stage 20 PASS 2 (Micro-stage B/F) — the "Compartido" detail surface. Reads the
 // privacy-structural briefing.household (ONLY shared truth — never a member's
@@ -93,16 +94,8 @@ export default async function HouseholdPage({
   const inviteFailed = invite === "error";
 
   return (
-    <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
-      <header className="flex items-center justify-between">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Compartido</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-zinc-50">Dinero en común</h1>
-        </div>
-        <Link href="/app" className="text-xs font-semibold text-zinc-500 hover:text-zinc-300">
-          ← Resumen
-        </Link>
-      </header>
+    <DetailSurface layer="metas">
+      <MetricShell kicker="Compartido" title="Dinero en común" />
 
       {inviteUrl && (
         <section className="mt-5 rounded-2xl border border-emerald-400/25 bg-emerald-950/40 p-4">
@@ -324,6 +317,6 @@ export default async function HouseholdPage({
           </Link>
         </div>
       )}
-    </div>
+    </DetailSurface>
   );
 }

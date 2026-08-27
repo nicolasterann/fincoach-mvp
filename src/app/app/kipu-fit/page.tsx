@@ -5,6 +5,7 @@ import { readPersonalityResult } from "@/lib/personality/personality-store";
 import { getPersonalityQuestions, type PersonalityResult } from "@/lib/personality/personality-test";
 import { mapTestToPersonalization } from "@/lib/personality/personality-mapping";
 import { LivingThread } from "@/app/app/components/living/LivingThread";
+import { DetailSurface, TuKipuHeader } from "../components/living/shell";
 
 // Stage 20 PASS 2 (Micro-stage B/H) — Kipu Fit surface. Honest, never clinical:
 // shows whether Kipu is adapted to the user and how (in plain words), or invites the
@@ -109,16 +110,8 @@ export default async function KipuFitPage() {
   const totalQuestions = getPersonalityQuestions().length;
 
   return (
-    <div className="kipu-stagger mx-auto w-full max-w-2xl pb-28 lg:pb-12">
-      <header className="flex items-center justify-between">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Kipu Fit</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-zinc-50">Qué tanto te conozco</h1>
-        </div>
-        <Link href="/app" className="text-xs font-semibold text-zinc-500 hover:text-zinc-300">
-          ← Resumen
-        </Link>
-      </header>
+    <DetailSurface layer="patrimonio">
+      <TuKipuHeader active="fit" title="Qué tanto te conozco" />
 
       {!storedRead.ok ? (
         <section className="mt-5 rounded-3xl border border-amber-400/10 bg-amber-950/10 p-6">
@@ -252,7 +245,7 @@ export default async function KipuFitPage() {
           </Link>
         </>
       )}
-    </div>
+    </DetailSurface>
   );
 }
 

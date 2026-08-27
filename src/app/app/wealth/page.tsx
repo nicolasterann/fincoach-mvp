@@ -11,7 +11,7 @@ import { StackedBar, TrendPill } from "../components/Charts";
 import { CurveChart, timeFractions } from "../components/living/CurveChart";
 import { LivingThread } from "../components/living/LivingThread";
 import { ProgressStrand } from "../components/living/ProgressStrand";
-import { ChatCta, MetricShell, Section } from "../components/living/shell";
+import { ChatCta, DetailSurface, MetricShell, Section } from "../components/living/shell";
 import { LearningState } from "../components/living/states";
 
 // Stage 27 — Patrimonio detail: net worth (assets − debt) exactly as the user
@@ -65,7 +65,7 @@ export default async function WealthDetailPage() {
 
   if (!nw) {
     return (
-      <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
+      <DetailSurface layer="patrimonio">
         <MetricShell kicker="Detalle" title="Patrimonio" />
         <div className="mt-5">
           <LearningState
@@ -77,7 +77,7 @@ export default async function WealthDetailPage() {
           />
         </div>
         <ChatCta label="Pregúntale a Kipu por tu patrimonio" prompt="¿Cómo va mi patrimonio?" />
-      </div>
+      </DetailSurface>
     );
   }
 
@@ -93,7 +93,7 @@ export default async function WealthDetailPage() {
   const progressPct = nw.wealthProgressPct !== null ? Math.max(0, Math.min(100, nw.wealthProgressPct)) : null;
 
   return (
-    <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
+    <DetailSurface layer="patrimonio">
       <MetricShell kicker="Detalle" title="Patrimonio" />
 
       {/* Hero: total net worth, alive */}
@@ -243,6 +243,6 @@ export default async function WealthDetailPage() {
       </p>
 
       <ChatCta label="Pregúntale a Kipu por tu patrimonio" prompt="¿Cómo va mi patrimonio?" />
-    </div>
+    </DetailSurface>
   );
 }

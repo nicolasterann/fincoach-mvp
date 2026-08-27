@@ -9,7 +9,7 @@ import { createSupabaseServerClient } from "@/lib/supabase-server";
 import type { BudgetSignal } from "@/lib/financial/budget-intelligence";
 import type { CategoryBaseline } from "@/lib/financial/category-baselines";
 import type { Cadence } from "@/lib/financial/subscription-detection";
-import { ChatCta, MetricShell, Section } from "../components/living/shell";
+import { ChatCta, DetailSurface, MetricShell, Section } from "../components/living/shell";
 import { LearningState } from "../components/living/states";
 
 // Stage 27 — Gasto detail: the learned "normal for YOU" per category, this
@@ -27,22 +27,18 @@ function humanDate(iso: string): string {
   });
 }
 
-const STATUS_BAR: Record<BudgetSignal["status"], string> = {
-  under: "bg-emerald-400",
-  on_track: "bg-emerald-400",
-  watch: "bg-amber-400",
-  over: "bg-rose-400",
+type SpendingTone = "good" | "watch" | "over" | "neutral";
+
+const STATUS_WORD: Record<BudgetSignal["status"], { text: string; tone: SpendingTone }> = {
+  under: { text: "por debajo", tone: "good" },
+  on_track: { text: "en ritmo", tone: "good" },
+  watch: { text: "a vigilar", tone: "watch" },
+  over: { text: "pasado", tone: "over" },
 };
-const STATUS_WORD: Record<BudgetSignal["status"], { text: string; cls: string }> = {
-  under: { text: "por debajo", cls: "text-emerald-300" },
-  on_track: { text: "en ritmo", cls: "text-emerald-300" },
-  watch: { text: "a vigilar", cls: "text-amber-300" },
-  over: { text: "pasado", cls: "text-rose-300" },
-};
-const TREND_CHIP: Record<CategoryBaseline["trend"], { text: string; cls: string } | null> = {
-  rising: { text: "subiendo", cls: "text-amber-300" },
-  falling: { text: "bajando", cls: "text-emerald-300" },
-  stable: { text: "estable", cls: "text-zinc-500" },
+const TREND_CHIP: Record<CategoryBaseline["trend"], { text: string; tone: SpendingTone } | null> = {
+  rising: { text: "subiendo", tone: "watch" },
+  falling: { text: "bajando", tone: "good" },
+  stable: { text: "estable", tone: "neutral" },
   unknown: null,
 };
 const CADENCE_ES: Record<Cadence, string> = {
@@ -54,11 +50,11 @@ const CADENCE_ES: Record<Cadence, string> = {
 };
 
 // Stage 32 — pace chips for the month tracker (vs the day-of-month proportion).
-const PACE_CHIP: Record<"under" | "on_track" | "tight" | "over", { text: string; cls: string; bar: string }> = {
-  under: { text: "por debajo", cls: "text-emerald-300", bar: "bg-emerald-400" },
-  on_track: { text: "en ritmo", cls: "text-emerald-300", bar: "bg-emerald-400" },
-  tight: { text: "justo", cls: "text-amber-300", bar: "bg-amber-400" },
-  over: { text: "pasado", cls: "text-rose-300", bar: "bg-rose-400" },
+const PACE_CHIP: Record<"under" | "on_track" | "tight" | "over", { text: string; tone: SpendingTone }> = {
+  under: { text: "por debajo", tone: "good" },
+  on_track: { text: "en ritmo", tone: "good" },
+  tight: { text: "cerca del límite", tone: "watch" },
+  over: { text: "pasado", tone: "over" },
 };
 
 // The calendar-month budget tracker. Every number comes from
@@ -103,9 +99,9 @@ function MonthBudgetSection({
                 </p>
               </div>
               <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-line/10">
-                <div className={`h-full rounded-full ${chip.bar}`} style={{ width: `${width}%` }} />
+                <div className="kipu-tone-fill h-full rounded-full" data-tone={chip.tone} style={{ width: `${width}%` }} />
               </div>
-              <p className={`mt-1 text-[11px] font-medium ${chip.cls}`}>
+              <p className="kipu-tone mt-1 text-[11px] font-medium" data-tone={chip.tone}>
                 {chip.text} · quedan {disp(it.remaining)}
                 {obj?.crossed
                   ? " · el exceso sale de tu Saldo"
@@ -160,7 +156,7 @@ export default async function SpendingDetailPage() {
 
   if (learning) {
     return (
-      <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
+      <DetailSurface layer="saldo">
         <MetricShell kicker="Detalle" title="Gasto" />
         <div className="mt-5">
           <LearningState
@@ -192,7 +188,7 @@ export default async function SpendingDetailPage() {
           )}
         </div>
         <ChatCta label="Pregúntale a Kipu por tu gasto" prompt="¿En qué se me está yendo la plata?" />
-      </div>
+      </DetailSurface>
     );
   }
 
@@ -204,7 +200,7 @@ export default async function SpendingDetailPage() {
   const drivers = si.margin.drivers;
 
   return (
-    <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
+    <DetailSurface layer="saldo">
       <MetricShell
         kicker="Detalle"
         title="Gasto"
@@ -217,15 +213,15 @@ export default async function SpendingDetailPage() {
         }
       />
 
-      {/* Hero: this week vs YOUR normal, category by category */}
+      {/* Recent projection vs the user's own normal, without a weekly hero. */}
       <section className="kipu-fade-up mt-5 rounded-3xl border border-line/5 bg-zinc-900 p-5">
         <div className="flex items-baseline justify-between gap-3">
-          <p className="text-sm font-medium text-zinc-300">Tu semana</p>
-          <p className="text-[11px] text-zinc-600">proyectado vs tu normal</p>
+          <p className="text-sm font-medium text-zinc-300">Tu ritmo reciente</p>
+          <p className="text-[11px] text-zinc-600">proyección vs tu normal</p>
         </div>
         {signals.length === 0 ? (
           <p className="mt-3 text-sm leading-6 text-zinc-500">
-            Esta semana aún no hay suficiente movimiento para comparar contra tu normal.
+            Aún no hay suficiente movimiento para comparar contra tu normal.
           </p>
         ) : (
           <div className="mt-4 space-y-4">
@@ -242,9 +238,9 @@ export default async function SpendingDetailPage() {
                     </p>
                   </div>
                   <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-line/10">
-                    <div className={`h-full rounded-full ${STATUS_BAR[s.status]}`} style={{ width: `${width}%` }} />
+                    <div className="kipu-tone-fill h-full rounded-full" data-tone={word.tone} style={{ width: `${width}%` }} />
                   </div>
-                  <p className={`mt-1 text-[11px] font-medium ${word.cls}`}>
+                  <p className="kipu-tone mt-1 text-[11px] font-medium" data-tone={word.tone}>
                     {word.text}
                     {(s.status === "watch" || s.status === "over") && pct > 0 && ` · +${pct}% vs tu normal`}
                   </p>
@@ -281,7 +277,7 @@ export default async function SpendingDetailPage() {
                       title={c.isControllable ? "ajustable" : "esencial"}
                     />
                     <span className="truncate">{c.parentCategory}</span>
-                    {chip && <span className={`shrink-0 text-[10px] font-semibold ${chip.cls}`}>{chip.text}</span>}
+                    {chip && <span className="kipu-tone shrink-0 text-[10px] font-semibold" data-tone={chip.tone}>{chip.text}</span>}
                   </span>
                   <span className="shrink-0 font-semibold tabular-nums text-zinc-100">≈ {disp(c.weeklyAvg)}/sem</span>
                 </div>
@@ -340,9 +336,8 @@ export default async function SpendingDetailPage() {
                   <div className="min-w-0">
                     <p className="flex items-center gap-2 text-sm text-zinc-300">
                       <span
-                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                          a.severity === "notable" ? "bg-rose-400" : a.severity === "watch" ? "bg-amber-400" : "bg-zinc-500"
-                        }`}
+                        className="kipu-tone-fill h-1.5 w-1.5 shrink-0 rounded-full"
+                        data-tone={a.severity === "notable" ? "over" : a.severity === "watch" ? "watch" : "neutral"}
                       />
                       <span className="truncate">{a.merchantFamily}</span>
                     </p>
@@ -366,7 +361,8 @@ export default async function SpendingDetailPage() {
                 <div key={`${d.kind}-${d.label}`} className="flex items-center justify-between gap-3 text-sm">
                   <span className="text-zinc-300">{d.label}</span>
                   <span
-                    className={`font-semibold tabular-nums ${d.weeklyDelta > 0 ? "text-rose-300" : "text-emerald-300"}`}
+                    className="kipu-tone font-semibold tabular-nums"
+                    data-tone={d.weeklyDelta > 0 ? "over" : "good"}
                   >
                     {d.weeklyDelta > 0 ? "+" : "−"}
                     {disp(Math.abs(d.weeklyDelta))}
@@ -381,6 +377,6 @@ export default async function SpendingDetailPage() {
       </div>
 
       <ChatCta label="Pregúntale a Kipu por tu gasto" prompt="¿En qué se me está yendo la plata?" />
-    </div>
+    </DetailSurface>
   );
 }

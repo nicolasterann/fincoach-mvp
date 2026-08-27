@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { DetailSurface, type DetailLayer } from "./shell";
 
 // Stage 27 — honest, premium empty/loading states. "Kipu está aprendiendo" is
 // a FEATURE surface, never an apology: it says exactly what data unlocks the
@@ -53,9 +54,10 @@ export function SkeletonCircle({ size = 168 }: { size?: number }) {
 }
 
 // Generic metric-detail-page skeleton: header + hero + two sections.
-export function DetailPageSkeleton() {
+export function DetailPageSkeleton({ layer = "saldo" }: { layer?: DetailLayer }) {
   return (
-    <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12" role="status" aria-label="Cargando">
+    <DetailSurface layer={layer} className="max-w-2xl">
+      <div role="status" aria-label="Cargando">
       <div className="flex items-center gap-2">
         <SkeletonBlock className="h-11 w-11" />
         <div className="space-y-2">
@@ -67,7 +69,8 @@ export function DetailPageSkeleton() {
       <SkeletonBlock className="mt-5 h-32 w-full rounded-3xl" />
       <SkeletonBlock className="mt-5 h-32 w-full rounded-3xl" />
       <span className="sr-only">Cargando…</span>
-    </div>
+      </div>
+    </DetailSurface>
   );
 }
 

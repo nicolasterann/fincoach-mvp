@@ -28,7 +28,7 @@ import {
 const SUGGESTIONS = [
   "¿Cuánto puedo gastar hoy?",
   "Gasté 12 en almuerzo",
-  "¿Cómo voy esta semana?",
+  "¿Cómo viene mi Saldo?",
 ];
 
 function TypingDots() {

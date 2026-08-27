@@ -10,7 +10,7 @@ import { loadSnapshotSeries } from "@/lib/trends/snapshot-store";
 import { QuipuCord } from "../components/SaldoKipu";
 import { MargenBreakdownPanel } from "../components/MargenBreakdown";
 import { CurveChart, timeFractions } from "../components/living/CurveChart";
-import { Chevron, MetricShell, Section, ChatCta } from "../components/living/shell";
+import { Chevron, DetailSurface, MetricShell, Section, ChatCta } from "../components/living/shell";
 import { formatDateEs, formatDateEsShort } from "@/lib/format/dates-es";
 
 // Stage D — the Saldo Kipu DETAIL page. This is where the financial substance
@@ -62,7 +62,7 @@ export default async function SaldoPage() {
   }));
 
   return (
-    <div className="mx-auto w-full max-w-3xl pb-28 lg:pb-12">
+    <DetailSurface layer="saldo" className="max-w-3xl">
       <MetricShell kicker="Detalle" title="Saldo Kipu" />
 
       {/* The quipu, larger, with the exact numbers beside it */}
@@ -138,24 +138,25 @@ export default async function SaldoPage() {
             );
           })}
         </div>
-        <p className="mt-2 px-1 text-xs leading-5 text-zinc-600">
-          <Link href="/app/cuentas" className="font-semibold text-emerald-400 hover:text-emerald-300">¿Dónde vive físicamente esta plata? →</Link>
-          {" "}Si un gasto supera tu Saldo, baja capa por capa — Kipu te avisa siempre antes de cruzar a una peor.
-          {s.zeroRateDebtName ? ` ${s.zeroRateDebtName} está al 0%: diferir ahí puede costar menos que vender inversión.` : ""}
-        </p>
+        <div className="mt-3 flex flex-col gap-2 px-1 text-xs leading-5 text-zinc-600">
+          <Link href="/app/cuentas" className="font-semibold text-emerald-400 hover:text-emerald-300">Dónde vive esta plata →</Link>
+          <p>Kipu te avisa antes de cruzar una capa.</p>
+          {s.zeroRateDebtName && <p>{s.zeroRateDebtName} está al 0%: diferir ahí puede costar menos que vender inversión.</p>}
+        </div>
       </Section>
 
       {/* De dónde sale el número — the honest math, one tap from the hero */}
       <Section kicker="De dónde sale" className="mt-6">
         <div className="rounded-3xl border border-line/5 bg-zinc-900 p-5">
           <MargenBreakdownPanel breakdown={mk.breakdown} capacity={mk.capacity} margenDaily={s.fillDaily} format={disp} />
-          <div className="mt-4 border-t border-line/5 pt-4 text-sm leading-6 text-zinc-400">
-            <p>
-              El calendario también manda: hoy podrían salir hasta{" "}
-              <span className="font-semibold text-zinc-200">{disp(s.calendarHeadroom)}</span> antes de que un pago
-              de los próximos días quede corto{s.calendarTroughDateISO ? ` (el punto más bajo llega el ${formatDateEs(s.calendarTroughDateISO)})` : ""} —
-              pero gastar todo eso se comería tu Reserva. Por eso tu Saldo es siempre el menor entre tu ritmo y tu
-              calendario, con la Reserva aparte.
+          <div className="mt-4 border-t border-line/5 pt-4">
+            <p className="text-2xl font-bold tabular-nums text-zinc-100">{disp(s.calendarHeadroom)}</p>
+            <p className="mt-1 text-sm text-zinc-400">Espacio de calendario antes de quedar corto.</p>
+            {s.calendarTroughDateISO && (
+              <p className="mt-1 text-xs text-zinc-600">Punto más bajo: {formatDateEs(s.calendarTroughDateISO)}.</p>
+            )}
+            <p className="mt-3 text-xs leading-5 text-zinc-600">
+              El Saldo toma el menor entre tu ritmo y el calendario; la Reserva queda aparte.
             </p>
           </div>
         </div>
@@ -194,6 +195,6 @@ export default async function SaldoPage() {
         </Link>
         <ChatCta label="Preguntarle a Kipu" prompt="¿Cómo viene mi Saldo Kipu?" />
       </div>
-    </div>
+    </DetailSurface>
   );
 }
