@@ -216,10 +216,10 @@ body {
 }
 
 .kipu-public-safe {
-  padding-top: max(1.25rem, env(safe-area-inset-top));
-  padding-right: max(1.25rem, env(safe-area-inset-right));
-  padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
-  padding-left: max(1.25rem, env(safe-area-inset-left));
+  padding-top: max(20px, env(safe-area-inset-top));
+  padding-right: max(20px, env(safe-area-inset-right));
+  padding-bottom: max(20px, env(safe-area-inset-bottom));
+  padding-left: max(20px, env(safe-area-inset-left));
 }
 
 /* ── Bloque M1: santuario orbe ─────────────────────────────────────────── */
