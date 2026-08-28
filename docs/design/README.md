@@ -1,8 +1,45 @@
-# Track M-DISEÑO (Bloque M · rediseño visual desde cero)
+# Track de DISEÑO (Bloques M y N · el front de Kipu)
 
-**Estado: FASE DE BUILD (desde 2026-08-24, M0 cerrado y Bloque M activo).**
-La fase research-only terminó con M_DESIGN_003. Ahora: Claude especifica y
-audita; Codex implementa por stages en la rama `stage-m-front`.
+**Estado: BLOQUE M CERRADO (mergeado en `main` como `5068176`, en producción).
+BLOQUE N ACTIVO desde 2026-08-28.**
+
+- **Bloque M — el front completo.** Cerrado en dos actos: M1–M9 construyeron el
+  santuario y el Acto 2 borró el shell viejo. Su historia vive en
+  `M_DESIGN_001..003` y en `stages/M*`.
+- **Bloque N — el acabado.** Abierto por la pasada del founder en hardware real:
+  el producto funciona pero se siente artesanal. Plan y evidencia en
+  **`N_DESIGN_001_ACABADO_FIRST_PRINCIPLES_2026-08-28.md`**; etapas N0–N7 en
+  `docs/ROADMAP.md`.
+
+**Cambio de protocolo desde N:** Codex ya no participa. Claude especifica,
+implementa y —esto es la debilidad conocida— se audita a sí mismo. La
+recomendación registrada en el plan §7 es partir el trabajo en dos chats por
+etapa: uno implementa, otro audita en frío sin haber visto la conversación del
+primero. **El founder lo aprobó el 2026-08-28.** Los nombres de archivo por
+etapa se mantienen (`Nn_SPEC` / `Nn_REPORT` / `Nn_AUDIT`).
+
+### Ciclo de una etapa Nn (dos chats, sin Codex)
+
+1. **Chat IMPLEMENTADOR.** Entra leyendo `stages/Nn_SPEC.md` (contrato completo
+   y autocontenido). Construye, corre los gates, escribe `stages/Nn_REPORT.md`
+   append-only por rondas, y declara con honestidad lo que su entorno no puede
+   verificar.
+2. **Chat AUDITOR.** Chat NUEVO, sin la conversación del implementador. Entra
+   con el spec, el reporte y el código. **Verifica por ejecución, no por
+   lectura**, y con al menos una mutación propia que mate un test con nombre.
+   Emite `stages/Nn_AUDIT.md` con veredicto y órdenes numeradas `On`.
+3. Si ROJO: el implementador responde orden por orden en una ronda nueva; el
+   auditor vuelve a ejecutar. Repetir hasta VERDE.
+4. **El auditor que dio el VERDE escribe el `SPEC` de la etapa siguiente.** Es
+   quien acaba de PROBAR cómo es el código de verdad; especificar desde ahí
+   evita el defecto que costó M3 (tres instrucciones del spec eran falsas
+   contra el código real).
+5. El founder transporta señales entre chats, nunca contenido. Nadie declara
+   verde sin pegar la salida real de los gates.
+
+---
+
+## Historia: protocolo del Bloque M (Claude↔Codex)
 
 ## Protocolo de build (el repo es el canal Claude↔Codex)
 

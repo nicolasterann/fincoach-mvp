@@ -22,9 +22,12 @@ No bank connections — manual capture is by design. No monetization yet.
 
 Current roadmap: **`docs/ROADMAP.md` is the live roadmap and the only source of
 work order.** Back-end and features reached closure first; **Bloque M (el front
-completo) is now the only active block and is UNBLOCKED.** Bloques A–D, F–K,
-Pre-M and M0 are closed. Bloque L remains intentionally limited to its cheap
-refund fail-safe. `docs/ROADMAP_MVP.md` is a historical archive.
+completo) is CLOSED and merged (`5068176`), and Bloque N — el acabado — is the
+only active block** (opened 2026-08-28 after the founder tested production on a
+real phone). N is presentation, timing and gesture only: no stage changes how a
+number is computed or written. Bloques A–D, F–K, Pre-M and M0 are closed.
+Bloque L remains intentionally limited to its cheap refund fail-safe.
+`docs/ROADMAP_MVP.md` is a historical archive.
 
 **M0 CLOSED on 2026-08-24.** The native tool-calling loop in
 `kipu-agent-loop.ts` is the single AI brain in production. It reads live

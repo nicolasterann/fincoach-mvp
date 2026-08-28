@@ -63,8 +63,12 @@ must NOT break because we didn't pre-code that exact phrase.
 - **Retired face:** Margen Kipu, Pulso Kipu, Flexibilidad, Precisión, Realidad,
   named states and weekly hero framing. Their old routes redirect; internal
   engine fields may remain.
-- **Current work order:** `docs/ROADMAP.md` is authoritative. Bloque M's Acto 1
-  closure is the only active work: M1–M8 are accepted and M9 awaits its audit.
+- **Current work order:** `docs/ROADMAP.md` is authoritative. **Bloque M is
+  CLOSED and merged (`5068176`, in production); Bloque N — el acabado — is the
+  only active block** (opened 2026-08-28 after the founder's hardware pass).
+  N is presentation, timing and gesture only: no stage of it changes how a
+  number is computed or written. Plan and measured evidence live in
+  `docs/design/N_DESIGN_001_ACABADO_FIRST_PRINCIPLES_2026-08-28.md`.
   No monetization and no bank connections; manual capture remains deliberate.
 
 **M0 CLOSED on 2026-08-24.** The native tool-calling loop is Kipu's single AI

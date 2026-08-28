@@ -1942,6 +1942,46 @@ bloque**: las 7 superficies ya existían; Bloque M cerró su navegación.
 
 ---
 
+## Bloque N — El acabado
+
+**Estado: ACTIVO (abierto el 2026-08-28)** · plan:
+`docs/design/N_DESIGN_001_ACABADO_FIRST_PRINCIPLES_2026-08-28.md`
+
+**Bloque M cerró el front; N lo termina.** La pasada del founder en hardware
+real (iPhone, producción `5068176`) dio un veredicto claro: *"como base o
+prototipo está bien; como producto final le falta pulir el 90% de los
+detalles"*. Doce hallazgos que el análisis reduce a **seis causas**: la
+pantalla de inicio hace el trabajo de toda la app antes de mostrar nada
+(incluidos 348 kB de chat en cada carga); la renovación de sesión promete un
+middleware que nunca se escribió; el orbe se dibuja dos veces y se sustituye a
+la vista; cuatro de los cinco orbes están vacíos por una orden mía de M1; la
+hoja de chat no obedece la física de una hoja (el gesto de leer cierra, el
+teclado tapa, no se expande); y los mensajes se muestran crudos (asteriscos,
+nombres de archivo, texto cortado).
+
+**Ninguna etapa de N toca cómo se calcula un número ni cómo se escribe en la
+base.** Todo el bloque es presentación, tiempo y gesto — y por eso es
+reversible.
+
+| Etapa | Promesa verificable |
+|---|---|
+| **N0 · La regla y el metro** | Ninguna pantalla inventa un valor propio; una sola escala y una sola física de movimiento; cinco estados con forma; medición real desde el teléfono del founder |
+| **N1 · Que abra** | Orbe + cifra en <~1,5 s; el hilo de chat sale del inicio; un dato decorativo caído nunca tumba la pantalla; sesión renovada en el borde (frontera de seguridad — requiere permiso) |
+| **N2 · Un solo orbe** | El orbe nunca se sustituye a la vista; cada capa tiene un denominador honesto; el vacío se ve deliberado (gota + menisco) |
+| **N3 · Conversación: superficie** | La hoja se expande, sigue al teclado y sólo cierra cuando lo pides; área segura en toda superficie de chat |
+| **N4 · Conversación: contenido** | Negritas de verdad, fotos visibles, notas de voz legibles, campo multilínea |
+| **N5 · Las pantallas** | "Cómo vas" es una pantalla, no una ventana dentro de otra; una gramática única de página; pasada de densidad |
+| **N6 · La entrada** | Entrar, fallar y empezar: cada paso una acción clara; esqueleto con la forma de lo que viene |
+| **N7 · La pasada humana** | Caminata lenta en dispositivo real + prueba de pasillo con 5 personas nuevas |
+
+**Decisiones abiertas (D-N1…D-N6)** en el §6 del plan. La única bloqueante es
+D-N1: permiso para tocar la renovación de sesión.
+
+**Restricción heredada:** no reintroducir la grilla de métricas, los scores
+retirados por el Bloque D, ni el vocabulario retirado del Bloque M.
+
+---
+
 ## Explícitamente NO ahora
 
 - **Ingreso variable.** El beta es todo sueldo fijo (confirmado por el founder).
