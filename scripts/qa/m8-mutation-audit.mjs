@@ -11,9 +11,26 @@ const mutations = [
   },
   {
     file: "public/sw.js",
-    from: 'url.pathname.startsWith("/api/")',
+    from: `  if (policy.strategy === "network-only") {
+    const networkResponse = fetch(request);
+    event.respondWith(
+      policy.fallback === "offline"
+        ? networkResponse.catch(() => caches.match(OFFLINE_URL))
+        : networkResponse,
+    );
+    return;
+  }`,
     name: "M8-2",
-    to: 'url.pathname.startsWith("/money-api/")',
+    result: "escritura cache con alias c muerta por nombre",
+    to: `  if (policy.strategy === "network-only") {
+    event.respondWith(
+      caches.match(request).then((hit) => hit || fetch(request).then((res) => {
+        caches.open(CACHE_NAME).then((c) => c.put(request, res.clone()));
+        return res;
+      })),
+    );
+    return;
+  }`,
   },
   {
     file: "src/app/page.tsx",
@@ -65,7 +82,9 @@ for (const mutation of mutations) {
       process.exitCode = 1;
       break;
     }
-    process.stdout.write(`${mutation.name}: mutación muerta por nombre (849/850)\n`);
+    process.stdout.write(
+      `${mutation.name}: ${mutation.result ?? "mutación muerta por nombre"} (849/850)\n`,
+    );
   } finally {
     writeFileSync(mutation.file, original);
   }
