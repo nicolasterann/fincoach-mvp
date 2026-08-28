@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  Suspense,
+  use,
   useEffect,
   useRef,
   useState,
@@ -10,8 +12,11 @@ import {
   type PointerEvent,
 } from "react";
 import { ChatView, type ChatViewHandle } from "../ChatView";
+import { KipuLoading, KipuNoData } from "../state";
 import { MetroOverlay } from "../metro/MetroOverlay";
 import type { ChatDeliveryResult } from "../../transaction-actions";
+import { loadThreadAction } from "../../thread-actions";
+import type { ThreadView } from "@/lib/chat-memory/thread-view-contract";
 import {
   LiveOrb,
   type LiveOrbHandle,
@@ -19,8 +24,16 @@ import {
   type OrbQualityTier,
 } from "./LiveOrb";
 import { QuipuLayerCord } from "./QuipuLayerCord";
-import type { OrbKind, ShellOrb, ShellPayload } from "./shell-payload";
+import type {
+  OrbKind,
+  ShellLater,
+  ShellMovement,
+  ShellOrb,
+  ShellPayload,
+  ShellPerspectiveLater,
+} from "./shell-payload";
 import { PerspectiveSheet } from "./PerspectiveSheet";
+import { cintaState } from "./shell-dialog-contract";
 import { StaticOrb } from "./StaticOrb";
 import type { OrbVoiceState } from "./voice-capture-contract";
 import { useVoiceCapture } from "./useVoiceCapture";
@@ -104,12 +117,195 @@ function PillText({ line }: { line: string }) {
   );
 }
 
+
+// ── N1 · Las tandas que llegan después ──────────────────────────────────────
+// El servidor entrega el orbe y su cifra en cuanto los tiene, y promete el
+// resto. Estas tres piezas abren esas promesas con `use()` dentro de su propia
+// frontera `<Suspense>`: nada de lo que hay aquí dentro puede retrasar la cifra,
+// y mientras viene el hueco tiene la FORMA de lo que va a ocupar — los estados
+// de N0, jamás una barra gris improvisada.
+
+function pillLineFor(
+  later: ShellLater,
+  orb: ShellOrb,
+  local: {
+    dawnFill: string | null;
+    runwayLine: string | null;
+    liveState: LiveOrbState;
+    receiptPill: string | null;
+    pillIndex: number;
+  },
+): string | null {
+  if (orb.amountLabel == null) return null;
+  return (
+    orb.emptyInvite ??
+    (orb.kind === "saldo" && local.liveState === "dawn" && local.dawnFill
+      ? `Volvieron ${local.dawnFill} al amanecer.`
+      : null) ??
+    (orb.kind === "saldo" ? local.runwayLine : null) ??
+    local.receiptPill ??
+    later.pillLines[local.pillIndex % Math.max(1, later.pillLines.length)] ??
+    later.pillLine
+  );
+}
+
+function ShellPill({
+  later,
+  orb,
+  ...local
+}: {
+  later: Promise<ShellLater>;
+  orb: ShellOrb;
+  dawnFill: string | null;
+  runwayLine: string | null;
+  liveState: LiveOrbState;
+  receiptPill: string | null;
+  pillIndex: number;
+}) {
+  const line = pillLineFor(use(later), orb, local);
+  return (
+    <div
+      className={`kipu-shell-pill${line ? "" : " kipu-shell-pill--empty"}`}
+      aria-hidden={line ? undefined : true}
+    >
+      <span className="kipu-shell-pill__dot" />
+      <span className="kipu-shell-pill__text" key={line ?? "empty"}>
+        {line ? <PillText line={line} /> : "Sin novedades"}
+      </span>
+    </div>
+  );
+}
+
+function ShellCinta({
+  later,
+  liveMovement,
+  dialogOpen,
+  onJump,
+}: {
+  later: Promise<ShellLater>;
+  liveMovement: (ShellMovement & { receiptKey: string }) | null;
+  dialogOpen: boolean;
+  onJump: (turnId: string) => void;
+}) {
+  const resolved = use(later);
+  const movement: ShellMovement | null = liveMovement ?? resolved.lastMovement;
+  // N1 (ronda 2, O2) · el santuario NO decide: consume. Qué dibuja la cinta es
+  // `cintaState`, una función pura que el gate EJECUTA — «no pude leer» ≠ «no
+  // hay nada» deja de estar sujeto por el orden de dos cadenas en el fuente.
+  const cinta = cintaState({
+    movement,
+    readFailed: resolved.lastMovementReadFailed,
+  });
+  if (cinta === "sin-dato") {
+    return (
+      <KipuNoData
+        shape="linea"
+        className="kipu-shell-cinta-slot"
+        label="Tu último movimiento"
+        title="No pude leer tu último movimiento"
+      />
+    );
+  }
+  // Aquí `cinta` sólo puede ser "vacio", y "vacio" es exactamente `!movement`
+  // con la lectura sana: la cinta invisible que reserva el sitio.
+  if (!movement) {
+    return <div className="kipu-shell-cinta kipu-shell-cinta--empty" aria-hidden="true" />;
+  }
+  const key = liveMovement?.receiptKey ?? "persisted-movement";
+  const body = (
+    <>
+      <span className="kipu-shell-cinta__time">{movement.timeLabel}</span>
+      <span className="kipu-shell-cinta__label">{movement.label}</span>
+      <span className="kipu-shell-cinta__amount">{movement.amountLabel}</span>
+    </>
+  );
+  if (dialogOpen && movement.turnId) {
+    return (
+      <button
+        key={key}
+        type="button"
+        className="kipu-shell-cinta"
+        aria-label={`Ir al recibo: ${movement.label}, ${movement.amountLabel}`}
+        onClick={() => onJump(movement.turnId as string)}
+      >
+        {body}
+      </button>
+    );
+  }
+  return (
+    <Link
+      key={key}
+      href={
+        movement.turnId
+          ? `/app/chat?turn=${encodeURIComponent(movement.turnId)}`
+          : "/app/activity"
+      }
+      className="kipu-shell-cinta"
+      aria-label={`Último movimiento: ${movement.label}, ${movement.amountLabel}`}
+    >
+      {body}
+    </Link>
+  );
+}
+
+function DialogReceiptJump({
+  later,
+  liveMovement,
+  onJump,
+}: {
+  later: Promise<ShellLater>;
+  liveMovement: (ShellMovement & { receiptKey: string }) | null;
+  onJump: (turnId: string) => void;
+}) {
+  const movement: ShellMovement | null = liveMovement ?? use(later).lastMovement;
+  if (!movement?.turnId) return null;
+  return (
+    <button
+      type="button"
+      className="kipu-dialog-receipt-jump"
+      onClick={() => onJump(movement.turnId as string)}
+      aria-label={`Ir al recibo: ${movement.label}, ${movement.amountLabel}`}
+    >
+      <span>{movement.timeLabel}</span>
+      <strong>{movement.label}</strong>
+      <span>{movement.amountLabel}</span>
+    </button>
+  );
+}
+
+function ShellPerspectiveBody({
+  perspective,
+  onRetry,
+}: {
+  perspective: Promise<ShellPerspectiveLater>;
+  onRetry: () => void;
+}) {
+  const resolved = use(perspective);
+  if (!resolved.perspective) {
+    return (
+      <KipuNoData
+        shape="hoja"
+        label="Cómo vas"
+        title={
+          resolved.readFailed
+            ? "No pude leer cómo vas ahora"
+            : "No puedo leer tu saldo ahora"
+        }
+        onRetry={onRetry}
+      />
+    );
+  }
+  return <PerspectiveSheet perspective={resolved.perspective} onRetry={onRetry} />;
+}
+
 export interface SantuarioPreviewControls {
   forcedTier?: OrbQualityTier;
   forcedState?: LiveOrbState;
   forcedVoice?: OrbVoiceState;
   showPerf?: boolean;
   initialPerspectiveOpen?: boolean;
+  /** N1 · la maqueta siembra el hilo sin sesión; la app lo pide al abrir. */
+  thread?: ThreadView;
 }
 
 export function SantuarioShell({
@@ -150,13 +346,38 @@ export function SantuarioShell({
   const activeOrb = payload.orbs[activeIndex] ?? payload.orbs[0];
   const activeKind = activeOrb?.kind ?? "saldo";
   const kinds = payload.orbs.map((orb) => orb.kind);
+
+  // N1 · el hilo se lee al ABRIR la conversación, no antes. Una sola vez por
+  // montaje: `ChatView` queda montado a propósito (M4) y su estado local ya
+  // tiene lo enviado después.
+  // `thread === null` ES el estado «viene en camino». No hace falta una segunda
+  // bandera: mientras sea null la hoja muestra `KipuLoading`, y cuando llega —
+  // con turnos o con `readFailed`— muestra lo que de verdad pasó.
+  const [thread, setThread] = useState<ThreadView | null>(preview?.thread ?? null);
+  const threadAsked = useRef(preview?.thread != null);
+  function ensureThread() {
+    if (threadAsked.current) return;
+    threadAsked.current = true;
+    void loadThreadAction()
+      .then(setThread)
+      // Ni siquiera un fallo del transporte puede convertirse en «no tienes
+      // mensajes»: se dice que no se pudo leer.
+      .catch(() => setThread({ turns: [], complete: false, readFailed: true }));
+  }
+
+  function revealDialog(focus: boolean) {
+    setPerspectiveOpen(false);
+    setDialogOpen(true);
+    ensureThread();
+    if (focus) {
+      window.requestAnimationFrame(() => chatRef.current?.focusComposer());
+    }
+  }
+
   const voice = useVoiceCapture({
     sendEvidence: (file) =>
       chatRef.current?.sendEvidence(file) ?? Promise.resolve(null),
-    revealConversation: () => {
-      setPerspectiveOpen(false);
-      setDialogOpen(true);
-    },
+    revealConversation: () => revealDialog(false),
     setAura: (state, level) => liveOrbRef.current?.setVoice(state, level),
   });
 
@@ -203,13 +424,15 @@ export function SantuarioShell({
     if (settleTimer.current != null) window.clearTimeout(settleTimer.current);
   }, []);
 
+  // N1 · el largo de la lista vive ahora en la tanda que llega después, así que
+  // el índice avanza siempre y la píldora hace el módulo con lo que tenga. Con
+  // una sola línea el módulo devuelve siempre la misma: en pantalla, idéntico.
   useEffect(() => {
-    if (payload.pillLines.length < 2) return;
     const timer = window.setInterval(() => {
-      setPillIndex((current) => (current + 1) % payload.pillLines.length);
+      setPillIndex((current) => current + 1);
     }, 9000);
     return () => window.clearInterval(timer);
-  }, [payload.pillLines]);
+  }, []);
 
   useEffect(() => {
     const orb = liveOrbRef.current;
@@ -235,11 +458,7 @@ export function SantuarioShell({
 
   const openDialog = (focus = true) => {
     voice.cancel();
-    setPerspectiveOpen(false);
-    setDialogOpen(true);
-    if (focus) {
-      window.requestAnimationFrame(() => chatRef.current?.focusComposer());
-    }
+    revealDialog(focus);
   };
 
   const openPerspective = () => {
@@ -318,25 +537,12 @@ export function SantuarioShell({
     perspectiveSheetY.current = null;
   };
 
-  const pillFor = (orb: ShellOrb) =>
-    orb.amountLabel == null
-      ? null
-      : orb.emptyInvite ??
-        (orb.kind === "saldo" && liveState === "dawn" && payload.dawn
-          ? `Volvieron ${payload.dawn.fillLabel} al amanecer.`
-          : null) ??
-        (orb.kind === "saldo" ? payload.runwayLine : null) ??
-        receiptPill ??
-        payload.pillLines[pillIndex % Math.max(1, payload.pillLines.length)] ??
-        payload.pillLine;
-
   const imperativePreview =
     preview?.forcedState === "capturing" ||
     preview?.forcedState === "written" ||
     preview?.forcedState === "crossing";
   const forcedRenderState = imperativePreview ? undefined : preview?.forcedState;
   const showLiveCanvas = liveSettled && !dialogOpen && liveTier > 0 && liveState !== "fog";
-  const movement = liveMovement ?? payload.lastMovement;
   const forcedVoiceMessage = preview?.forcedVoice
     ? `Aura ${preview.forcedVoice} · vista QA`
     : null;
@@ -361,7 +567,11 @@ export function SantuarioShell({
       data-orb-paused={!liveSettled || dialogOpen || perspectiveOpen ? "true" : "false"}
     >
       <span className="kipu-shell-atmosphere" aria-hidden="true" />
-      <MetroOverlay serverTiming={payload.serverTiming} />
+      <MetroOverlay
+        serverTiming={payload.serverTiming}
+        later={payload.later}
+        perspective={payload.perspective}
+      />
       <div className="kipu-shell-frame">
         <button
           type="button"
@@ -454,7 +664,6 @@ export function SantuarioShell({
             </div>
             <div ref={trackRef} className="kipu-shell-track" onScroll={handleScroll}>
               {payload.orbs.map((orb, index) => {
-                const line = pillFor(orb);
                 return (
                   <section
                     key={orb.kind}
@@ -476,12 +685,25 @@ export function SantuarioShell({
                         )}
                       </span>
                     </Link>
-                    <div className={`kipu-shell-pill${line ? "" : " kipu-shell-pill--empty"}`} aria-hidden={line ? undefined : true}>
-                      <span className="kipu-shell-pill__dot" />
-                      <span className="kipu-shell-pill__text" key={line ?? "empty"}>
-                        {line ? <PillText line={line} /> : "Sin novedades"}
-                      </span>
-                    </div>
+                    <Suspense
+                      fallback={
+                        <KipuLoading
+                          shape="linea"
+                          className="kipu-shell-pill-slot"
+                          label="tu ritmo"
+                        />
+                      }
+                    >
+                      <ShellPill
+                        later={payload.later}
+                        orb={orb}
+                        dawnFill={payload.dawn?.fillLabel ?? null}
+                        runwayLine={payload.runwayLine}
+                        liveState={liveState}
+                        receiptPill={receiptPill}
+                        pillIndex={pillIndex}
+                      />
+                    </Suspense>
                   </section>
                 );
               })}
@@ -490,38 +712,22 @@ export function SantuarioShell({
         )}
 
         <div className="kipu-shell-actions">
-          {movement ? (
-            dialogOpen && movement.turnId ? (
-              <button
-                key={liveMovement?.receiptKey ?? "persisted-movement"}
-                type="button"
-                className="kipu-shell-cinta"
-                aria-label={`Ir al recibo: ${movement.label}, ${movement.amountLabel}`}
-                onClick={() => chatRef.current?.scrollToTurn(movement.turnId as string)}
-              >
-                <span className="kipu-shell-cinta__time">{movement.timeLabel}</span>
-                <span className="kipu-shell-cinta__label">{movement.label}</span>
-                <span className="kipu-shell-cinta__amount">{movement.amountLabel}</span>
-              </button>
-            ) : (
-              <Link
-                key={liveMovement?.receiptKey ?? "persisted-movement"}
-                href={
-                  movement.turnId
-                    ? `/app/chat?turn=${encodeURIComponent(movement.turnId)}`
-                    : "/app/activity"
-                }
-                className="kipu-shell-cinta"
-                aria-label={`Último movimiento: ${movement.label}, ${movement.amountLabel}`}
-              >
-                <span className="kipu-shell-cinta__time">{movement.timeLabel}</span>
-                <span className="kipu-shell-cinta__label">{movement.label}</span>
-                <span className="kipu-shell-cinta__amount">{movement.amountLabel}</span>
-              </Link>
-            )
-          ) : (
-            <div className="kipu-shell-cinta kipu-shell-cinta--empty" aria-hidden="true" />
-          )}
+          <Suspense
+            fallback={
+              <KipuLoading
+                shape="linea"
+                className="kipu-shell-cinta-slot"
+                label="tu último movimiento"
+              />
+            }
+          >
+            <ShellCinta
+              later={payload.later}
+              liveMovement={liveMovement}
+              dialogOpen={dialogOpen}
+              onJump={(turnId) => chatRef.current?.scrollToTurn(turnId)}
+            />
+          </Suspense>
 
           {!dialogOpen && <div
             className="kipu-shell-dock-wrap"
@@ -624,7 +830,7 @@ export function SantuarioShell({
         </aside>
       )}
 
-      {perspectiveOpen && payload.perspective && (
+      {perspectiveOpen && (
         <div className="kipu-shell-sheet-backdrop" role="presentation" onMouseDown={() => setPerspectiveOpen(false)}>
           <section
             id="kipu-perspective-sheet"
@@ -673,10 +879,14 @@ export function SantuarioShell({
                 <Chevron direction="up" />
               </button>
             </div>
-            <PerspectiveSheet
-              perspective={payload.perspective}
-              onRetry={() => router.refresh()}
-            />
+            <Suspense
+              fallback={<KipuLoading shape="hoja" label="cómo vas" />}
+            >
+              <ShellPerspectiveBody
+                perspective={payload.perspective}
+                onRetry={() => router.refresh()}
+              />
+            </Suspense>
           </section>
         </div>
       )}
@@ -722,25 +932,23 @@ export function SantuarioShell({
           }}
         >
           <span className="kipu-dialog-sheet__grip" aria-hidden="true" />
-          {movement?.turnId && (
-            <button
-              type="button"
-              className="kipu-dialog-receipt-jump"
-              onClick={() => chatRef.current?.scrollToTurn(movement.turnId as string)}
-              aria-label={`Ir al recibo: ${movement.label}, ${movement.amountLabel}`}
-            >
-              <span>{movement.timeLabel}</span>
-              <strong>{movement.label}</strong>
-              <span>{movement.amountLabel}</span>
-            </button>
-          )}
+          {/* El salto al recibo espera a su tanda: no hay hueco reservado
+              porque hoy tampoco lo hay cuando no existe un recibo al que ir. */}
+          <Suspense fallback={null}>
+            <DialogReceiptJump
+              later={payload.later}
+              liveMovement={liveMovement}
+              onJump={(turnId) => chatRef.current?.scrollToTurn(turnId)}
+            />
+          </Suspense>
           <ChatView
             imperativeRef={chatRef}
             variant="sheet"
-            initialMessages={payload.thread.turns}
+            initialMessages={thread?.turns ?? []}
             firstName={payload.greetingName ?? ""}
-            threadComplete={payload.thread.complete}
-            threadReadFailed={payload.thread.readFailed}
+            threadComplete={thread?.complete ?? true}
+            threadReadFailed={thread?.readFailed ?? false}
+            threadPending={thread == null}
             draftValue={draft}
             onDraftValueChange={setDraft}
             onClose={() => {

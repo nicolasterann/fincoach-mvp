@@ -50,6 +50,31 @@ function pendingQuestion(item: ShellPendingOccurrence): string {
   }
 }
 
+/**
+ * N1 (ronda 2, O2) · Qué dibuja la cinta del último movimiento.
+ *
+ * Es CONDUCTA, no orden de texto: el gate la EJECUTA (N1-3) y el santuario sólo
+ * consume el resultado. Antes de esto, la promesa titular de N1 estaba sujeta
+ * por una comparación de posiciones en el fuente — y desactivar la rama con
+ * `if (false)` pasaba el gate mientras la pantalla dibujaba la cinta vacía
+ * prohibida.
+ *
+ * La regla que sujeta es la doctrina monetaria del proyecto: **«no pude leer» ≠
+ * «no hay nada»**. Una lectura caída se dibuja `sin-dato` —con su frase honesta
+ * y su `—`—, jamás como la cinta vacía, que afirmaría que no hubo movimientos.
+ * Y un movimiento vivo (el recibo recién escrito) gana siempre: si hay algo que
+ * mostrar, se muestra, aunque la lectura persistida se haya caído.
+ */
+export type ShellCintaState = "real" | "sin-dato" | "vacio";
+
+export function cintaState<T>(input: {
+  movement: T | null | undefined;
+  readFailed: boolean;
+}): ShellCintaState {
+  if (input.movement != null) return "real";
+  return input.readFailed ? "sin-dato" : "vacio";
+}
+
 /** Priority is data, not presentation: a failed pending read blocks every
  * lower rung so it can never masquerade as "there are no pending questions". */
 export function buildShellPillLines(input: {

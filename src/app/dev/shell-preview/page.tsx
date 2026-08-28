@@ -7,11 +7,13 @@ import type {
 } from "@/app/app/components/shell/LiveOrb";
 import type {
   OrbKind,
+  ShellLater,
   ShellOrb,
   ShellPayload,
 } from "@/app/app/components/shell/shell-payload";
 import { buildShellPerspective } from "@/app/app/components/shell/shell-perspective";
 import type { OrbVoiceState } from "@/app/app/components/shell/voice-capture-contract";
+import type { ThreadTurn } from "@/lib/chat-memory/thread-view-contract";
 import type { DatedSnapshot } from "@/lib/trends/snapshot-store";
 
 type Scenario =
@@ -26,7 +28,8 @@ type Scenario =
   | "capturando"
   | "escrito"
   | "cruce-de-capa"
-  | "patrimonio-negativo";
+  | "patrimonio-negativo"
+  | "movimiento-ilegible";
 
 type PerspectiveFixture =
   | "completo"
@@ -58,6 +61,7 @@ const SCENARIO_LABELS: Record<Scenario, string> = {
   escrito: "Escrito y verificado",
   "cruce-de-capa": "Cruce de capa",
   "patrimonio-negativo": "Patrimonio negativo",
+  "movimiento-ilegible": "Movimiento ilegible",
 };
 
 const STATE_ALIASES: Record<string, Scenario> = {
@@ -169,9 +173,17 @@ function perspectiveFor(fixture: PerspectiveFixture) {
   });
 }
 
-const basePayload: ShellPayload = {
-  status: "ok",
-  orbs: normalOrbs,
+// N1 · `?lento=<ms>` retrasa las tandas que llegan después, para poder VER en
+// un navegador el orden de aparición: el orbe y su cifra primero, y los huecos
+// de la píldora, la cinta y la perspectiva con los estados de N0 hasta que
+// llegan. El retraso es un ARNÉS, no una medición: la maqueta no mide nada y
+// por eso sus cabeceras siguen valiendo `null`.
+function delayed<T>(value: T, ms: number): Promise<T> {
+  if (ms <= 0) return Promise.resolve(value);
+  return new Promise((resolve) => setTimeout(() => resolve(value), ms));
+}
+
+const normalLater: ShellLater = {
   pillLine: "Diners · 50.60$ · 27 de agosto",
   pillLines: [
     "¿Cuánto cerró tu tarjeta el 25 de agosto?",
@@ -184,15 +196,68 @@ const basePayload: ShellPayload = {
     amountLabel: "−4.50$",
     turnId: null,
   },
+  lastMovementReadFailed: false,
+  serverTiming: null,
+};
+
+const emptyLater: ShellLater = {
+  pillLine: null,
+  pillLines: [],
+  lastMovement: null,
+  lastMovementReadFailed: false,
+  serverTiming: null,
+};
+
+const basePayload: ShellPayload = {
+  status: "ok",
+  orbs: normalOrbs,
   runwayLine: null,
   greetingName: "Nico",
   dawn: null,
-  thread: { turns: [], complete: true, readFailed: false },
-  perspective: perspectiveFor("completo"),
   // N0 — la maqueta NO midió ningún tramo de servidor, así que no inventa uno:
   // con `?metro=1` el overlay muestra `—` en cada casilla del servidor.
   serverTiming: null,
+  later: Promise.resolve(normalLater),
+  perspective: Promise.resolve({
+    perspective: perspectiveFor("completo"),
+    readFailed: false,
+    serverTiming: null,
+  }),
 };
+
+/** N1 · una conversación mínima para poder mirar la hoja sin sesión. */
+function previewThreadTurns(): ThreadTurn[] {
+  return [
+    {
+      id: "preview-turn-user",
+      role: "user",
+      author: "usuario",
+      channel: "web",
+      createdAtISO: "2026-08-28T14:19:00.000Z",
+      text: "Gasté 4.50 en un café",
+      status: null,
+      receipt: null,
+      attachment: null,
+    },
+    {
+      id: "preview-turn-kipu",
+      role: "assistant",
+      author: "agente",
+      channel: "web",
+      createdAtISO: "2026-08-28T14:20:00.000Z",
+      text: "Listo, lo anoté.",
+      status: "success",
+      receipt: {
+        lines: [
+          { label: "Café · Produbanco", amountLabel: "−4.50$", kindLabel: "Gasto" },
+        ],
+        saldoLabel: "82.40$",
+        incomplete: false,
+      },
+      attachment: null,
+    },
+  ];
+}
 
 const dayOneInvites: Record<OrbKind, string> = {
   saldo: "Vacío hasta mañana — vuelven 24$ al amanecer.",
@@ -205,20 +270,40 @@ const dayOneInvites: Record<OrbKind, string> = {
 function payloadFor(
   scenario: Scenario,
   perspectiveFixture: PerspectiveFixture,
+  slowMs = 0,
 ): ShellPayload {
-  const shellBase = {
+  const shellBase: ShellPayload = {
     ...basePayload,
-    perspective: perspectiveFor(perspectiveFixture),
+    later: delayed(normalLater, slowMs),
+    perspective: delayed(
+      {
+        perspective: perspectiveFor(perspectiveFixture),
+        readFailed: false,
+        serverTiming: null,
+      },
+      slowMs * 2,
+    ),
   };
   if (scenario === "niebla") {
     return {
       ...shellBase,
       status: "niebla",
       orbs: normalOrbs.map((orb) => ({ ...orb, amountLabel: null, amountRaw: null, level: null })),
-      pillLine: null,
-      pillLines: [],
-      lastMovement: null,
-      perspective: null,
+      later: delayed(emptyLater, slowMs),
+      perspective: delayed(
+        { perspective: null, readFailed: false, serverTiming: null },
+        slowMs * 2,
+      ),
+    };
+  }
+
+  if (scenario === "movimiento-ilegible") {
+    return {
+      ...shellBase,
+      later: delayed(
+        { ...normalLater, lastMovement: null, lastMovementReadFailed: true },
+        slowMs,
+      ),
     };
   }
 
@@ -233,9 +318,7 @@ function payloadFor(
         levelNote: null,
         emptyInvite: dayOneInvites[orb.kind],
       })),
-      pillLine: null,
-      pillLines: [],
-      lastMovement: null,
+      later: delayed(emptyLater, slowMs),
     };
   }
 
@@ -320,6 +403,8 @@ export default async function ShellPreviewPage({
     perf?: string;
     sheet?: string;
     perspective?: string;
+    lento?: string;
+    hilo?: string;
   }>;
 }) {
   if (process.env.NODE_ENV === "production") notFound();
@@ -330,7 +415,12 @@ export default async function ShellPreviewPage({
     perf,
     sheet,
     perspective: perspectiveQuery,
+    lento,
+    hilo,
   } = await searchParams;
+  // N1 · el arnés de las tandas. Acotado a 5 s para que nadie deje la maqueta
+  // colgada creyendo que se rompió.
+  const slowMs = Math.min(5_000, Math.max(0, Number(lento) || 0));
   const normalizedState = typeof state === "string" ? (STATE_ALIASES[state] ?? state) : "normal";
   const scenario: Scenario = Object.prototype.hasOwnProperty.call(SCENARIO_LABELS, normalizedState)
     ? (normalizedState as Scenario)
@@ -419,13 +509,20 @@ export default async function ShellPreviewPage({
       </details>
       <SantuarioShell
         key={`preview-${scenario}-${perspectiveFixture}-${perspectiveOpen ? "open" : "closed"}`}
-        payload={payloadFor(scenario, perspectiveFixture)}
+        payload={payloadFor(scenario, perspectiveFixture, slowMs)}
         preview={{
           forcedTier: tier,
           forcedState,
           forcedVoice: voice,
           showPerf,
           initialPerspectiveOpen: perspectiveOpen,
+          // N1 · sin sesión la acción del hilo responde «no pude leer», que es
+          // correcto pero poco útil para mirar la hoja. `?hilo=demo` siembra
+          // una conversación; `?hilo=cargando` la deja en camino a propósito.
+          thread:
+            hilo === "demo"
+              ? { turns: previewThreadTurns(), complete: true, readFailed: false }
+              : undefined,
         }}
       />
     </div>

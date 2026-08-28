@@ -657,6 +657,16 @@ body {
 
 .kipu-shell-actions { display: flex; width: 100%; flex: none; align-items: center; flex-direction: column; gap: 9px; padding: 0 15px; }
 
+/* N1 · El hueco de lo que todavía no llegó tiene la FORMA EXACTA del sitio que
+   va a ocupar: mismas medidas que la píldora y que la cinta, para que nada
+   salte cuando la tanda aterriza. La píldora mide 46 px porque el espaciador
+   de la capa viva (`--pill`) mide 46 px: si divergen, el orbe WebGL se
+   desalinea del estático. Son los estados de N0, no barras improvisadas. */
+.kipu-shell-pill-slot,
+.kipu-shell-cinta-slot { width: 100%; padding: var(--kipu-sp-2) var(--kipu-sp-3); }
+.kipu-shell-pill-slot { max-width: 300px; height: 46px; border-radius: 18px; }
+.kipu-shell-cinta-slot { min-height: 44px; border-radius: 15px; }
+
 .kipu-shell-cinta {
   display: grid;
   width: 100%;

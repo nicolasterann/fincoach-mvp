@@ -15,23 +15,47 @@ export { KIPU_UNMEASURED };
 // ── 1. El servidor ──────────────────────────────────────────────────────────
 
 /**
- * Un tramo por cada `await` de `buildShellPayload`, en su orden real. Los
- * nombres son tokens ASCII porque viajan en una cabecera HTTP.
+ * Un TRAMO por cada `await` medido de `buildShellPayload`. Los nombres son
+ * tokens ASCII porque usan la gramática de una cabecera HTTP.
+ *
+ * N1 · `hilo` YA NO ESTÁ, y su ausencia es la prueba de que el hilo salió de la
+ * pantalla de inicio: ya no hay un `await readThreadView` que medir aquí. El
+ * hilo se lee cuando se abre la conversación (`loadThreadAction`).
  */
-export const SHELL_TIMING_SEGMENTS = [
+export const SHELL_TIMING_TRAMOS = [
   "contexto",
   "cliente",
-  "preferencias",
-  "hilo",
   "briefing",
   "cotizaciones",
-  "historia",
+  "preferencias",
   "movimiento",
   "recibo",
-  "total",
+  "historia",
 ] as const;
 
+/**
+ * N1 · Los HITOS no son tramos: son «cuántos ms desde que arrancó el builder
+ * hasta que este grupo estuvo listo». El builder dejó de tener una sola línea
+ * de meta (`total`) y pasó a tener tres, porque ahora entrega en tres tandas:
+ * el orbe primero, la píldora y la cinta después, la perspectiva al final.
+ */
+export const SHELL_TIMING_MILESTONES = ["orbe", "pill", "perspectiva"] as const;
+
+export const SHELL_TIMING_SEGMENTS = [
+  ...SHELL_TIMING_TRAMOS,
+  ...SHELL_TIMING_MILESTONES,
+] as const;
+
+export type ShellTimingTramo = (typeof SHELL_TIMING_TRAMOS)[number];
+export type ShellTimingMilestone = (typeof SHELL_TIMING_MILESTONES)[number];
 export type ShellTimingSegment = (typeof SHELL_TIMING_SEGMENTS)[number];
+
+/** Qué tramos viajan con cada tanda. El orden es el de aparición en pantalla. */
+export const SHELL_TIMING_GROUPS = {
+  orbe: ["contexto", "cliente", "briefing", "cotizaciones"],
+  pill: ["preferencias", "movimiento", "recibo"],
+  perspectiva: ["historia"],
+} as const satisfies Record<ShellTimingMilestone, readonly ShellTimingTramo[]>;
 
 export interface ServerTimingMark {
   name: string;

@@ -22,8 +22,11 @@ export async function createSupabaseServerClient() {
             cookieStore.set(name, value, options);
           });
         } catch {
-          // This can be called from a Server Component.
-          // Middleware will refresh sessions when needed.
+          // Escribir cookies desde un Server Component está prohibido en Next,
+          // así que este write falla por diseño y el fallo es esperable. La
+          // renovación de sesión ocurre en `src/proxy.ts`, que sí puede
+          // escribirlas — y que EXISTE (antes este comentario prometía un
+          // middleware que nunca se escribió; N1, Causa B).
         }
       },
     },

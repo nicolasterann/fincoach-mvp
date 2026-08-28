@@ -14,6 +14,7 @@ import type {
   ThreadTurn,
   TurnStatus,
 } from "@/lib/chat-memory/thread-view-contract";
+import { KipuLoading, KipuNoData } from "./state";
 import {
   clearChatHistoryAction,
   sendChatMessageAndGetReply,
@@ -158,6 +159,11 @@ interface ChatViewProps {
   initialTurnId?: string;
   threadComplete: boolean;
   threadReadFailed: boolean;
+  /** N1 · el hilo viene EN CAMINO (se lee al abrir la conversación, ya no en la
+   * respuesta inicial de `/app`). Mientras es `true` no hay historial que
+   * mostrar todavía — y una conversación vacía afirmaría «no tienes mensajes»,
+   * que es justo lo que no sabemos. */
+  threadPending?: boolean;
   variant?: "route" | "sheet";
   onClose?: () => void;
   draftValue?: string;
@@ -174,6 +180,7 @@ export function ChatView({
   initialTurnId,
   threadComplete,
   threadReadFailed,
+  threadPending = false,
   variant = "route",
   onClose,
   draftValue,
@@ -182,7 +189,17 @@ export function ChatView({
   onCaptureStart,
   onDeliverySettled,
 }: ChatViewProps) {
-  const [messages, setMessages] = useState<ThreadTurn[]>(initialMessages);
+  // N1 · El historial puede llegar DESPUÉS de montar, porque el hilo ya no
+  // viaja en la respuesta inicial de `/app`. Por eso el estado local guarda
+  // SÓLO lo de esta sesión (la burbuja optimista, la respuesta) y lo que se
+  // pinta se DERIVA en cada render: historial + lo local que no esté ya en él.
+  // Así el hilo puede aterrizar en cualquier momento —antes o después de que el
+  // dock envíe— sin sincronizar dos copias ni perder un mensaje.
+  const [localTurns, setLocalTurns] = useState<ThreadTurn[]>([]);
+  const knownTurnIds = new Set(initialMessages.map((turn) => turn.id));
+  const messages: ThreadTurn[] = initialMessages.length
+    ? [...initialMessages, ...localTurns.filter((turn) => !knownTurnIds.has(turn.id))]
+    : localTurns;
   const [localInput, setLocalInput] = useState("");
   const input = draftValue ?? localInput;
   const setInput = useCallback(
@@ -206,6 +223,9 @@ export function ChatView({
   const turnRefs = useRef(new Map<string, HTMLDivElement>());
   const deepLinkHandled = useRef(false);
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
+  // N1 · el salto al recibo puede pedirse ANTES de que el hilo llegue (la cinta
+  // vive fuera de la hoja). Se guarda el destino y se salta en cuanto exista.
+  const pendingTurnId = useRef<string | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -260,7 +280,7 @@ export function ChatView({
       }
       const isAudio = file.type.toLowerCase().startsWith("audio/");
       const localId = `local-${Date.now()}`;
-      setMessages((prev) => [
+      setLocalTurns((prev) => [
         ...prev,
         localTurn({
           id: localId,
@@ -289,7 +309,7 @@ export function ChatView({
         settled = result;
         if (result.deliveryError) {
           if (isAudio) {
-            setMessages((prev) => prev.filter((turn) => turn.id !== localId));
+            setLocalTurns((prev) => prev.filter((turn) => turn.id !== localId));
           }
           setFileError(result.deliveryError.message);
           return result;
@@ -297,12 +317,12 @@ export function ChatView({
         const safeReply = visibleAssistantText(result.reply);
         if (result.status === "failed" || !safeReply) {
           if (isAudio) {
-            setMessages((prev) => prev.filter((turn) => turn.id !== localId));
+            setLocalTurns((prev) => prev.filter((turn) => turn.id !== localId));
           }
           setFileError("No llegó una respuesta visible. Puedes volver a adjuntarlo.");
           return result;
         }
-        setMessages((prev) => {
+        setLocalTurns((prev) => {
           const userTurn = result.userTurn;
           const durableUserTurns =
             isAudio && userTurn
@@ -325,7 +345,7 @@ export function ChatView({
         // authored conversation. A retryable evidence failure keeps the exact
         // server identity and never fabricates an assistant turn.
         if (isAudio) {
-          setMessages((prev) => prev.filter((turn) => turn.id !== localId));
+          setLocalTurns((prev) => prev.filter((turn) => turn.id !== localId));
         }
         setFileError("No se pudo procesar el archivo. Puedes volver a adjuntarlo.");
         return null;
@@ -346,7 +366,7 @@ export function ChatView({
     setInput("");
     setFailedDelivery(null);
     if (!retry) {
-      setMessages((prev) => [
+      setLocalTurns((prev) => [
         ...prev,
         localTurn({ id: `local-${Date.now()}`, role: "user", text: trimmed }),
       ]);
@@ -378,7 +398,7 @@ export function ChatView({
         });
         return;
       }
-      setMessages((prev) => [
+      setLocalTurns((prev) => [
         ...prev,
         result.turn ??
           localTurn({
@@ -404,6 +424,35 @@ export function ChatView({
     }
   }
 
+  function revealTurn(turnId: string): boolean {
+    const target = turnRefs.current.get(turnId);
+    if (!target) return false;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightedTurnId(turnId);
+    window.setTimeout(() => setHighlightedTurnId(null), 2200);
+    return true;
+  }
+
+  // N1 · si el turno pedido todavía no estaba, se salta a él cuando el hilo
+  // aterriza. Sin esto, el recibo de la cinta dejaría de saltar la primera vez
+  // que se abre la conversación — la promesa de M3/M4 sigue viva. El salto va
+  // dentro de un cuadro, igual que el enlace profundo de arriba: el destino
+  // todavía no está montado en el momento del efecto.
+  useEffect(() => {
+    if (!pendingTurnId.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const wanted = pendingTurnId.current;
+      if (!wanted) return;
+      const target = turnRefs.current.get(wanted);
+      if (!target) return;
+      pendingTurnId.current = null;
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHighlightedTurnId(wanted);
+      window.setTimeout(() => setHighlightedTurnId(null), 2200);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages.length]);
+
   useImperativeHandle(
     imperativeRef,
     () => ({
@@ -412,11 +461,7 @@ export function ChatView({
       openFilePicker: () => fileRef.current?.click(),
       focusComposer: () => inputRef.current?.focus(),
       scrollToTurn: (turnId) => {
-        const target = turnRefs.current.get(turnId);
-        if (!target) return;
-        target.scrollIntoView({ behavior: "smooth", block: "center" });
-        setHighlightedTurnId(turnId);
-        window.setTimeout(() => setHighlightedTurnId(null), 2200);
+        if (!revealTurn(turnId)) pendingTurnId.current = turnId;
       },
     }),
   );
@@ -513,18 +558,17 @@ export function ChatView({
       <div className="kipu-scroll flex-1 overflow-y-auto overscroll-contain">
         <div className="flex min-h-full flex-col justify-end space-y-3 py-2">
           {threadReadFailed ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-              <p className="text-sm font-semibold text-zinc-200">
-                No pude leer tu conversación ahora.
-              </p>
-              <button
-                className="rounded-full border border-line/10 px-4 py-2 text-xs font-semibold text-zinc-300 transition hover:bg-line/5"
-                onClick={() => window.location.reload()}
-                type="button"
-              >
-                Reintentar
-              </button>
-            </div>
+            /* N1 · el vocabulario de N0: «no pude leer» tiene su propia forma y
+               no se puede confundir con una conversación vacía. */
+            <KipuNoData
+              shape="hoja"
+              label="Tu conversación"
+              title="No pude leer tu conversación ahora."
+            />
+          ) : threadPending ? (
+            /* N1 · viene en camino: un esqueleto con la FORMA de la hoja, nunca
+               el estado vacío — que afirmaría «no tienes mensajes». */
+            <KipuLoading shape="hoja" label="tu conversación" />
           ) : isEmpty ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
               <span className="flex h-16 w-16 items-center justify-center rounded-3xl bg-emerald-400/15 text-2xl font-black text-emerald-300">
@@ -595,7 +639,7 @@ export function ChatView({
               </div>
               ))
           )}
-          {!threadReadFailed && !threadComplete && (
+          {!threadReadFailed && !threadPending && !threadComplete && (
             <p className="px-3 py-2 text-center text-xs text-zinc-600" role="status">
               Hay más historial del que puedo mostrar aquí.
             </p>
@@ -637,7 +681,7 @@ export function ChatView({
             </button>
           </div>
         )}
-        {isEmpty && !threadReadFailed && (
+        {isEmpty && !threadReadFailed && !threadPending && (
           <div className="mb-3 flex flex-wrap gap-2">
             {SUGGESTIONS.map((s) => (
               <button

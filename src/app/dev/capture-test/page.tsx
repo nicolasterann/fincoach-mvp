@@ -42,6 +42,7 @@ import {
 } from "@/lib/ai/agent/agent-action-guard";
 import { appendChatMessageWithStatusUsing } from "@/lib/chat-memory/chat-messages";
 import { buildChatResponse } from "@/lib/ai/chat-response-mapper";
+import { cintaState } from "@/app/app/components/shell/shell-dialog-contract";
 import {
   KIPU_STATE_KINDS,
   KIPU_STATE_SHAPES,
@@ -54,7 +55,10 @@ import {
   type KipuStateKind,
 } from "@/app/app/components/state/state-contract";
 import {
+  SHELL_TIMING_GROUPS,
+  SHELL_TIMING_MILESTONES,
   SHELL_TIMING_SEGMENTS,
+  SHELL_TIMING_TRAMOS,
   formatMetroValue,
   formatSegmentValue,
   formatServerTiming,
@@ -27614,17 +27618,36 @@ assert(
     `${process.cwd()}/src/app/app/components/shell/SantuarioShell.tsx`,
     "utf8",
   );
+  // N1 · RE-ANCLADO, sin aflojar. La comprobación anterior exigía que las cuatro
+  // superficies con cifra aparecieran DESPUÉS de `className="kipu-santuario"` en
+  // el TEXTO del archivo. N1 movió la píldora y la cinta a componentes propios
+  // (necesitan abrir una promesa con `use()`), que se declaran arriba — y el
+  // orden en el fuente dejó de decir nada. Ya lo había marcado el audit de N0
+  // como orden O2: orden de aparición no es contención.
+  //
+  // Se sujeta ahora por CONTENCIÓN REAL, que es lo que la promesa necesita: el
+  // módulo declara UN solo `<main className="kipu-santuario">`, las cuatro
+  // superficies con cifra viven en este módulo, y NADA escapa de ese árbol —
+  // sin portales, la única forma de que un nodo de React salga de su padre.
+  const n0MoneyHooks = [
+    "kipu-shell-amount",
+    "kipu-shell-cinta__amount",
+    "kipu-shell-pill",
+    "kipu-dialog-receipt-jump",
+  ];
   assert(
     "N0-3 · tabular-nums declarado en la raíz del santuario y todas sus cifras cuelgan de ella",
     n0SantuarioRoot.includes("font-variant-numeric: tabular-nums;") &&
       n0ShellSource.includes('<main\n      className="kipu-santuario"') &&
-      // las cuatro superficies con cifra viven DENTRO de ese <main>
-      ["kipu-shell-amount", "kipu-shell-cinta__amount", "kipu-shell-pill", "kipu-dialog-receipt-jump"].every(
-        (hook) =>
-          n0ShellSource.indexOf(hook) >
-          n0ShellSource.indexOf('className="kipu-santuario"'),
-      ),
-    JSON.stringify({ raiz: n0SantuarioRoot.includes("tabular-nums") }),
+      (n0ShellSource.match(/className="kipu-santuario"/gu) ?? []).length === 1 &&
+      n0MoneyHooks.every((hook) => n0ShellSource.includes(hook)) &&
+      // un portal sacaría una cifra fuera del <main> y le quitaría la herencia
+      !/createPortal/u.test(n0ShellSource),
+    JSON.stringify({
+      raiz: n0SantuarioRoot.includes("tabular-nums"),
+      raices: (n0ShellSource.match(/className="kipu-santuario"/gu) ?? []).length,
+      portales: /createPortal/u.test(n0ShellSource),
+    }),
   );
 
   // N0-4 · cinco estados, cuatro formas, UN módulo. Y /dev/sistema los muestra
@@ -27708,19 +27731,122 @@ assert(
     `${process.cwd()}/src/app/app/components/shell/shell-payload.ts`,
     "utf8",
   );
-  const n0PayloadBody =
-    n0PayloadSource.match(
-      /export async function buildShellPayload[\s\S]*?\n\}\n\n\/\*\*/u,
-    )?.[0] ?? "";
+  // N1 · el barrido pasa a mirar el MÓDULO entero, no sólo el cuerpo de
+  // `buildShellPayload`: las lecturas decorativas viven ahora en dos funciones
+  // propias (`readPrefsAndPending`, `readLastMovement`) porque arrancan en
+  // paralelo. Mirar sólo el cuerpo dejaría dos tramos sin vigilar.
+  // El barrido cubre TODO lo que construye la pantalla —el builder y sus dos
+  // lectores decorativos— y se corta antes de `readShellSaldoLevel`, que sirve
+  // al camino de ESCRITURA (la acción de captura) y no se instrumenta. Sin
+  // comentarios: una frase con la palabra `await` no es un await.
+  const n0SaldoLevelAt = n0PayloadSource.indexOf(
+    "export async function readShellSaldoLevel",
+  );
+  const n0PayloadRender =
+    n0SaldoLevelAt > 0
+      ? n0PayloadSource
+          .slice(0, n0SaldoLevelAt)
+          .replace(/\/\*[\s\S]*?\*\//gu, "")
+          .replace(/^[ \t]*\/\/.*$/gmu, "")
+      : "";
   const n0TimedSegments = [
-    ...n0PayloadBody.matchAll(/metro\.timed\(\s*"([a-z]+)"/gu),
+    ...n0PayloadRender.matchAll(/metro\s*\.\s*timed\(\s*"([a-z]+)"/gu),
+  ].map((match) => match[1]);
+  const n0Milestones = [
+    ...n0PayloadRender.matchAll(/metro\s*\.\s*milestone\("([a-z]+)"\)/gu),
   ].map((match) => match[1]);
   const n0UnwrappedAwaits = [
-    ...n0PayloadBody.matchAll(/\bawait\s+(?!metro\.timed\()(\S+)/gu),
-  ].map((match) => match[1]);
+    ...n0PayloadRender.matchAll(/\bawait\s+(?!metro\s*\.\s*timed\()(\S+)/gu),
+  ].map((match) => match[1].replace(/[;,]+$/u, ""));
+  // Los ÚNICOS awaits que pueden no ir envueltos, y por qué. Cualquier await
+  // nuevo que no esté en esta lista rompe la aserción POR NOMBRE — que es lo
+  // que sujeta «un tramo por cada await».
+  const n0AllowedBareAwaits = new Set([
+    "clientPromise", // ya medido como tramo `cliente`
+    "ratesPromise", // ya medido como tramo `cotizaciones`
+    "prefsPromise", // ya medido como tramo `preferencias`
+    "Promise.all([", // consume prefsPromise + movementPromise, ya medidos
+    "supabase", // la consulta interna DEL tramo `movimiento`
+    "run()", // el propio `timed`
+    "run();", // idem, con el punto y coma pegado
+  ]);
+  const n0BareAwaitsOutsideList = n0UnwrappedAwaits.filter(
+    (name) => !n0AllowedBareAwaits.has(name),
+  );
+
+  // ── N1 (ronda 2, O3) · el metro no puede dejar de cubrir el camino de render.
+  // Vigilar `await` no alcanza desde que N1 volvió el builder una arquitectura
+  // de promesas paralelas: **nacer sin `await` es la forma natural de agregar
+  // una lectura**, y una promesa así era invisible para el pin. Se cierran las
+  // dos puertas por las que puede entrar trabajo async sin medir:
+  //
+  //   1. `new Promise(` — una espera fabricada a mano, que no es de nadie.
+  //   2. Un elemento de `Promise.all([…])` que no sea una promesa YA medida.
+  //      Salvo que el `Promise.all` entero viva dentro de un `metro.timed(`,
+  //      en cuyo caso está medido por definición.
+  const n0MeasuredPromises = new Set([
+    "clientPromise",
+    "ratesPromise",
+    "prefsPromise",
+    "movementPromise",
+  ]);
+  // Emparejador de paréntesis/corchetes: el gate necesita saber qué está DENTRO
+  // de qué, y una expresión regular no sabe contar.
+  const n0CloseAt = (source: string, open: number, oc: string, cc: string): number => {
+    let depth = 0;
+    for (let i = open; i < source.length; i += 1) {
+      if (source[i] === oc) depth += 1;
+      else if (source[i] === cc) {
+        depth -= 1;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  };
+  const n0SplitTop = (text: string): string[] => {
+    const parts: string[] = [];
+    let depth = 0;
+    let current = "";
+    for (const c of text) {
+      if (c === "(" || c === "[" || c === "{") depth += 1;
+      else if (c === ")" || c === "]" || c === "}") depth -= 1;
+      if (c === "," && depth === 0) {
+        parts.push(current.trim());
+        current = "";
+        continue;
+      }
+      current += c;
+    }
+    parts.push(current.trim());
+    return parts.filter(Boolean);
+  };
+  const n0TimedSpans: [number, number][] = [];
+  for (const match of n0PayloadRender.matchAll(/metro\s*\.\s*timed\s*\(/gu)) {
+    const open = (match.index ?? 0) + match[0].length - 1;
+    const close = n0CloseAt(n0PayloadRender, open, "(", ")");
+    if (close > open) n0TimedSpans.push([open, close]);
+  }
+  const n0NewPromises = [
+    ...n0PayloadRender.matchAll(/new\s+Promise\s*\(/gu),
+  ].length;
+  const n0UnmeasuredInAll: string[] = [];
+  for (const match of n0PayloadRender.matchAll(/Promise\s*\.\s*all\s*\(\s*\[/gu)) {
+    const at = match.index ?? 0;
+    const measuredWhole = n0TimedSpans.some(([open, close]) => at > open && at < close);
+    if (measuredWhole) continue;
+    const bracket = n0PayloadRender.indexOf("[", at);
+    const end = n0CloseAt(n0PayloadRender, bracket, "[", "]");
+    if (end < 0) {
+      n0UnmeasuredInAll.push("Promise.all sin cierre legible");
+      continue;
+    }
+    for (const element of n0SplitTop(n0PayloadRender.slice(bracket + 1, end))) {
+      if (!n0MeasuredPromises.has(element)) n0UnmeasuredInAll.push(element);
+    }
+  }
   const n0Marks = [
     { name: "contexto", ms: 12.34 },
-    { name: "total", ms: 987.6 },
+    { name: "orbe", ms: 987.6 },
   ];
   const n0Header = formatServerTiming(n0Marks);
   const n0RoundTrip = parseServerTiming(n0Header);
@@ -27747,22 +27873,231 @@ assert(
       !metroRequested("0") &&
       segmentMs(n0RoundTrip, "contexto") === 12.3 &&
       segmentMs(n0RoundTrip, "no-existe") === null &&
-      n0Header === "contexto;dur=12.3, total;dur=987.6" &&
-      // cada tramo declarado se mide, y no hay un await suelto sin tramo
-      SHELL_TIMING_SEGMENTS.filter((name) => name !== "total").every((name) =>
-        n0TimedSegments.includes(name),
-      ) &&
-      n0TimedSegments.length === SHELL_TIMING_SEGMENTS.length - 1 &&
+      n0Header === "contexto;dur=12.3, orbe;dur=987.6" &&
+      // cada TRAMO declarado se mide exactamente una vez…
+      SHELL_TIMING_TRAMOS.every((name) => n0TimedSegments.includes(name)) &&
+      n0TimedSegments.length === SHELL_TIMING_TRAMOS.length &&
       new Set(n0TimedSegments).size === n0TimedSegments.length &&
-      n0UnwrappedAwaits.length === 1 &&
-      n0UnwrappedAwaits[0] === "supabase" &&
-      n0PayloadBody.includes("serverTiming: metro.header()") &&
-      n0PayloadSource.includes("fogPayload(greetingName, thread, metro.header())"),
+      // …cada HITO se sella exactamente una vez…
+      SHELL_TIMING_MILESTONES.every((name) => n0Milestones.includes(name)) &&
+      new Set(n0Milestones).size === SHELL_TIMING_MILESTONES.length &&
+      // …y no queda un solo await fuera de la lista declarada.
+      n0PayloadRender.length > 0 &&
+      n0BareAwaitsOutsideList.length === 0 &&
+      // O3 · y ninguna espera async puede entrar sin medir, llegue por await o no
+      n0TimedSpans.length === SHELL_TIMING_TRAMOS.length &&
+      n0NewPromises === 0 &&
+      n0UnmeasuredInAll.length === 0 &&
+      n0PayloadSource.includes('serverTiming: metro.milestone("orbe")'),
     JSON.stringify({
       tramos: n0TimedSegments,
-      awaitsSinTramo: n0UnwrappedAwaits,
+      hitos: n0Milestones,
+      awaitsFueraDeLista: n0BareAwaitsOutsideList,
+      esperasFabricadas: n0NewPromises,
+      enPromiseAllSinMedir: n0UnmeasuredInAll,
       cabecera: n0Header,
     }),
+  );
+
+  // ── Bloque N1 · Que abra ──────────────────────────────────────────────────
+  // Seis aserciones. Lo visual (orden de aparición en pantalla, la sesión
+  // vencida entrando sin error) se rinde en el reporte: este gate no compone
+  // cuadros ni tiene sesión.
+
+  // Los comentarios de estos archivos NOMBRAN a propósito lo que ya no hacen
+  // («aquí vivía `throw movementError`», «no toca supabase-admin»). Buscar la
+  // prohibición sobre el texto crudo daría un falso positivo eterno: se mira el
+  // código sin comentarios.
+  const n1Code = (source: string): string =>
+    source.replace(/\/\*[\s\S]*?\*\//gu, "").replace(/^[ \t]*\/\/.*$/gmu, "");
+  // N1 (ronda 2, O1) · `indexOf` devuelve −1 cuando la aguja NO existe, y −1 es
+  // menor que cualquier posición: una comparación de orden a secas **la satisface
+  // la ausencia**. Borrar lo probado pasaba el gate. Aquí la presencia de las dos
+  // agujas se exige ANTES de comparar — la convención que el archivo ya usaba en
+  // IR98, IR94, IR100, IR81 y M9-1, aplicada también a los pines de N1.
+  const n1Antes = (source: string, first: string, second: string): boolean =>
+    source.includes(first) &&
+    source.includes(second) &&
+    source.indexOf(first) < source.indexOf(second);
+  const n1ThreadAction = readFileSync(
+    `${process.cwd()}/src/app/app/thread-actions.ts`,
+    "utf8",
+  );
+  const n1ChatView = readFileSync(
+    `${process.cwd()}/src/app/app/components/ChatView.tsx`,
+    "utf8",
+  );
+  // El guard de privacidad del hilo, con su efecto dentro: si no se puede leer
+  // `chat_cleared_at`, se devuelve «no pude leer» — nunca el hilo entero, que
+  // mostraría mensajes que el usuario mandó ocultar. Tolerante al formato,
+  // intolerante a que lo vacíen.
+  const n1CutoffGuardAt = n1ThreadAction.search(
+    /if\s*\(\s*prefsError\s*\)\s*\{?\s*return\s*\{[^}]*readFailed:\s*true[^}]*\}/u,
+  );
+
+  // N1-1 · El hilo NO viaja en la respuesta inicial de /app. No se afirma: se
+  // ata por forma en las tres puntas — el builder ya no sabe leerlo, el payload
+  // ya no tiene dónde traerlo, y el metro ya no tiene un tramo `hilo` que medir
+  // (esa ausencia ES la señal de que salió; ver N0_AUDIT §5 AUD-M3).
+  assert(
+    "N1-1 · el hilo sale de la pantalla de inicio: ni lectura, ni campo, ni tramo",
+    !n0PayloadSource.includes("readThreadView") &&
+      !/^\s*thread:/mu.test(n0PayloadSource) &&
+      !(SHELL_TIMING_SEGMENTS as readonly string[]).includes("hilo") &&
+      !n0PayloadRender.includes('"hilo"') &&
+      // y existe la única puerta nueva, que el santuario abre al abrir la hoja
+      n1ThreadAction.includes('"use server"') &&
+      n1ThreadAction.includes("export async function loadThreadAction") &&
+      n0ShellSource.includes("loadThreadAction") &&
+      n0ShellSource.includes("ensureThread()"),
+    JSON.stringify({
+      tramos: SHELL_TIMING_SEGMENTS,
+      leeHilo: n0PayloadSource.includes("readThreadView"),
+    }),
+  );
+
+  // N1-2 · `chat_cleared_at` sigue ocultando sin borrar por el camino nuevo —
+  // la promesa de M4 no se pierde al mudar de sitio. Y si el punto de corte NO
+  // se puede leer, NO se lee el hilo entero: mostraría mensajes que el usuario
+  // mandó ocultar.
+  assert(
+    "N1-2 · el punto de corte del hilo viaja con él: chat_cleared_at gobierna el camino nuevo",
+    n1ThreadAction.includes('.select("chat_cleared_at")') &&
+      n1ThreadAction.includes("since: (prefs?.chat_cleared_at as string | null) ?? null") &&
+      // El guard se pin­cha por su EFECTO, no por su apertura: `if (prefsError)`
+      // a secas se puede vaciar y seguir estando. Esto exige el `return` con
+      // `readFailed: true` dentro, y que ocurra ANTES de leer el hilo.
+      n1CutoffGuardAt >= 0 &&
+      n1ThreadAction.includes("readThreadView({") &&
+      n1CutoffGuardAt < n1ThreadAction.indexOf("readThreadView({"),
+    JSON.stringify({
+      leeCorte: n1ThreadAction.includes("chat_cleared_at"),
+      guardConEfecto: n1CutoffGuardAt >= 0,
+    }),
+  );
+
+  // N1-3 · Ninguna lectura decorativa es fatal. Aquí vivía
+  // `if (movementError) throw movementError`: un fallo leyendo el ÚLTIMO
+  // MOVIMIENTO —un dato decorativo— tumbaba el santuario entero. Ahora degrada
+  // y lo DICE: `sin-dato`, jamás una cinta vacía y jamás un cero.
+  assert(
+    "N1-3 · el último movimiento ilegible degrada y se dice; no tumba la pantalla ni finge una cinta vacía",
+    !n1Code(n0PayloadSource).includes("throw movementError") &&
+      n0PayloadSource.includes("return { row: null, turnId: null, readFailed: true }") &&
+      n0PayloadSource.includes("lastMovementReadFailed") &&
+      // N1 (ronda 2, O2) · la promesa se sujeta por CONDUCTA, ejecutando la
+      // función pura — no por el orden de dos cadenas en el fuente. Una lectura
+      // caída se dibuja `sin-dato`; la cinta vacía queda SÓLO para el cero
+      // medido; y un movimiento vivo gana aunque la lectura persistida falle.
+      cintaState({ movement: null, readFailed: true }) === "sin-dato" &&
+      cintaState({ movement: null, readFailed: false }) === "vacio" &&
+      cintaState({ movement: { turnId: null }, readFailed: false }) === "real" &&
+      cintaState({ movement: { turnId: null }, readFailed: true }) === "real" &&
+      cintaState({ movement: undefined, readFailed: true }) === "sin-dato" &&
+      // y el santuario CONSUME esa conducta: despacha por su resultado, y el
+      // despacho de `sin-dato` va antes de la cinta vacía
+      n1Antes(
+        n0ShellSource,
+        'cinta === "sin-dato"',
+        "kipu-shell-cinta--empty",
+      ) &&
+      n0ShellSource.includes("cintaState({") &&
+      n0ShellSource.includes("readFailed: resolved.lastMovementReadFailed") &&
+      n0ShellSource.includes('<KipuNoData\n        shape="linea"') &&
+      // y el estado que la dibuja tiene prohibido pintar un cero
+      stateMayRenderZero("sin-dato") === false,
+    JSON.stringify({
+      sigueTirando: n1Code(n0PayloadSource).includes("throw movementError"),
+      conducta: [
+        cintaState({ movement: null, readFailed: true }),
+        cintaState({ movement: null, readFailed: false }),
+        cintaState({ movement: { turnId: null }, readFailed: false }),
+      ],
+      despachaSinDato: n0ShellSource.includes('cinta === "sin-dato"'),
+      ceroProhibido: !stateMayRenderZero("sin-dato"),
+    }),
+  );
+
+  // N1-4 · El orbe no espera a nadie. El camino crítico es exactamente el grupo
+  // `orbe`; todo lo demás sale como PROMESA y su hueco tiene la forma de N0.
+  const n1Deferred = ["later", "perspective"];
+  assert(
+    "N1-4 · lo que no es el orbe se promete; los huecos son los estados de N0, no barras improvisadas",
+    n1Deferred.every((name) =>
+      new RegExp(`${name}: Promise<`, "u").test(n0PayloadSource),
+    ) &&
+      SHELL_TIMING_GROUPS.orbe.length === 4 &&
+      (SHELL_TIMING_GROUPS.orbe as readonly string[]).every((name) =>
+        (SHELL_TIMING_TRAMOS as readonly string[]).includes(name),
+      ) &&
+      // el hueco de la píldora es KipuLoading en forma línea, con el tamaño
+      // exacto del sitio que va a ocupar
+      n0ShellSource.includes('className="kipu-shell-pill-slot"') &&
+      n0ShellSource.includes('className="kipu-shell-cinta-slot"') &&
+      n0Css.includes(".kipu-shell-pill-slot { max-width: 300px; height: 46px;") &&
+      (n0ShellSource.match(/<Suspense/gu) ?? []).length >= 4 &&
+      (n0ShellSource.match(/\buse\(/gu) ?? []).length >= 4 &&
+      // y la hoja de conversación tiene su propio estado mientras el hilo viene
+      n1ChatView.includes("threadPending") &&
+      n1ChatView.includes('<KipuLoading shape="hoja"'),
+    JSON.stringify({
+      grupoOrbe: SHELL_TIMING_GROUPS.orbe,
+      fronteras: (n0ShellSource.match(/<Suspense/gu) ?? []).length,
+    }),
+  );
+
+  // N1-5 · El archivo de sesión existe, se llama como Next 16 lo llama, y NO
+  // decide autorización. Escribirlo `middleware.ts` produciría un archivo que
+  // no corre — el mismo defecto que vino a arreglar.
+  const n1ProxyPath = `${process.cwd()}/src/proxy.ts`;
+  const n1Proxy = existsSync(n1ProxyPath) ? readFileSync(n1ProxyPath, "utf8") : "";
+  const n1SupabaseServer = readFileSync(
+    `${process.cwd()}/src/lib/supabase-server.ts`,
+    "utf8",
+  );
+  assert(
+    "N1-5 · src/proxy.ts renueva la sesión y sólo eso; el comentario ya no nombra un archivo inexistente",
+    n1Proxy.length > 0 &&
+      // el nombre viejo de la convención NO puede existir en paralelo
+      !existsSync(`${process.cwd()}/src/middleware.ts`) &&
+      !existsSync(`${process.cwd()}/middleware.ts`) &&
+      n1Proxy.includes("export async function proxy(request: NextRequest)") &&
+      n1Proxy.includes("supabase.auth.getSession()") &&
+      n1Proxy.includes("export const config") &&
+      n1Proxy.includes("matcher") &&
+      // acotado: nada de /api (crons y el webhook de Telegram viven ahí)
+      /matcher[\s\S]*\(\?!api\|/u.test(n1Proxy) &&
+      // frontera de seguridad: ni service-role, ni redirecciones, ni RLS
+      !n1Code(n1Proxy).includes("supabase-admin") &&
+      !n1Code(n1Proxy).includes("SERVICE_ROLE") &&
+      !n1Code(n1Proxy).includes("redirect(") &&
+      // el comentario que nació mintiendo ahora dice la verdad
+      !n1SupabaseServer.includes("Middleware will refresh sessions when needed") &&
+      n1SupabaseServer.includes("src/proxy.ts") &&
+      // y el guard de login de /app sigue intacto donde estaba
+      m9PageSource.includes('redirect("/login")'),
+    JSON.stringify({
+      existe: n1Proxy.length > 0,
+      comentarioViejo: n1SupabaseServer.includes("Middleware will refresh"),
+    }),
+  );
+
+  // N1-6 · Las funciones corren junto a la base. La base vive en `us-east-2`
+  // (Ohio) y la región de Vercel que le corresponde es `cle1` (Cleveland). Sin
+  // esto las funciones caen en el default `iad1` (Virginia) y cada lectura paga
+  // un viaje de ida y vuelta de más — y `contexto` y `briefing` hacen muchas.
+  const n1Vercel = JSON.parse(
+    readFileSync(`${process.cwd()}/vercel.json`, "utf8"),
+  ) as { regions?: unknown; crons?: unknown[] };
+  assert(
+    "N1-6 · vercel.json fija la región de las funciones junto a la base (us-east-2 ⇒ cle1)",
+    Array.isArray(n1Vercel.regions) &&
+      n1Vercel.regions.length === 1 &&
+      n1Vercel.regions[0] === "cle1" &&
+      // y no se llevó por delante los crons
+      Array.isArray(n1Vercel.crons) &&
+      n1Vercel.crons.length === 5,
+    JSON.stringify({ regions: n1Vercel.regions }),
   );
 
   return checks;

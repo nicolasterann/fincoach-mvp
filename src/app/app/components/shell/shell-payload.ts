@@ -12,18 +12,19 @@ import { formatDateEs } from "@/lib/format/dates-es";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { loadCurrentFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { convert } from "@/lib/fx/fx-rates";
+import { findThreadTurnForTransaction } from "@/lib/chat-memory/thread-view";
 import {
-  findThreadTurnForTransaction,
-  readThreadView,
-} from "@/lib/chat-memory/thread-view";
-import type { ThreadView } from "@/lib/chat-memory/thread-view-contract";
-import { readOpenOccurrences } from "@/lib/financial/recurring-occurrences-store";
+  readOpenOccurrences,
+  type OpenOccurrencesRead,
+} from "@/lib/financial/recurring-occurrences-store";
 import { loadSnapshotSeriesRead } from "@/lib/trends/snapshot-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import {
+  SHELL_TIMING_GROUPS,
   formatServerTiming,
   type ServerTimingMark,
-  type ShellTimingSegment,
+  type ShellTimingMilestone,
+  type ShellTimingTramo,
 } from "@/lib/metro/metro-contract";
 import { describeMovement } from "../app-dashboard-helpers";
 import { buildShellPillLines } from "./shell-dialog-contract";
@@ -51,26 +52,47 @@ export interface ShellDawn {
   dayKey: string;
 }
 
+export interface ShellMovement {
+  timeLabel: string;
+  label: string;
+  amountLabel: string;
+  turnId: string | null;
+}
+
+/** N1 · La segunda tanda: la píldora y la cinta. Llega cuando llega; el orbe
+ * nunca la espera. */
+export interface ShellLater {
+  pillLine: string | null;
+  pillLines: string[];
+  lastMovement: ShellMovement | null;
+  /** «No pude leer» ≠ «no hay nada»: con esto en `true` la cinta se dibuja como
+   * `sin-dato`, jamás como una cinta vacía y jamás como un cero. */
+  lastMovementReadFailed: boolean;
+  serverTiming: string | null;
+}
+
+/** N1 · La tercera tanda: la perspectiva. */
+export interface ShellPerspectiveLater {
+  perspective: ShellPerspective | null;
+  readFailed: boolean;
+  serverTiming: string | null;
+}
+
 export interface ShellPayload {
   status: ShellStatus;
   orbs: ShellOrb[];
-  pillLine: string | null;
-  pillLines: string[];
-  lastMovement: {
-    timeLabel: string;
-    label: string;
-    amountLabel: string;
-    turnId: string | null;
-  } | null;
   runwayLine: string | null;
   greetingName: string | null;
   dawn: ShellDawn | null;
-  thread: ThreadView;
-  perspective: ShellPerspective | null;
-  /** N0 · el metro. La cabecera `Server-Timing` ya formateada: un tramo por
-   * `await` de este builder. Es MEDICIÓN, no dato financiero: nadie decide
-   * nada con ella y su ausencia se lee `—`, jamás `0`. */
+  /** N0 · el metro. La cabecera `Server-Timing` ya formateada. Es MEDICIÓN, no
+   * dato financiero: nadie decide nada con ella y su ausencia se lee `—`,
+   * jamás `0`. Aquí viajan sólo los tramos del CAMINO CRÍTICO DEL ORBE. */
   serverTiming: string | null;
+  /** N1 · promesas, no valores: el servidor devuelve el orbe en cuanto lo tiene
+   * y transmite el resto cuando esté. El cliente las abre con `use()` dentro de
+   * una frontera `<Suspense>`; ninguna de las dos puede rechazar. */
+  later: Promise<ShellLater>;
+  perspective: Promise<ShellPerspectiveLater>;
 }
 
 interface RecentMovementRow {
@@ -102,11 +124,14 @@ function clampLevel(value: number): number {
 // (el `finally` registra igual, así que un tramo que falla también se mide).
 // Las marcas viven en un array LOCAL de la invocación: no hay estado de
 // módulo, así que ninguna medición puede cruzarse entre peticiones.
+type ShellTimer = ReturnType<typeof shellTimer>;
+type ShellClient = Awaited<ReturnType<typeof createSupabaseServerClient>>;
+
 function shellTimer() {
   const startedAt = performance.now();
   const marks: ServerTimingMark[] = [];
   return {
-    async timed<T>(name: ShellTimingSegment, run: () => Promise<T>): Promise<T> {
+    async timed<T>(name: ShellTimingTramo, run: () => Promise<T>): Promise<T> {
       const from = performance.now();
       try {
         return await run();
@@ -114,18 +139,112 @@ function shellTimer() {
         marks.push({ name, ms: performance.now() - from });
       }
     },
-    header(): string {
+    /** N1 · la cabecera de UNA tanda: sus tramos más el hito, que dice cuántos
+     * ms pasaron desde que arrancó el builder hasta que la tanda estuvo lista.
+     * Los tramos se filtran por nombre porque varios corren EN PARALELO: un
+     * grupo no puede llevarse la medición de otro. */
+    milestone(name: ShellTimingMilestone): string {
+      const belongs = new Set<string>(SHELL_TIMING_GROUPS[name]);
       return formatServerTiming([
-        ...marks,
-        { name: "total", ms: performance.now() - startedAt },
+        ...marks.filter((mark) => belongs.has(mark.name)),
+        { name, ms: performance.now() - startedAt },
       ]);
     },
   };
 }
 
+
+// ── N1 · Las lecturas DECORATIVAS ─────────────────────────────────────────────
+//
+// Una lectura es FATAL cuando, si falta, una cifra mentiría. Todo lo demás es
+// decorativo y DEGRADA: se dice que no se pudo leer y la pantalla se dibuja
+// entera. Antes de N1 `shell-payload.ts` hacía lo contrario en el peor sitio —
+// `if (movementError) throw movementError` tumbaba el santuario completo por
+// fallar la lectura del ÚLTIMO MOVIMIENTO, un dato decorativo.
+//
+// La regla que no se relaja: degradar nunca puede inventar un número. Estas dos
+// funciones jamás rechazan y jamás devuelven un cero para tapar un hueco.
+
+interface PrefsRead {
+  prefs: { emergency_reserve_target?: unknown } | null;
+  prefsError: boolean;
+  pendingRead: OpenOccurrencesRead;
+}
+
+async function readPrefsAndPending(
+  metro: ShellTimer,
+  clientPromise: Promise<ShellClient>,
+  userId: string,
+): Promise<PrefsRead> {
+  try {
+    const supabase = await clientPromise;
+    const [{ data: prefs, error: prefsError }, pendingRead] = await metro.timed(
+      "preferencias",
+      () =>
+        Promise.all([
+          supabase
+            .from("user_financial_preferences")
+            .select("emergency_reserve_target")
+            .eq("user_id", userId)
+            .maybeSingle(),
+          readOpenOccurrences(userId),
+        ]),
+    );
+    return { prefs, prefsError: Boolean(prefsError), pendingRead };
+  } catch {
+    return { prefs: null, prefsError: true, pendingRead: { ok: false, complete: false } };
+  }
+}
+
+interface MovementRead {
+  row: RecentMovementRow | null;
+  turnId: string | null;
+  /** `true` = NO se pudo leer. Distinto de `row === null`, que es «no hay». */
+  readFailed: boolean;
+}
+
+async function readLastMovement(
+  metro: ShellTimer,
+  clientPromise: Promise<ShellClient>,
+  userId: string,
+  now: Date,
+): Promise<MovementRead> {
+  try {
+    const supabase = await clientPromise;
+    const since = new Date(now.getTime() - 30 * 86_400_000).toISOString();
+    const { data: recentRows, error: movementError } = await metro.timed(
+      "movimiento",
+      async () =>
+        await supabase
+          .from("transactions")
+          .select("id, description, category, base_amount, base_currency, type, occurred_at, debt_account_id, goal_id")
+          .eq("user_id", userId)
+          .gte("occurred_at", since)
+          .order("occurred_at", { ascending: false })
+          .limit(1),
+    );
+    // N1 · aquí vivía `throw movementError`.
+    if (movementError) return { row: null, turnId: null, readFailed: true };
+    const row = ((recentRows ?? []) as RecentMovementRow[])[0] ?? null;
+    if (!row) return { row: null, turnId: null, readFailed: false };
+    const turnId = await metro.timed("recibo", () =>
+      findThreadTurnForTransaction({
+        client: supabase,
+        userId,
+        transactionId: row.id,
+      }).catch(() => null),
+    );
+    return { row, turnId, readFailed: false };
+  } catch {
+    return { row: null, turnId: null, readFailed: true };
+  }
+}
+
+/** Niebla: el motor no pudo afirmar el saldo. Las dos tandas se resuelven
+ * vacías al instante — el santuario ya dice «no puedo leer tu saldo ahora» y
+ * ninguna de las dos puede quedarse colgada esperando lo que no va a venir. */
 function fogPayload(
   greetingName: string | null,
-  thread: ThreadView,
   serverTiming: string | null,
 ): ShellPayload {
   const kinds: OrbKind[] = ["saldo", "reserva", "metas", "patrimonio", "deuda"];
@@ -140,15 +259,22 @@ function fogPayload(
       levelNote: null,
       emptyInvite: null,
     })),
-    pillLine: null,
-    pillLines: [],
-    lastMovement: null,
     runwayLine: null,
     greetingName,
     dawn: null,
-    thread,
-    perspective: null,
     serverTiming,
+    later: Promise.resolve({
+      pillLine: null,
+      pillLines: [],
+      lastMovement: null,
+      lastMovementReadFailed: false,
+      serverTiming: null,
+    }),
+    perspective: Promise.resolve({
+      perspective: null,
+      readFailed: false,
+      serverTiming: null,
+    }),
   };
 }
 
@@ -165,6 +291,24 @@ function movementTime(iso: string, timezone?: string): string {
 
 export async function buildShellPayload(userId: string): Promise<ShellPayload> {
   const metro = shellTimer();
+  const now = new Date();
+
+  // N1 · Lo que el ORBE necesita es `contexto` + `briefing` + `cotizaciones`.
+  // Todo lo demás arranca AHORA, en paralelo, y se entrega cuando esté: nada de
+  // esto puede volver a retrasar la cifra. Cada promesa atrapa su propio fallo,
+  // así que ninguna puede quedar sin manejar cuando el `redirect` de más abajo
+  // interrumpe el camino principal.
+  const clientPromise = metro.timed("cliente", () => createSupabaseServerClient());
+  const ratesPromise = metro
+    .timed("cotizaciones", () => loadCurrentFxRatesForDisplay(userId))
+    // Sin tasas, `display` cae a la moneda base — que es la verdad de la fila,
+    // no un número inventado. El `.catch` cumple además un papel de higiene: si
+    // el `redirect` de abajo corta el camino, esta promesa ya está atendida y no
+    // queda un rechazo suelto.
+    .catch(() => []);
+  const prefsPromise = readPrefsAndPending(metro, clientPromise, userId);
+  const movementPromise = readLastMovement(metro, clientPromise, userId, now);
+
   const ctx = await metro.timed("contexto", () =>
     buildUserFinancialContext(userId),
   );
@@ -173,31 +317,6 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
   }
 
   const greetingName = ctx.profile.fullName?.split(" ")[0] || null;
-  const now = new Date();
-  const supabase = await metro.timed("cliente", () =>
-    createSupabaseServerClient(),
-  );
-  const [{ data: prefs, error: prefsError }, pendingRead] = await metro.timed(
-    "preferencias",
-    () =>
-      Promise.all([
-        supabase
-          .from("user_financial_preferences")
-          .select("chat_cleared_at, emergency_reserve_target")
-          .eq("user_id", userId)
-          .maybeSingle(),
-        readOpenOccurrences(userId),
-      ]),
-  );
-  const thread = prefsError
-    ? { turns: [], complete: false, readFailed: true }
-    : await metro.timed("hilo", () =>
-        readThreadView({
-          client: supabase,
-          userId,
-          since: (prefs?.chat_cleared_at as string | null) ?? null,
-        }),
-      );
   const snapshot = deriveAdvisorySnapshot(ctx);
   let briefing: CoachingBriefing;
   try {
@@ -211,14 +330,12 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
     );
   } catch (error) {
     if (error instanceof KipuSaldoUnavailableError) {
-      return fogPayload(greetingName, thread, metro.header());
+      return fogPayload(greetingName, metro.milestone("orbe"));
     }
     throw error;
   }
 
-  const rates = await metro.timed("cotizaciones", () =>
-    loadCurrentFxRatesForDisplay(userId),
-  );
+  const rates = await ratesPromise;
   const display = makeDisplayFormatter(
     ctx.profile.baseCurrency,
     ctx.profile.displayCurrency,
@@ -252,108 +369,92 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
   // M6 — one bounded history read after the briefing has archived today's
   // snapshot. Its typed result keeps an outage distinct from a new user with
   // fewer than two recorded days.
-  const snapshotRead = await metro.timed("historia", () =>
-    loadSnapshotSeriesRead(userId, 18, now.getTime()),
-  );
+  // N1 — sigue corriendo DESPUÉS del briefing por esa misma razón, pero ya no
+  // antes del primer píxel: esta tanda se promete y llega la última.
   const primaryGoal = briefing.goalsIntel.portfolio.primary;
-  const perspective = buildShellPerspective({
-    today: {
-      spent: saldo.todaySpent,
-      fill: saldo.todayFill,
-      objectives: briefing.objectives.states.map((objective) => ({
-        category: objective.category,
-        label: objective.labelEs,
-        spent: objective.spentMTD,
-        objective: objective.objectiveBase,
-        crossed: objective.crossed,
-        projectedCrossDateISO: objective.projectedCrossDateISO,
-      })),
-    },
-    month: {
-      income: briefing.margenKipu.capacity.monthlyIncome,
-      fixed: briefing.margenKipu.capacity.monthlyFixed,
-      debt: briefing.margenKipu.capacity.monthlyDebtService,
-      installments: briefing.margenKipu.capacity.monthlyInstallments,
-      essentials: briefing.margenKipu.capacity.monthlyEssentials,
-      savings: briefing.margenKipu.capacity.monthlyProtected.savings,
-      investment: briefing.margenKipu.capacity.monthlyProtected.investment,
-      goals: briefing.margenKipu.capacity.monthlyProtected.goals,
-      free: briefing.margenKipu.capacity.monthlyTrulyFree,
-    },
-    history: {
-      ok: snapshotRead.ok,
-      snapshots: snapshotRead.snapshots,
-      todayISO: makeDayKey(ctx.profile.timezone)(now),
-    },
-    progress: {
-      primaryGoal: primaryGoal
-        ? {
-            name: primaryGoal.goal.name,
-            current: primaryGoal.goal.currentAmount,
-            target: primaryGoal.goal.targetAmount,
-            percent:
-              primaryGoal.goal.targetAmount > 0
-                ? primaryGoal.progressPct
-                : null,
-          }
-        : null,
-      reserve: {
-        readOk: !prefsError,
-        amount: saldo.reserva,
-        target:
-          prefsError || prefs?.emergency_reserve_target == null
-            ? null
-            : Number(prefs.emergency_reserve_target),
+  const perspectivePromise: Promise<ShellPerspectiveLater> = (async () => {
+    const { prefs, prefsError } = await prefsPromise;
+    const snapshotRead = await metro.timed("historia", () =>
+      loadSnapshotSeriesRead(userId, 18, now.getTime()),
+    );
+    const perspective = buildShellPerspective({
+      today: {
+        spent: saldo.todaySpent,
+        fill: saldo.todayFill,
+        objectives: briefing.objectives.states.map((objective) => ({
+          category: objective.category,
+          label: objective.labelEs,
+          spent: objective.spentMTD,
+          objective: objective.objectiveBase,
+          crossed: objective.crossed,
+          projectedCrossDateISO: objective.projectedCrossDateISO,
+        })),
       },
-      debt: { amount: debtAmount },
-      wealth: {
-        readOk: briefing.goalsIntel.wealthAvailable,
-        amount: patrimonioAmount,
+      month: {
+        income: briefing.margenKipu.capacity.monthlyIncome,
+        fixed: briefing.margenKipu.capacity.monthlyFixed,
+        debt: briefing.margenKipu.capacity.monthlyDebtService,
+        installments: briefing.margenKipu.capacity.monthlyInstallments,
+        essentials: briefing.margenKipu.capacity.monthlyEssentials,
+        savings: briefing.margenKipu.capacity.monthlyProtected.savings,
+        investment: briefing.margenKipu.capacity.monthlyProtected.investment,
+        goals: briefing.margenKipu.capacity.monthlyProtected.goals,
+        free: briefing.margenKipu.capacity.monthlyTrulyFree,
       },
-    },
-    upcoming: {
-      cards: briefing.cardsDueSoon.map((card) => ({
-        name: card.name,
-        inDays: card.inDays,
-        balance: card.balance,
-        due: card.due,
-      })),
-      payments: briefing.upcomingPayments,
-    },
-    formatMoney: display,
-  });
-
-  const since = new Date(now.getTime() - 30 * 86_400_000).toISOString();
-  const { data: recentRows, error: movementError } = await metro.timed(
-    "movimiento",
-    async () =>
-      await supabase
-        .from("transactions")
-        .select("id, description, category, base_amount, base_currency, type, occurred_at, debt_account_id, goal_id")
-        .eq("user_id", userId)
-        .gte("occurred_at", since)
-        .order("occurred_at", { ascending: false })
-        .limit(1),
-  );
-  if (movementError) throw movementError;
-
-  const recent = ((recentRows ?? []) as RecentMovementRow[])[0] ?? null;
-  const movementView = recent
-    ? describeMovement(recent, {
-        displayCurrency: ctx.profile.displayCurrency,
-        rates,
-      })
-    : null;
-  const movementSign = movementView?.tone === "out" ? "−" : movementView?.tone === "in" ? "+" : "";
-  const movementTurnId = recent
-    ? await metro.timed("recibo", () =>
-        findThreadTurnForTransaction({
-          client: supabase,
-          userId,
-          transactionId: recent.id,
-        }),
-      )
-    : null;
+      history: {
+        ok: snapshotRead.ok,
+        snapshots: snapshotRead.snapshots,
+        todayISO: makeDayKey(ctx.profile.timezone)(now),
+      },
+      progress: {
+        primaryGoal: primaryGoal
+          ? {
+              name: primaryGoal.goal.name,
+              current: primaryGoal.goal.currentAmount,
+              target: primaryGoal.goal.targetAmount,
+              percent:
+                primaryGoal.goal.targetAmount > 0
+                  ? primaryGoal.progressPct
+                  : null,
+            }
+          : null,
+        reserve: {
+          readOk: !prefsError,
+          amount: saldo.reserva,
+          target:
+            prefsError || prefs?.emergency_reserve_target == null
+              ? null
+              : Number(prefs.emergency_reserve_target),
+        },
+        debt: { amount: debtAmount },
+        wealth: {
+          readOk: briefing.goalsIntel.wealthAvailable,
+          amount: patrimonioAmount,
+        },
+      },
+      upcoming: {
+        cards: briefing.cardsDueSoon.map((card) => ({
+          name: card.name,
+          inDays: card.inDays,
+          balance: card.balance,
+          due: card.due,
+        })),
+        payments: briefing.upcomingPayments,
+      },
+      formatMoney: display,
+    });
+    return {
+      perspective,
+      readFailed: false,
+      serverTiming: metro.milestone("perspectiva"),
+    };
+  })().catch(() => ({
+    // Degradar NUNCA puede inventar un número: la perspectiva ilegible se dice,
+    // no se rellena con ceros.
+    perspective: null,
+    readFailed: true,
+    serverTiming: null,
+  }));
 
   const orbs: ShellOrb[] = [
     {
@@ -424,44 +525,74 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
     },
   ];
 
-  const nextCommitment = saldo.nextPayment
-    ? `${saldo.nextPayment.label} · ${display(saldo.nextPayment.amount)} · ${formatDateEs(saldo.nextPayment.dateISO)}`
-    : null;
-  const openOccurrences = pendingRead.ok
-    ? pendingRead.complete
-      ? pendingRead.occurrences
-      : pendingRead.partial
-    : [];
-  const pillLines = buildShellPillLines({
-    pending: pendingRead.ok
-      ? {
-          ok: true,
-          first: openOccurrences[0]
-            ? {
-                kind: openOccurrences[0].kind,
-                dateLabel: formatDateEs(openOccurrences[0].occurrenceDate),
-              }
-            : null,
-        }
-      : { ok: false },
-    nextCommitment,
-    signals: briefing.signals,
-  });
+  // N1 · La segunda tanda: la píldora y la cinta. Se promete; el orbe ya se fue.
+  const laterPromise: Promise<ShellLater> = (async () => {
+    const [{ pendingRead }, movementRead] = await Promise.all([
+      prefsPromise,
+      movementPromise,
+    ]);
+    const nextCommitment = saldo.nextPayment
+      ? `${saldo.nextPayment.label} · ${display(saldo.nextPayment.amount)} · ${formatDateEs(saldo.nextPayment.dateISO)}`
+      : null;
+    const openOccurrences = pendingRead.ok
+      ? pendingRead.complete
+        ? pendingRead.occurrences
+        : pendingRead.partial
+      : [];
+    const pillLines = buildShellPillLines({
+      pending: pendingRead.ok
+        ? {
+            ok: true,
+            first: openOccurrences[0]
+              ? {
+                  kind: openOccurrences[0].kind,
+                  dateLabel: formatDateEs(openOccurrences[0].occurrenceDate),
+                }
+              : null,
+          }
+        : { ok: false },
+      nextCommitment,
+      signals: briefing.signals,
+    });
+    const movementView = movementRead.row
+      ? describeMovement(movementRead.row, {
+          displayCurrency: ctx.profile.displayCurrency,
+          rates,
+        })
+      : null;
+    const movementSign =
+      movementView?.tone === "out" ? "−" : movementView?.tone === "in" ? "+" : "";
+    return {
+      pillLine: nextCommitment,
+      pillLines,
+      lastMovement:
+        movementRead.row && movementView
+          ? {
+              timeLabel: movementTime(
+                movementRead.row.occurred_at,
+                ctx.profile.timezone,
+              ),
+              label: movementView.title,
+              amountLabel: `${movementSign}${movementView.amount}`,
+              turnId: movementRead.turnId,
+            }
+          : null,
+      lastMovementReadFailed: movementRead.readFailed,
+      serverTiming: metro.milestone("pill"),
+    };
+  })().catch(() => ({
+    // El mismo criterio: si esta tanda entera se cae, se DICE que no se pudo
+    // leer el movimiento; no se finge una cinta vacía ni una píldora en cero.
+    pillLine: null,
+    pillLines: [],
+    lastMovement: null,
+    lastMovementReadFailed: true,
+    serverTiming: null,
+  }));
 
   return {
     status: "ok",
     orbs,
-    pillLine: nextCommitment,
-    pillLines,
-    lastMovement:
-      recent && movementView
-        ? {
-            timeLabel: movementTime(recent.occurred_at, ctx.profile.timezone),
-            label: movementView.title,
-            amountLabel: `${movementSign}${movementView.amount}`,
-            turnId: movementTurnId,
-          }
-        : null,
     runwayLine:
       saldo.mode === "runway"
         ? saldo.runwayDays != null
@@ -477,9 +608,9 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
             dayKey: makeDayKey(ctx.profile.timezone)(new Date()),
           }
         : null,
-    thread,
-    perspective,
-    serverTiming: metro.header(),
+    serverTiming: metro.milestone("orbe"),
+    later: laterPromise,
+    perspective: perspectivePromise,
   };
 }
 
