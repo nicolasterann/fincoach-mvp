@@ -5,7 +5,7 @@ import { Chevron, PressCard } from "./living/shell";
 
 // "Lo que viene" — upcoming commitments the Saldo Kipu engine already
 // reserved. Shown so the user can SEE why their safe margin looks the way it
-// does, without a spreadsheet. The whole card drills into /app/cashflow.
+// does, without a spreadsheet. The whole card drills into /app/mes.
 // Nothing due but commitments configured → a calm one-liner (still real state);
 // nothing configured at all → renders nothing.
 
@@ -36,7 +36,7 @@ export function UpcomingCommitmentsCard({
   }
 
   return (
-    <PressCard href="/app/cashflow" ariaLabel="Lo que viene — ver el detalle" className="p-5">
+    <PressCard href="/app/mes" ariaLabel="Lo que viene — ver el detalle" className="p-5">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm font-medium text-zinc-300">Lo que viene</p>
         <span className="flex shrink-0 items-center gap-1 text-xs font-semibold text-emerald-400">

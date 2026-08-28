@@ -218,7 +218,7 @@ export function ProximoPagoCard({
   dateLabel: string;
 }) {
   return (
-    <PressCard href="/app/cashflow" className="p-5" ariaLabel={`Próximo pago: ${name}`}>
+    <PressCard href="/app/mes" className="p-5" ariaLabel={`Próximo pago: ${name}`}>
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-medium text-zinc-300">Próximo pago</p>
