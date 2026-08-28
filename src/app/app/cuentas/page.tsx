@@ -9,7 +9,7 @@ import { loadCurrentFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { formatDateEs } from "@/lib/format/dates-es";
 import { formatKipuMoney } from "@/lib/financial/money";
 import type { CurrencyCode } from "@/types/financial";
-import { Chevron, MetricShell, Section, ChatCta } from "../components/living/shell";
+import { Chevron, DetailSurface, MetricShell, Section, ChatCta } from "../components/living/shell";
 
 // Stage F — "Dónde está tu plata": the treasury page. One glance answers where
 // the money physically lives, where it SHOULD be (each account's operational
@@ -44,7 +44,7 @@ export default async function CuentasPage() {
 
   if (t.accounts.length < 2) {
     return (
-      <div className="mx-auto w-full max-w-3xl pb-28 lg:pb-12">
+      <DetailSurface layer="reserva" className="max-w-3xl">
         <MetricShell kicker="Cuentas" title="Dónde está tu plata" />
         <section className="kipu-fade-up mt-5 rounded-3xl border border-line/5 bg-zinc-900 p-6">
           <p className="text-sm leading-6 text-zinc-400">
@@ -56,7 +56,7 @@ export default async function CuentasPage() {
             <Chevron />
           </Link>
         </section>
-      </div>
+      </DetailSurface>
     );
   }
 
@@ -67,7 +67,7 @@ export default async function CuentasPage() {
     `/app/chat?share=${encodeURIComponent(`Ya moví ${formatKipuMoney(m.amount, ctx.profile.baseCurrency)} de ${m.fromName} a ${m.toName}`)}`;
 
   return (
-    <div className="mx-auto w-full max-w-3xl pb-28 lg:pb-12">
+    <DetailSurface layer="reserva" className="max-w-3xl">
       <MetricShell kicker="Cuentas" title="Dónde está tu plata" />
 
       {/* Hero: real vs piso, one glance = where there's extra and where it's short */}
@@ -255,6 +255,6 @@ export default async function CuentasPage() {
         </Link>
         <ChatCta label="Preguntarle a Kipu" prompt="¿Dónde está mi plata y qué movimientos me recomiendas?" />
       </div>
-    </div>
+    </DetailSurface>
   );
 }

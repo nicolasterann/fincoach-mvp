@@ -4,8 +4,42 @@ import { randomUUID } from "crypto";
 import { redirect } from "next/navigation";
 import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler";
 import { buildLedgerEntryPayload } from "@/lib/ai/apply-chat-transaction-intent";
+import {
+  readFreshThreadTurn,
+} from "@/lib/chat-memory/thread-view";
+import type {
+  ThreadTurn,
+  TurnStatus,
+} from "@/lib/chat-memory/thread-view-contract";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { readShellSaldoLevel } from "./components/shell/shell-payload";
+import {
+  verifiedOrbWriteSignal,
+  type ShellOrbWriteSignal,
+} from "./components/shell/shell-dialog-contract";
+
+export interface ChatDeliveryResult {
+  reply: string;
+  status: TurnStatus;
+  userTurn?: ThreadTurn;
+  turn?: ThreadTurn;
+  orbSignal?: ShellOrbWriteSignal;
+  deliveryError?: {
+    code: "chat-delivery-rejected";
+    message: string;
+    retryable: boolean;
+  };
+}
+
+async function readOrbSignalAfterWrite(
+  userId: string,
+  turn: ThreadTurn | null,
+): Promise<ShellOrbWriteSignal | undefined> {
+  if (!turn?.receipt) return undefined;
+  const serverLevel = await readShellSaldoLevel(userId).catch(() => null);
+  return verifiedOrbWriteSignal({ turn, serverLevel }) ?? undefined;
+}
 
 // Web chat parity: route the web chat box through the SAME core pipeline as
 // Telegram (Universal Router → coach → recovery/transfers/parser → single
@@ -62,14 +96,7 @@ export async function sendWebChatMessageAction(formData: FormData) {
 export async function sendChatMessageAndGetReply(
   message: string,
   submissionId?: string,
-): Promise<{
-  reply: string;
-  deliveryError?: {
-    code: "chat-delivery-rejected";
-    message: string;
-    retryable: true;
-  };
-}> {
+): Promise<ChatDeliveryResult> {
   const supabase = await createSupabaseServerClient();
   const {
     data: { session },
@@ -81,7 +108,10 @@ export async function sendChatMessageAndGetReply(
 
   const trimmed = String(message ?? "").trim();
   if (!trimmed) {
-    return { reply: "Escribe el mensaje que quieres enviar." };
+    return {
+      reply: "Escribe el mensaje que quieres enviar.",
+      status: "needs_clarification",
+    };
   }
 
   // Only accept a well-formed client submission id; otherwise fall back to a
@@ -99,13 +129,42 @@ export async function sendChatMessageAndGetReply(
       chatId: session.user.id,
       requestId,
     });
-    return { reply: result.chatResponse.message };
+    if (result.chatResponse.status === "failed") {
+      return {
+        reply: "",
+        status: "failed",
+        deliveryError: {
+          code: "chat-delivery-rejected",
+          message:
+            "No pude completar este envío. Reinténtalo: conservaré la misma operación y no duplicaré movimientos.",
+          retryable: true,
+        },
+      };
+    }
+
+    const assistantMessageId = result.assistantMetadata?.assistantMessageId;
+    const turn =
+      typeof assistantMessageId === "string"
+        ? await readFreshThreadTurn({
+            client: supabase,
+            userId: session.user.id,
+            turnId: assistantMessageId,
+          })
+        : null;
+    const orbSignal = await readOrbSignalAfterWrite(session.user.id, turn);
+    return {
+      reply: result.chatResponse.message,
+      status: result.chatResponse.status,
+      ...(turn ? { turn } : {}),
+      ...(orbSignal ? { orbSignal } : {}),
+    };
   } catch {
     // Expected delivery/identity rejections are UI state, not an unhandled
     // Server Function exception and not assistant-authored conversation. The
     // same submission id remains safe to retry and preserves idempotency.
     return {
       reply: "",
+      status: "failed",
       deliveryError: {
         code: "chat-delivery-rejected",
         message:
@@ -119,9 +178,9 @@ export async function sendChatMessageAndGetReply(
 // Universal capture from the web (Stage 12): a receipt photo, screenshot or
 // PDF dropped/pasted/attached in chat goes through the SAME evidence pipeline
 // as Telegram media. Returns the reply for the optimistic chat UI.
-export async function sendWebEvidenceAction(formData: FormData): Promise<{
-  reply: string;
-}> {
+export async function sendWebEvidenceAction(
+  formData: FormData,
+): Promise<ChatDeliveryResult> {
   const supabase = await createSupabaseServerClient();
   const {
     data: { session },
@@ -133,11 +192,16 @@ export async function sendWebEvidenceAction(formData: FormData): Promise<{
 
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) {
-    return { reply: "No me llegó ningún archivo. Intenta de nuevo con una foto o un PDF." };
+    return {
+      reply: "No me llegó ningún archivo. Intenta de nuevo con una foto o un PDF.",
+      status: "needs_clarification",
+    };
   }
 
   const caption = String(formData.get("caption") ?? "").trim().slice(0, 500);
   const bytes = new Uint8Array(await file.arrayBuffer());
+  const baseMime = file.type.toLowerCase().split(";", 1)[0]?.trim() ?? "";
+  const isAudio = baseMime.startsWith("audio/");
 
   const { handleEvidenceCapture } = await import("@/lib/capture/evidence-capture");
   const result = await handleEvidenceCapture({
@@ -145,13 +209,65 @@ export async function sendWebEvidenceAction(formData: FormData): Promise<{
     channel: "web",
     chatId: session.user.id,
     source: "web_upload",
-    file: { bytes, mimeType: file.type, filename: file.name },
+    file: { bytes, mimeType: baseMime, filename: file.name },
     caption: caption || undefined,
   });
   if (result.retryable || !result.reply.trim()) {
-    throw new Error("KIPU_EVIDENCE_RETRYABLE");
+    return {
+      reply: "",
+      status: "failed",
+      deliveryError: {
+        code: "chat-delivery-rejected",
+        message:
+          "No pude completar este archivo. Reinténtalo: la misma captura no duplicará movimientos.",
+        retryable: true,
+      },
+    };
   }
-  return { reply: result.reply };
+  const status: TurnStatus =
+    result.status === "needs_clarification"
+      ? "needs_clarification"
+      : result.status === "failed" || !result.ok
+        ? "failed"
+        : "success";
+  if (status === "failed") {
+    return {
+      reply: "",
+      status,
+      deliveryError: {
+        code: "chat-delivery-rejected",
+        message: isAudio
+          ? "No pude entender el audio. ¿Me lo escribes?"
+          : "No pude procesar este archivo. Puedes volver a adjuntarlo.",
+        retryable: false,
+      },
+    };
+  }
+  const [userTurn, turn] = await Promise.all([
+    result.userMessageId
+      ? readFreshThreadTurn({
+          client: supabase,
+          userId: session.user.id,
+          turnId: result.userMessageId,
+          role: "user",
+        })
+      : Promise.resolve(null),
+    result.assistantMessageId
+      ? readFreshThreadTurn({
+          client: supabase,
+          userId: session.user.id,
+          turnId: result.assistantMessageId,
+        })
+      : Promise.resolve(null),
+  ]);
+  const orbSignal = await readOrbSignalAfterWrite(session.user.id, turn);
+  return {
+    reply: result.reply,
+    status,
+    ...(userTurn ? { userTurn } : {}),
+    ...(turn ? { turn } : {}),
+    ...(orbSignal ? { orbSignal } : {}),
+  };
 }
 
 // "Nueva conversación": hides everything before now from the chat VIEW. Nothing

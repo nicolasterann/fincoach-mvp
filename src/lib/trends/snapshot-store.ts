@@ -62,7 +62,18 @@ export interface DatedSnapshot extends SnapshotMetrics {
   saldoKipu: number | null;
 }
 
-export async function loadSnapshotSeries(userId: string, daysBack: number, nowMs: number): Promise<DatedSnapshot[]> {
+export type SnapshotSeriesRead =
+  | { ok: true; snapshots: DatedSnapshot[] }
+  | { ok: false; snapshots: []; error: string };
+
+/** M6 needs to distinguish a legitimate empty history from a failed read. The
+ * older array API remains below for existing detail pages, while the shell uses
+ * this typed result so a database failure can never look like "no history". */
+export async function loadSnapshotSeriesRead(
+  userId: string,
+  daysBack: number,
+  nowMs: number,
+): Promise<SnapshotSeriesRead> {
   try {
     const sb = createSupabaseAdminClient();
     const days = Math.max(1, daysBack);
@@ -82,15 +93,15 @@ export async function loadSnapshotSeries(userId: string, daysBack: number, nowMs
       // atrás pareciendo un Saldo que dejó de moverse.
       .limit(days + 2);
     // { data: null, error } no lanza: sin este chequeo un fallo se dibuja igual que
-    // un usuario sin historia. Se colapsa a [] igual (la curva solo se pinta con 2+
-    // puntos, así que el fallo ESCONDE el gráfico, no lo falsea, y ninguna
-    // superficie deriva una afirmación de esta serie), pero queda registrado.
+    // un usuario sin historia. La lista queda vacía, pero `ok: false` conserva la
+    // diferencia para que el shell muestre fallo de lectura y jamás lo presente
+    // como ausencia legítima de datos.
     if (error) {
       console.error("[kipu.snapshot] snapshot series read failed", userId, error.message);
-      return [];
+      return { ok: false, snapshots: [], error: error.message };
     }
     const n = (v: unknown) => (typeof v === "number" ? v : parseFloat(String(v)) || 0);
-    return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+    const snapshots = ((data ?? []) as Record<string, unknown>[]).map((r) => ({
       dateISO: String(r.snapshot_date ?? ""),
       margenWeekly: n(r.margen_weekly),
       safeWeekly: n(r.safe_weekly),
@@ -99,9 +110,21 @@ export async function loadSnapshotSeries(userId: string, daysBack: number, nowMs
       readiness: n(r.readiness),
       saldoKipu: r.saldo_kipu == null ? null : n(r.saldo_kipu),
     })).filter((r) => r.dateISO);
-  } catch {
-    return [];
+    return { ok: true, snapshots };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[kipu.snapshot] snapshot series read threw", userId, message);
+    return { ok: false, snapshots: [], error: message };
   }
+}
+
+export async function loadSnapshotSeries(
+  userId: string,
+  daysBack: number,
+  nowMs: number,
+): Promise<DatedSnapshot[]> {
+  const read = await loadSnapshotSeriesRead(userId, daysBack, nowMs);
+  return read.ok ? read.snapshots : [];
 }
 
 // The most recent snapshot STRICTLY BEFORE today — the honest "last time" to compare
@@ -136,4 +159,3 @@ export async function loadPriorSnapshot(userId: string, nowMs: number): Promise<
     return null;
   }
 }
-

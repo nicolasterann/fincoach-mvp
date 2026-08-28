@@ -1,4 +1,5 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import {
   correctionIdentityToken,
   correctivePhrasing,
@@ -218,6 +219,24 @@ import {
   refundRegistrationIsProven,
 } from "@/lib/ai/apply-chat-transaction-intent";
 import { turnAuthor, toolsUsedOf, AUTHOR_LABEL } from "@/lib/chat-memory/turn-provenance";
+import {
+  dedupeThreadRows,
+  readCompleteThreadRowsWith,
+  storedTurnStatus,
+  threadIdentityKey,
+  visibleThreadText,
+  type ThreadMessageRow,
+  type ThreadTurn,
+} from "@/lib/chat-memory/thread-view-contract";
+import {
+  buildShellPillLines,
+  verifiedOrbWriteSignal,
+} from "@/app/app/components/shell/shell-dialog-contract";
+import {
+  buildReserveProgress,
+  buildSaldoCord,
+  buildShellPerspective,
+} from "@/app/app/components/shell/shell-perspective";
 import { planStatedAmount } from "@/lib/capture/stated-amount";
 import { inferMultiSourceAllocations, planMultiSourcePayment } from "@/lib/capture/multi-source";
 import { retractsMultiSource } from "@/lib/capture/card-payment-draft";
@@ -326,7 +345,14 @@ import {
 } from "@/lib/financial/recurring-occurrence";
 import { formatDisplay } from "@/lib/financial/display-money";
 import { advanceCadence, applyAmountChange, applyCommitmentChange } from "@/lib/scheduled/scheduled-changes-store";
-import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib/financial/tu-mes";
+import {
+  buildTuMesFlows,
+  buildTuMesMetrics,
+  foreignGoalReserveMonthly,
+  goalMonthlyEquivalent,
+} from "@/lib/financial/tu-mes";
+import { buildActivityDetail } from "@/lib/financial/activity-detail";
+import { buildGoalLayerSources } from "@/lib/financial/goal-layer-sources";
 import { installmentProgress, monthlyInstallmentLoad, deferredByCard, readInstallmentPlansWith, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
 import { effectiveEssential, isEssentialByDefaultCategory } from "@/lib/onboarding/wizard-constants";
 import {
@@ -401,6 +427,17 @@ import {
   publishableEvidenceAgentReply,
   STATEMENT_SESSION_MARKER,
 } from "@/lib/capture/evidence-capture";
+import {
+  advanceVoiceEnvelope,
+  baseAudioMime,
+  selectVoiceRecordingFormat,
+  stopMediaStreamTracks,
+  voiceDeliverySucceeded,
+  voiceTarget,
+  VOICE_ATTACK,
+  VOICE_FALL,
+  VOICE_MAX_DURATION_MS,
+} from "@/app/app/components/shell/voice-capture-contract";
 import { normalizeCandidates } from "@/lib/capture/evidence-extraction";
 import {
   ACCOUNT_LABELS_CAP,
@@ -21642,7 +21679,13 @@ assert(
         "if (result.retryable || !result.reply.trim()) {",
       ) &&
       pmTransactionActions.includes(
+        'code: "chat-delivery-rejected",',
+      ) &&
+      !pmTransactionActions.includes(
         'throw new Error("KIPU_EVIDENCE_RETRYABLE");',
+      ) &&
+      pmChatView.includes(
+        "if (result.deliveryError) {",
       ) &&
       pmChatView.includes(
         'setFileError("No se pudo procesar el archivo. Puedes volver a adjuntarlo.");',
@@ -25469,6 +25512,1345 @@ assert(
         "utf8",
       ).includes("'manifest_present',v_manifest_found"),
     JSON.stringify({ lanes: ir348LaneIds, ola0Total: 16 }),
+  );
+
+  // M3 — the product thread is cross-channel and honest about identity,
+  // completeness, status and ledger provenance. These checks pin behaviour
+  // plus the live wiring; they do not substitute for browser QA.
+  const m3Row = (
+    id: string,
+    channel: "web" | "telegram",
+    metadata: Record<string, unknown> | null,
+    content = "Aviso",
+  ): ThreadMessageRow => ({
+    id,
+    role: "assistant",
+    channel,
+    content,
+    metadata,
+    created_at: `2026-08-25T12:00:0${id.slice(-1)}.000Z`,
+  });
+  const m3DedupeRows = dedupeThreadRows([
+    m3Row("claim-1", "telegram", {
+      source: "recurring",
+      calendarDigestClaimId: "digest-1",
+    }),
+    m3Row("claim-2", "web", {
+      source: "recurring",
+      calendarDigestClaimId: "digest-1",
+    }),
+    m3Row("legacy-3", "telegram", null, "Mismo texto legacy"),
+    m3Row("legacy-4", "web", null, "Mismo texto legacy"),
+    m3Row("operation-5", "telegram", {
+      durableOperation: { id: "multi-turn-operation" },
+    }),
+    m3Row("operation-6", "web", {
+      durableOperation: { id: "multi-turn-operation" },
+    }),
+  ]);
+  assert(
+    "M3-1 · dedupe usa identidad durable y nunca texto: prefiere la copia web probada y conserva ambos legacy",
+    m3DedupeRows.length === 5 &&
+      m3DedupeRows.some((row) => row.id === "claim-2") &&
+      !m3DedupeRows.some((row) => row.id === "claim-1") &&
+      m3DedupeRows.filter((row) => row.content === "Mismo texto legacy").length === 2 &&
+      m3DedupeRows.filter((row) => row.id.startsWith("operation-")).length === 2 &&
+      threadIdentityKey(m3Row("claim-5", "web", null)) === null &&
+      storedTurnStatus({ chatResponseStatus: "needs_clarification" }) ===
+        "needs_clarification" &&
+      storedTurnStatus({ message_type: "transaction" }) === null &&
+      visibleThreadText("KIPU_INTERNAL_WRITE_RECEIPT") === "",
+    JSON.stringify(m3DedupeRows.map(({ id, channel }) => ({ id, channel }))),
+  );
+
+  let m3Page = 0;
+  const m3Complete = await readCompleteThreadRowsWith(
+    {
+      page: async () => {
+        m3Page += 1;
+        return {
+          rows:
+            m3Page === 1
+              ? [m3Row("page-3", "web", null), m3Row("page-2", "web", null), m3Row("page-1", "web", null)]
+              : [m3Row("page-1", "web", null)],
+          error: null,
+        };
+      },
+      count: async () => ({ count: 3, error: null }),
+    },
+    2,
+    5,
+  );
+  const m3Partial = await readCompleteThreadRowsWith(
+    {
+      page: async () => ({
+        rows: [m3Row("cap-3", "web", null), m3Row("cap-2", "web", null), m3Row("cap-1", "web", null)],
+        error: null,
+      }),
+      count: async () => ({ count: 3, error: null }),
+    },
+    2,
+    2,
+  );
+  const m3Failed = await readCompleteThreadRowsWith({
+    page: async () => ({ rows: null, error: "offline" }),
+    count: async () => ({ count: null, error: "offline" }),
+  });
+  assert(
+    "M3-2 · cursor+CAP+1 separa completo, parcial y lectura caída",
+    m3Complete.complete &&
+      !m3Complete.readFailed &&
+      m3Complete.rows.length === 3 &&
+      !m3Partial.complete &&
+      !m3Partial.readFailed &&
+      m3Partial.rows.length === 2 &&
+      m3Failed.readFailed &&
+      !m3Failed.complete &&
+      m3Failed.rows.length === 0,
+    JSON.stringify({ complete: m3Complete, partial: m3Partial, failed: m3Failed }),
+  );
+
+  const m3ThreadSource = readFileSync(
+    `${process.cwd()}/src/lib/chat-memory/thread-view.ts`,
+    "utf8",
+  );
+  const m3HandlerSource = readFileSync(
+    `${process.cwd()}/src/lib/ai/chat-transaction-handler.ts`,
+    "utf8",
+  );
+  const m3ChatPageSource = readFileSync(
+    `${process.cwd()}/src/app/app/chat/page.tsx`,
+    "utf8",
+  );
+  const m3ShellSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/SantuarioShell.tsx`,
+    "utf8",
+  );
+  const m3RecurringSource = readFileSync(
+    `${process.cwd()}/src/lib/scheduled/recurring-notifier.ts`,
+    "utf8",
+  );
+  const m3ObjectiveSql = readFileSync(
+    `${process.cwd()}/supabase/sql/081_bloqueJ7_deterministic_conflicts_are_not_serialization_failures.sql`,
+    "utf8",
+  );
+  assert(
+    "M3-3 · hilo web+Telegram incluye publicadores chat_id nulo y el recibo sólo nace de pasos aterrizados releídos del ledger",
+    m3ThreadSource.includes('.in("channel", ["web", "telegram"])') &&
+      !m3ThreadSource.includes('.eq("chat_id"') &&
+      m3RecurringSource.includes("calendarDigestClaimId: input.claimId") &&
+      m3ObjectiveSql.includes("'objectiveCloseClaimId', p_claim_id") &&
+      m3ThreadSource.includes('.from("agent_operation_steps")') &&
+      m3ThreadSource.includes('.in("status", ["verified", "applied"])') &&
+      m3ThreadSource.includes('type === "transaction"') &&
+      m3ThreadSource.includes('.from("transactions")') &&
+      m3ThreadSource.includes("const view = describeMovement(tx") &&
+      m3ThreadSource.includes("saldoLabel: null") &&
+      !/Saldo[^"\n]{0,80}→|→[^"\n]{0,80}Saldo/i.test(
+        `${m3ThreadSource}\n${pmChatView}`,
+      ),
+    "canales/publicadores/cadena durable/ledger/formato/saldo",
+  );
+
+  assert(
+    "M3-4 · estados, centinela y deep-link conservan autoridad, retry y vista limpia sin fabricar turnos",
+    m3HandlerSource.includes(
+      'if (channel && result.chatResponse.status !== "failed")',
+    ) &&
+      m3HandlerSource.includes(
+        'chatResponseStatus: result.chatResponse.status,',
+      ) &&
+      pmChatView.includes("Pregunta pendiente") &&
+      pmChatView.includes("Eso todavía no lo sé hacer.") &&
+      pmChatView.includes("No pude leer tu conversación ahora.") &&
+      pmChatView.includes("Hay más historial del que puedo mostrar aquí.") &&
+      pmChatView.includes("replaceAll(INTERNAL_RECEIPT_SENTINEL") &&
+      !pmChatView.includes("agent_action_challenges") &&
+      !pmChatView.includes("explicitActionConfirmation") &&
+      !pmChatView.includes(">Confirmar<") &&
+      m3ChatPageSource.includes("initialTurnId={initialTurnId}") &&
+      pmChatView.includes('target.scrollIntoView({ behavior: "smooth", block: "center" })') &&
+      m3ShellSource.includes("/app/chat?turn=") &&
+      m3ShellSource.includes(': "/app/activity"') &&
+      pmTransactionActions.includes("chat_cleared_at: new Date().toISOString()") &&
+      !/clearChatHistoryAction[\s\S]{0,900}\.delete\(/.test(pmTransactionActions),
+    "status/sentinel/authority/deep-link/view clear",
+  );
+
+  // M4 — dock + pill + dialogue. Pure contracts prove priority and the
+  // money-motion boundary; source pins prove that both sanctuary entry points
+  // still consume the existing chat actions and that refresh preserves the
+  // client island instead of remounting it.
+  const m4PillLines = buildShellPillLines({
+    pending: {
+      ok: true,
+      first: { kind: "expense", dateLabel: "26 de agosto" },
+    },
+    nextCommitment: "Diners · 50.60$ · 27 de agosto",
+    signals: [
+      {
+        kind: "objective_pace",
+        severity: "watch",
+        text: "Comida va al 72% de su objetivo.",
+      },
+      {
+        kind: "transfer_needed",
+        severity: "urgent",
+        text: "Tu cuenta operativa necesita una transferencia.",
+      },
+    ],
+  });
+  const m4FailedPending = buildShellPillLines({
+    pending: { ok: false },
+    nextCommitment: "No debe bajar a este escalón",
+    signals: [
+      { kind: "objective_pace", severity: "urgent", text: "Ni a este." },
+    ],
+  });
+  assert(
+    "M4-1 · pill respeta pendiente→compromiso→objetivo→insight y una lectura caída bloquea toda falsa ausencia",
+    JSON.stringify(m4PillLines) ===
+      JSON.stringify([
+        "¿Cuánto pagaste por el compromiso de 26 de agosto?",
+        "Diners · 50.60$ · 27 de agosto",
+        "Comida va al 72% de su objetivo.",
+        "Tu cuenta operativa necesita una transferencia.",
+      ]) &&
+      JSON.stringify(m4FailedPending) ===
+        JSON.stringify(["No pude revisar tus pendientes ahora."]),
+    JSON.stringify({ m4PillLines, m4FailedPending }),
+  );
+
+  const m4ReceiptTurn: ThreadTurn = {
+    id: "turn-m4-receipt",
+    role: "assistant",
+    author: "agente",
+    channel: "web",
+    createdAtISO: "2026-08-26T12:00:00.000Z",
+    text: "Listo.",
+    status: "success",
+    receipt: {
+      lines: [{ label: "Café", amountLabel: "−7$", kindLabel: "Gasto" }],
+      saldoLabel: null,
+      incomplete: false,
+    },
+    attachment: null,
+  };
+  const m4NoReceiptTurn: ThreadTurn = { ...m4ReceiptTurn, receipt: null };
+  const m4LiveOrbSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/LiveOrb.tsx`,
+    "utf8",
+  );
+  const m4ShellPayloadSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/shell-payload.ts`,
+    "utf8",
+  );
+  assert(
+    "M4-2 · el orbe sólo recibe nivel servidor + recibo durable; capturando conserva el nivel y toda mitad ausente rehúsa movimiento",
+    verifiedOrbWriteSignal({ turn: m4ReceiptTurn, serverLevel: 0.42 })?.level ===
+      0.42 &&
+      verifiedOrbWriteSignal({ turn: m4ReceiptTurn, serverLevel: 0.42 })
+        ?.receiptKey === "turn-m4-receipt" &&
+      verifiedOrbWriteSignal({ turn: m4NoReceiptTurn, serverLevel: 0.42 }) ===
+        null &&
+      verifiedOrbWriteSignal({ turn: m4ReceiptTurn, serverLevel: null }) ===
+        null &&
+      verifiedOrbWriteSignal({ turn: m4ReceiptTurn, serverLevel: 1.2 }) ===
+        null &&
+      m4LiveOrbSource.includes('setSignal({ type: "capturing" });') &&
+      m4LiveOrbSource.includes('} else if (input.state !== "capturing") {') &&
+      m4LiveOrbSource.includes(
+        'input.signal?.type === "written" || input.signal?.type === "crossing"',
+      ) &&
+      m4ShellPayloadSource.includes(
+        "export async function readShellSaldoLevel(userId: string)",
+      ) &&
+      m4ShellPayloadSource.includes("buildUserFinancialContext(userId)") &&
+      m4ShellPayloadSource.includes("buildCoachingBriefing({") &&
+      pmTransactionActions.includes("if (!turn?.receipt) return undefined;") &&
+      pmTransactionActions.includes(
+        "const serverLevel = await readShellSaldoLevel(userId).catch(() => null);",
+      ),
+    "receipt + server level + capturing invariant",
+  );
+
+  const m4StylesSource = readFileSync(
+    `${process.cwd()}/src/app/globals.css`,
+    "utf8",
+  );
+  const m4EvidenceSource = readFileSync(
+    `${process.cwd()}/src/lib/capture/evidence-capture.ts`,
+    "utf8",
+  );
+  assert(
+    "M4-3 · una ChatView persistente abre/cierra la sheet, pausa el orbe y texto/cámara conservan las acciones y recibos existentes",
+    (m3ShellSource.match(/<ChatView\b/g) ?? []).length === 1 &&
+      !m3ShellSource.includes("sendChatMessageAndGetReply") &&
+      (pmChatView.match(/sendChatMessageAndGetReply\(/g) ?? []).length === 1 &&
+      (pmChatView.match(/sendWebEvidenceAction\(/g) ?? []).length === 1 &&
+      pmChatView.includes("result.turn ??") &&
+      pmChatView.includes("if (result.deliveryError) {") &&
+      m3ShellSource.includes('role="dialog"') &&
+      m3ShellSource.includes("onPointerMove={(event) => {") &&
+      m3ShellSource.includes("onTouchMove={(event) => {") &&
+      /onMouseDown=\{\(\) => \{\s*voice\.cancel\(\);\s*setDialogOpen\(false\);\s*\}\}/.test(m3ShellSource) &&
+      /onClose=\{\(\) => \{\s*voice\.cancel\(\);\s*setDialogOpen\(false\);\s*\}\}/.test(m3ShellSource) &&
+      m3ShellSource.includes(
+        "active={liveSettled && !dialogOpen && !perspectiveOpen}",
+      ) &&
+      m3ShellSource.includes("chatRef.current?.scrollToTurn") &&
+      pmChatView.includes(
+        'const ACCEPTED_FILES = "image/jpeg,image/png,image/webp,application/pdf";',
+      ) &&
+      pmChatView.includes("const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;") &&
+      m4EvidenceSource.includes("validateEvidenceFile({") &&
+      m4EvidenceSource.includes("assistantMessageId?: string;") &&
+      m4StylesSource.includes("height: 46px;") &&
+      m4StylesSource.includes("max-width: 300px;") &&
+      m4StylesSource.includes("height: min(86svh, 780px);") &&
+      m4StylesSource.includes("env(safe-area-inset-bottom)"),
+    "one ChatView / gestures / pause / typed evidence / fixed geometry",
+  );
+
+  const m4PageSource = readFileSync(
+    `${process.cwd()}/src/app/app/page.tsx`,
+    "utf8",
+  );
+  const m4E2ESource = readFileSync(
+    `${process.cwd()}/scripts/qa/m4-thread-persona-e2e.mjs`,
+    "utf8",
+  );
+  assert(
+    "M4-4 · refresh conserva capa/hoja/borrador y el E2E obligatorio usa writer real, siete pruebas y limpieza sin borrar ledger para fabricar faltantes",
+    m3ShellSource.includes("const [activeIndex, setActiveIndex] = useState(0);") &&
+      m3ShellSource.includes("const [dialogOpen, setDialogOpen] = useState(false);") &&
+      m3ShellSource.includes('const [draft, setDraft] = useState("");') &&
+      m3ShellSource.includes("if (result) router.refresh();") &&
+      m3ShellSource.includes("draftValue={draft}") &&
+      m3ShellSource.includes("onDraftValueChange={setDraft}") &&
+      m4PageSource.includes("<SantuarioShell payload={payload}") &&
+      !m4PageSource.includes("<SantuarioShell key=") &&
+      m4E2ESource.includes("applyChatTransactionIntent({") &&
+      m4E2ESource.includes("readThreadView({ client: admin, userId })") &&
+      m4E2ESource.includes("M4-E1 · write real aparece con recibo") &&
+      m4E2ESource.includes("M4-E6 · chat_cleared_at oculta") &&
+      m4E2ESource.includes("randomUUID(), \"incomplete\"") &&
+      !m4E2ESource.includes('.from("transactions").delete') &&
+      m4E2ESource.includes("admin.auth.admin.deleteUser(userId)") &&
+      m4E2ESource.includes("limpieza: residuo cero verificado en DB y auth") &&
+      (m4E2ESource.match(/"M4-E[0-6] ·/g) ?? []).length === 7,
+    "client island + canonical E2E + zero residue",
+  );
+
+  // M5 — voice uses the existing evidence action. The pure contract pins MIME
+  // negotiation, aura boundaries and track cleanup; source pins connect those
+  // contracts to real browser lifecycle facts without pretending this runner
+  // owns a microphone.
+  const m5VoiceContractSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/voice-capture-contract.ts`,
+    "utf8",
+  );
+  const m5VoiceHookSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/useVoiceCapture.ts`,
+    "utf8",
+  );
+  const m5PreviewSource = readFileSync(
+    `${process.cwd()}/src/app/dev/shell-preview/page.tsx`,
+    "utf8",
+  );
+  const m5Webm = selectVoiceRecordingFormat((mime) =>
+    mime === "audio/webm;codecs=opus",
+  );
+  const m5Mp4 = selectVoiceRecordingFormat((mime) => mime === "audio/mp4");
+  assert(
+    "M5-1 · el cliente negocia un formato soportado y envía siempre el MIME base aceptado",
+    baseAudioMime("audio/webm;codecs=opus") === "audio/webm" &&
+      baseAudioMime("audio/mp4;codecs=mp4a.40.2") === "audio/mp4" &&
+      baseAudioMime("video/webm;codecs=vp9") === null &&
+      m5Webm?.baseMime === "audio/webm" &&
+      m5Webm.recorderMime === "audio/webm;codecs=opus" &&
+      m5Mp4?.baseMime === "audio/mp4" &&
+      m5VoiceHookSource.includes("type: format.baseMime") &&
+      pmTransactionActions.includes(
+        'const baseMime = file.type.toLowerCase().split(";", 1)[0]?.trim() ?? "";',
+      ),
+    JSON.stringify({ m5Webm, m5Mp4 }),
+  );
+
+  const m5SetVoiceBody = m4LiveOrbSource.match(
+    /setVoice\(nextState, nextLevel\) \{[\s\S]*?\n    \},\n    reset\(\)/,
+  )?.[0] ?? "";
+  assert(
+    "M5-2 · los cuatro registros respetan valores y fronteras; setVoice no puede mover el líquido",
+    voiceTarget("calm") === 0.05 &&
+      voiceTarget("listening", 1) === 0.75 &&
+      voiceTarget("listening", Number.NaN) === 0 &&
+      voiceTarget("thinking", 1) === 0.42 &&
+      voiceTarget("responding", 1) === 0.46 &&
+      VOICE_ATTACK === 0.085 &&
+      VOICE_FALL === 0.04 &&
+      advanceVoiceEnvelope(0.1, 0.8) - 0.1 >
+        0.8 - advanceVoiceEnvelope(0.8, 0.1) &&
+      m5SetVoiceBody.includes("voiceRef.current =") &&
+      !m5SetVoiceBody.includes("setSignal(") &&
+      !m5SetVoiceBody.includes("renderInputs.current.level") &&
+      m4LiveOrbSource.includes("voice: animatedVoice") &&
+      m4LiveOrbSource.includes("data-voice-state={voiceState}") &&
+      m5PreviewSource.includes('voiceQuery === "listening"') &&
+      m5PreviewSource.includes('(["calm", "listening", "thinking", "responding"] as const)'),
+    m5SetVoiceBody || "setVoice ausente",
+  );
+
+  assert(
+    "M5-3 · transcripción fallida es terminal y visible, sin fabricar turno del asistente",
+    voiceDeliverySucceeded({ status: "success" }) &&
+      !voiceDeliverySucceeded({ status: "failed" }) &&
+      !voiceDeliverySucceeded({ status: "success", deliveryError: {} }) &&
+      m4EvidenceSource.includes(
+        'return { ok: false, reply: FRIENDLY_FAIL, status: "failed" };',
+      ) &&
+      pmTransactionActions.includes(
+        '"No pude entender el audio. ¿Me lo escribes?"',
+      ) &&
+      pmChatView.includes('if (result.status === "failed" || !safeReply) {') &&
+      pmChatView.includes("prev.filter((turn) => turn.id !== localId)") &&
+      m4E2ESource.includes(
+        "M5-E7 · audio válido falla como failed honesto sin turno de asistente inventado",
+      ) &&
+      m4E2ESource.includes('failedEvidence?.status === "failed"') &&
+      m4E2ESource.includes("assistantBeforeVoice === assistantAfterVoice"),
+    "terminal failure + UI + disposable persona",
+  );
+
+  let m5StoppedTracks = 0;
+  const m5Released = stopMediaStreamTracks({
+    getTracks: () => [
+      { stop: () => { m5StoppedTracks += 1; } },
+      { stop: () => { m5StoppedTracks += 1; } },
+    ] as MediaStreamTrack[],
+  });
+  assert(
+    "M5-4 · cancelar, cerrar, ocultar y desmontar liberan todas las pistas; el tope cierra honestamente",
+    m5Released === 2 &&
+      m5StoppedTracks === 2 &&
+      VOICE_MAX_DURATION_MS === 120_000 &&
+      m5VoiceHookSource.includes('document.addEventListener("visibilitychange", onVisibility)') &&
+      m5VoiceHookSource.includes("void stopRecorder(false);") &&
+      m5VoiceHookSource.includes("releaseHardware();") &&
+      m5VoiceHookSource.includes("stopMediaStreamTracks(streamRef.current)") &&
+      m5VoiceHookSource.includes("void sendRef.current();") &&
+      (m3ShellSource.match(/voice\.cancel\(\);/g) ?? []).length >= 5 &&
+      m5VoiceContractSource.includes("for (const track of tracks) track.stop();"),
+    JSON.stringify({ m5Released, m5StoppedTracks }),
+  );
+
+  // M6 — perspective is a server-resolved view model. These checks exercise
+  // denominators and sparse geometry as behavior, then pin the DOM/doors and
+  // the one-heavy-read wiring that connect that behavior to the sanctuary.
+  const m6FormatMoney = (amount: number) => `${amount}$`;
+  const m6Snapshot = (
+    dateISO: string,
+    saldoKipu: number,
+    totalDebt: number,
+    netWorth: number,
+  ) => ({
+    dateISO,
+    saldoKipu,
+    totalDebt,
+    netWorth,
+    margenWeekly: 100,
+    safeWeekly: 90,
+    readiness: 50,
+  });
+  const m6History = [
+    m6Snapshot("2026-08-22", 30, 1_000, 2_000),
+    m6Snapshot("2026-08-23", 40, 950, 2_100),
+    m6Snapshot("2026-08-24", 35, 900, 2_180),
+    m6Snapshot("2026-08-25", 55, 850, 2_260),
+  ];
+  const m6Complete = buildShellPerspective({
+    today: {
+      spent: 18,
+      fill: 24,
+      objectives: [
+        { category: "food", label: "Comida", spent: 180, objective: 300, crossed: false, projectedCrossDateISO: null },
+        { category: "transport", label: "Transporte", spent: 96, objective: 120, crossed: false, projectedCrossDateISO: "2026-08-30" },
+      ],
+    },
+    month: {
+      income: 2_000,
+      fixed: 500,
+      debt: 200,
+      installments: 100,
+      essentials: 400,
+      savings: 150,
+      investment: 100,
+      goals: 200,
+      free: 350,
+    },
+    history: { ok: true, snapshots: m6History, todayISO: "2026-08-27" },
+    progress: {
+      primaryGoal: { name: "Brasil", current: 1_200, target: 3_000, percent: 40 },
+      reserve: { readOk: true, amount: 600, target: 1_200 },
+      debt: { amount: 800 },
+      wealth: { readOk: true, amount: 2_300 },
+    },
+    upcoming: {
+      cards: [{ name: "Diners", inDays: 2, balance: 800, due: 120 }],
+      payments: [{ name: "Internet", amount: 30, dueDate: "2026-08-31" }],
+    },
+    formatMoney: m6FormatMoney,
+  });
+  const m6NoReserveTarget = buildReserveProgress({
+    readOk: true,
+    amount: 600,
+    target: null,
+    formatMoney: m6FormatMoney,
+  });
+  const m6PerspectiveUiSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/PerspectiveSheet.tsx`,
+    "utf8",
+  );
+  const m6PerspectiveModelSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/shell-perspective.ts`,
+    "utf8",
+  );
+  assert(
+    "M6-1 · anillos y barras sólo publican porcentajes con su denominador; Reserva sin objetivo conserva cifra sin porcentaje",
+    m6Complete.today.rings.length === 3 &&
+      m6Complete.today.rings.every(
+        (ring) => ring.percentLabel != null && ring.denominatorLabel != null,
+      ) &&
+      m6Complete.month.denominatorLabel === "Ingreso mensual: 2000$" &&
+      m6Complete.month.segments.every((segment) => segment.shareLabel != null) &&
+      m6Complete.progress.items.every(
+        (item) => item.percentLabel == null || item.denominatorLabel != null,
+      ) &&
+      m6NoReserveTarget.amountLabel === "600$" &&
+      m6NoReserveTarget.percentLabel === null &&
+      m6NoReserveTarget.widthCss === null &&
+      m6NoReserveTarget.denominatorLabel === null &&
+      m6NoReserveTarget.detailLabel ===
+        "Tu respaldo va en 600$. Dime cuánto quieres tener y te muestro cuánto te falta." &&
+      m4StylesSource.includes("width: 94px; height: 94px;") &&
+      m6PerspectiveUiSource.includes("kipu-perspective-ring") &&
+      m6PerspectiveUiSource.includes("kipu-perspective-progress__track"),
+    JSON.stringify({
+      rings: m6Complete.today.rings,
+      month: m6Complete.month,
+      progress: m6Complete.progress.items,
+      noTarget: m6NoReserveTarget,
+    }),
+  );
+
+  const m6GapSnapshots = [
+    m6Snapshot("2026-08-20", 20, 1_000, 2_000),
+    m6Snapshot("2026-08-21", 30, 950, 2_100),
+    m6Snapshot("2026-08-24", 25, 900, 2_180),
+    m6Snapshot("2026-08-25", 45, 850, 2_260),
+  ];
+  const m6GapCord = buildSaldoCord({
+    read: { ok: true, snapshots: m6GapSnapshots },
+    todayISO: "2026-08-27",
+    formatMoney: m6FormatMoney,
+  });
+  const m6FailedCord = buildSaldoCord({
+    read: { ok: false, snapshots: [] },
+    todayISO: "2026-08-27",
+    formatMoney: m6FormatMoney,
+  });
+  const m6ShortCord = buildSaldoCord({
+    read: { ok: true, snapshots: m6GapSnapshots.slice(0, 1) },
+    todayISO: "2026-08-27",
+    formatMoney: m6FormatMoney,
+  });
+  const m6GapDay = m6GapCord.status === "ready"
+    ? m6GapCord.knots.find((knot) => knot.dateISO === "2026-08-22")
+    : null;
+  const m6ResumeDay = m6GapCord.status === "ready"
+    ? m6GapCord.knots.find((knot) => knot.dateISO === "2026-08-24")
+    : null;
+  assert(
+    "M6-2 · el cordón crea subtrazos separados por cada hueco, jamás interpola y distingue fallo de historia corta",
+    m6GapCord.status === "ready" &&
+      m6GapCord.paths.length === 2 &&
+      m6GapDay?.y === null &&
+      m6GapDay.amountLabel === null &&
+      m6ResumeDay?.connectedToPrevious === false &&
+      m6GapCord.gapCopy ===
+        "Los días sin registro quedan en blanco, no inventados." &&
+      m6FailedCord.status === "failed" &&
+      m6FailedCord.message === "No pude leer esto ahora." &&
+      m6ShortCord.status === "hidden",
+    JSON.stringify({ m6GapCord, m6FailedCord, m6ShortCord }),
+  );
+
+  const m6ShellSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/SantuarioShell.tsx`,
+    "utf8",
+  );
+  const m6ModuleOrder = [
+    'data-perspective-module="today"',
+    'data-perspective-module="month"',
+    'data-perspective-module="saldo-history"',
+    'data-perspective-module="progress"',
+    'data-perspective-module="upcoming"',
+  ].map((anchor) => m6PerspectiveUiSource.indexOf(anchor));
+  const m6DoorRoutes = [
+    "/app/saldo",
+    "/app/mes",
+    "/app/spending",
+    "/app/debt",
+    "/app/wealth",
+    "/app/cuentas",
+    "/app/goals",
+    "/app/activity",
+    "/app/chat",
+  ];
+  const m6SurfaceSource = `${m6PerspectiveUiSource}\n${m6PerspectiveModelSource}`;
+  assert(
+    "M6-3 · cinco preguntas en orden abren las nueve superficies y la meta principal conserva su nombre sin puntajes retirados",
+    m6ModuleOrder.every((position) => position >= 0) &&
+      m6ModuleOrder.every(
+        (position, index) => index === 0 || position > m6ModuleOrder[index - 1]!,
+      ) &&
+      m6DoorRoutes.every((route) =>
+        `${m6ShellSource}\n${m6PerspectiveUiSource}\n${m6PerspectiveModelSource}`.includes(route),
+      ) &&
+      m6PerspectiveUiSource.includes("href={perspective.progress.wealth.href}") &&
+      m6Complete.progress.items[0]?.title === "Brasil" &&
+      !/Pulso|Flexibilidad|Precisión|Realidad|Holgado|Justo|Estirando/u.test(
+        m6SurfaceSource,
+      ) &&
+      !m6PerspectiveUiSource.includes("formatMoney") &&
+      !m6PerspectiveUiSource.includes("Math."),
+    JSON.stringify({ m6ModuleOrder, m6DoorRoutes, goal: m6Complete.progress.items[0] }),
+  );
+
+  const m6PayloadSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/shell-payload.ts`,
+    "utf8",
+  );
+  const m6PayloadBuildBody = m6PayloadSource.match(
+    /export async function buildShellPayload[\s\S]*?\n\}\n\n\/\*\*/u,
+  )?.[0] ?? "";
+  const m6PreviewSource = readFileSync(
+    `${process.cwd()}/src/app/dev/shell-preview/page.tsx`,
+    "utf8",
+  );
+  const m6SnapshotSource = readFileSync(
+    `${process.cwd()}/src/lib/trends/snapshot-store.ts`,
+    "utf8",
+  );
+  assert(
+    "M6-4 · tap/swipe/cierres pausan el orbe; payload, fixtures y E2E fijan una lectura pesada y degradación honesta",
+    m6ShellSource.includes("onClick={openPerspective}") &&
+      m6ShellSource.includes("perspectiveHandleY.current") &&
+      m6ShellSource.includes("finishPerspectiveCloseGesture") &&
+      m6ShellSource.includes('role="dialog"') &&
+      m6ShellSource.includes(
+        "active={liveSettled && !dialogOpen && !perspectiveOpen}",
+      ) &&
+      m6ShellSource.includes(
+        'data-orb-paused={!liveSettled || dialogOpen || perspectiveOpen ? "true" : "false"}',
+      ) &&
+      (m6PayloadBuildBody.match(/buildCoachingBriefing\(\{/g) ?? []).length === 1 &&
+      (m6PayloadBuildBody.match(/loadSnapshotSeriesRead\(/g) ?? []).length === 1 &&
+      m6SnapshotSource.includes("export type SnapshotSeriesRead") &&
+      [
+        "completo",
+        "sin-objetivo-reserva",
+        "sin-meta-principal",
+        "con-huecos",
+        "lectura-caida",
+        "sin-compromisos",
+      ].every((fixture) => m6PreviewSource.includes(`\"${fixture}\"`)) &&
+      m4StylesSource.includes(".kipu-shell-sheet,") &&
+      m4E2ESource.includes(
+        "M6-E8 · persona sin objetivo de Reserva publica cifra e invitación, nunca porcentaje",
+      ) &&
+      m4E2ESource.includes(
+        "M6-E9 · snapshots con día faltante conservan hueco y jamás interpolan el cordón",
+      ),
+    JSON.stringify({
+      briefingCalls: (m6PayloadBuildBody.match(/buildCoachingBriefing\(\{/g) ?? []).length,
+      snapshotCalls: (m6PayloadBuildBody.match(/loadSnapshotSeriesRead\(/g) ?? []).length,
+    }),
+  );
+
+  // M7 — the detail redesign is intentionally source-heavy but money-light.
+  // These checks pin the complete surface inventory, execute the two extracted
+  // calculations, preserve contextual weekly language and prove C5 identity.
+  const m7PageLayers = [
+    ["saldo", "saldo"],
+    ["cuentas", "reserva"],
+    ["mes", "reserva"],
+    ["spending", "saldo"],
+    ["debt", "deuda"],
+    ["wealth", "patrimonio"],
+    ["goals", "metas"],
+    ["activity", "saldo"],
+    ["fx", "patrimonio"],
+    ["household", "metas"],
+    ["settings", "patrimonio"],
+    ["kipu-fit", "patrimonio"],
+    ["mis-datos", "patrimonio"],
+  ] as const;
+  const m7PageSources = new Map(
+    m7PageLayers.map(([route]) => [
+      route,
+      readFileSync(`${process.cwd()}/src/app/app/${route}/page.tsx`, "utf8"),
+    ]),
+  );
+  const m7ReportSource = readFileSync(
+    `${process.cwd()}/docs/design/stages/M7_REPORT.md`,
+    "utf8",
+  );
+  const m7CashflowSource = readFileSync(
+    `${process.cwd()}/src/app/app/cashflow/page.tsx`,
+    "utf8",
+  );
+  const m7TouchedPages = [...m7PageSources.values()].join("\n");
+  assert(
+    "M7-1 · el inventario cubre once superficies y cada ruta viste el acento correcto sin absorber ni enlazar cashflow",
+    (m7ReportSource.match(/^\| (?:[1-9]|1[01]) \|/gmu) ?? []).length === 11 &&
+      m7PageLayers.every(([route, layer]) =>
+        m7PageSources.get(route)?.includes(`<DetailSurface layer="${layer}"`),
+      ) &&
+      !m7TouchedPages.includes('/app/cashflow') &&
+      !m7CashflowSource.includes("DetailSurface") &&
+      m7ReportSource.includes("## Inventario de superficies") &&
+      m7ReportSource.includes("## Campos leídos, antes y después") &&
+      m7ReportSource.includes("## Hallazgos"),
+    JSON.stringify({
+      inventoried: (m7ReportSource.match(/^\| (?:[1-9]|1[01]) \|/gmu) ?? []).length,
+      missingLayers: m7PageLayers.filter(([route, layer]) =>
+        !m7PageSources.get(route)?.includes(`<DetailSurface layer="${layer}"`),
+      ),
+    }),
+  );
+
+  const m7Activity = buildActivityDetail({
+    rows: [
+      { id: "r1", description: "Reversa", category: null, base_amount: 10, base_currency: "USD", type: "reversal", occurred_at: "2026-08-27T12:00:00Z", debt_account_id: null, goal_id: null, related_transaction_id: "e1" },
+      { id: "e1", description: "Café", category: "other", base_amount: 10, base_currency: "USD", type: "expense", occurred_at: "2026-08-27T11:00:00Z", debt_account_id: null, goal_id: null, related_transaction_id: null },
+      { id: "d1", description: "Tarjeta", category: null, base_amount: 5, base_currency: "USD", type: "debt_payment", occurred_at: "2026-08-27T10:00:00Z", debt_account_id: "card", goal_id: null, related_transaction_id: null },
+      { id: "i1", description: "Ingreso", category: null, base_amount: 20, base_currency: "USD", type: "income", occurred_at: "2026-08-26T10:00:00Z", debt_account_id: null, goal_id: null, related_transaction_id: null },
+    ],
+    filter: "all",
+    formatDay: (iso) => iso.slice(0, 10),
+    nowMs: Date.parse("2026-08-27T13:00:00Z"),
+  });
+  const m7ForeignGoals = foreignGoalReserveMonthly({
+    goals: [
+      { contributionAmount: 7, cadence: "weekly", currency: "USD", protected: true },
+      { contributionAmount: 20, cadence: "monthly", currency: "USD", protected: true },
+      { contributionAmount: 99, cadence: "monthly", currency: "ARS", protected: true },
+    ],
+    baseCurrency: "USD",
+    protectedGoalsMonthly: 80,
+  });
+  const m7MesPageSource = m7PageSources.get("mes") ?? "";
+  const m7ActivityPageSource = m7PageSources.get("activity") ?? "";
+  const m7RedistributeSource = readFileSync(
+    `${process.cwd()}/src/app/app/mes/MesRedistribute.tsx`,
+    "utf8",
+  );
+  const m7ChatViewSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/ChatView.tsx`,
+    "utf8",
+  );
+  const m7GoalsPageSource = m7PageSources.get("goals") ?? "";
+  assert(
+    "M7-2 · las derivaciones salen de las páginas sin cambiar resultado y el framing semanal muere sólo donde enmarca",
+    m7Activity.groups.length === 2 &&
+      m7Activity.groups[0]?.dayTotal === 0 &&
+      m7Activity.weekOut === 5 &&
+      m7Activity.weekIn === 20 &&
+      m7Activity.dayTotalLabel === "Gastado" &&
+      m7ForeignGoals === 30 &&
+      m7MesPageSource.includes("foreignGoalReserveMonthly({") &&
+      !m7MesPageSource.includes("goalMonthlyEquivalent(") &&
+      m7ActivityPageSource.includes("buildActivityDetail({") &&
+      !m7ActivityPageSource.includes("weekOut +=") &&
+      m7RedistributeSource.includes("reversible,\n// unsaved form preview only") &&
+      !m7PageSources.get("spending")?.includes("Tu semana") &&
+      !m7ChatViewSource.includes("¿Cómo voy esta semana?") &&
+      (m7GoalsPageSource.match(/\/semana/g) ?? []).length === 3,
+    JSON.stringify({ m7Activity, m7ForeignGoals, goalWeeklyCadences: (m7GoalsPageSource.match(/\/semana/g) ?? []).length }),
+  );
+
+  const m7GoalSources = buildGoalLayerSources({
+    goals: [{ id: "goal", name: "Viaje" }],
+    savingsPlans: [{ id: "save", kind: "savings", name: "Reserva viaje" }],
+    investments: [
+      { id: "fund", name: "Fondo futuro" },
+      { id: "unnamed", name: null },
+    ],
+    readable: { goals: true, savingsPlans: true, investments: true },
+  });
+  const m7CoachingSource = readFileSync(
+    `${process.cwd()}/src/lib/financial/coaching-signals.ts`,
+    "utf8",
+  );
+  assert(
+    "M7-3 · Metas une las tres identidades reales y una fuente sin nombre se declara, nunca recibe etiqueta inventada",
+    m7GoalSources.items.map((item) => item.label).join("|") ===
+      "Viaje|Reserva viaje|Fondo futuro|Nombre no disponible" &&
+      m7GoalSources.items.at(-1)?.nameAvailable === false &&
+      m7CoachingSource.includes("goals: goalsIntel.portfolio.goals.map") &&
+      m7CoachingSource.includes("savingsPlans: savingsPlansRaw.map") &&
+      m7CoachingSource.includes("name: investment.sourceName ?? null") &&
+      m7GoalsPageSource.includes("briefing.goalLayerSources") &&
+      m7GoalsPageSource.includes("source.label") &&
+      m4E2ESource.includes("M7-E10 · Metas muestra meta, ahorro e inversión por nombre") &&
+      m4E2ESource.includes('unnamedM7.items[0]?.label === "Nombre no disponible"'),
+    JSON.stringify(m7GoalSources),
+  );
+
+  const m7ShellSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/living/shell.tsx`,
+    "utf8",
+  );
+  const m7SpendingSource = m7PageSources.get("spending") ?? "";
+  assert(
+    "M7-4 · detalle hereda tokens/capa, vuelta visible, Tu Kipu único, semáforo único y reducción de movimiento en ambos temas",
+    m7ShellSource.includes('export function DetailSurface({') &&
+      m7ShellSource.includes('href: "/app/settings"') &&
+      m7ShellSource.includes('href: "/app/kipu-fit"') &&
+      m7ShellSource.includes('href: "/app/mis-datos"') &&
+      m7ShellSource.includes('aria-label="Volver"') &&
+      ["saldo", "reserva", "metas", "patrimonio", "deuda"].every((layer) =>
+        m4StylesSource.includes(`[data-detail-layer="${layer}"]`),
+      ) &&
+      m4StylesSource.includes('[data-theme="light"] .kipu-detail__atmosphere') &&
+      m4StylesSource.includes(".kipu-detail *,") &&
+      m4StylesSource.includes('.kipu-tone[data-tone="good"]') &&
+      m4StylesSource.includes('.kipu-tone[data-tone="watch"]') &&
+      m4StylesSource.includes('.kipu-tone[data-tone="over"]') &&
+      !m7SpendingSource.includes("STATUS_BAR") &&
+      !m7SpendingSource.includes('text: "justo"') &&
+      m7SpendingSource.includes('className="kipu-tone-fill h-full rounded-full"'),
+    "shared detail tokens / navigation / semantic states / reduced motion",
+  );
+
+  const m8ManifestSource = readFileSync(`${process.cwd()}/src/app/manifest.ts`, "utf8");
+  const m8IconSource = readFileSync(`${process.cwd()}/src/app/icon.tsx`, "utf8");
+  const m8AppleIconSource = readFileSync(`${process.cwd()}/src/app/apple-icon.tsx`, "utf8");
+  const m8IconArtSource = readFileSync(`${process.cwd()}/src/app/pwa-icon-art.tsx`, "utf8");
+  assert(
+    "M8-1 · manifest e ImageResponse publican PNG 192/512, Apple y maskable con zona segura; SVG any sobrevive",
+    m8ManifestSource.includes('src: "/pwa/icon/192"') &&
+      m8ManifestSource.includes('sizes: "192x192"') &&
+      m8ManifestSource.includes('src: "/pwa/icon/512"') &&
+      m8ManifestSource.includes('sizes: "512x512"') &&
+      m8ManifestSource.includes('src: "/pwa/icon/maskable"') &&
+      m8ManifestSource.includes('purpose: "maskable"') &&
+      m8ManifestSource.includes('src: "/icon.svg"') &&
+      m8ManifestSource.includes('type: "image/svg+xml"') &&
+      m8IconSource.includes('id: "192"') &&
+      m8IconSource.includes('id: "512"') &&
+      m8AppleIconSource.includes("createKipuIcon(size.width)") &&
+      m8IconArtSource.includes("maskable ? 0.56 : 0.7") &&
+      m8IconArtSource.includes('import { ImageResponse } from "next/og"'),
+    "manifest sizes / next-og generation / maskable inset",
+  );
+
+  const m8WorkerSource = readFileSync(`${process.cwd()}/public/sw.js`, "utf8");
+  const m8WorkerClientSource = readFileSync(
+    `${process.cwd()}/src/app/PwaServiceWorker.tsx`,
+    "utf8",
+  );
+  const m8OfflineSource = readFileSync(`${process.cwd()}/public/offline.html`, "utf8");
+  const m8OfflineVisible = m8OfflineSource
+    .replace(/<style[\s\S]*?<\/style>/gu, "")
+    .replace(/<[^>]+>/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+
+  type M8SyntheticRequest = {
+    failNetwork?: boolean;
+    headers: { has: (name: string) => boolean };
+    method: string;
+    mode: string;
+    url: string;
+  };
+  type M8SyntheticResponse = {
+    clone: () => M8SyntheticResponse;
+    source: "cache" | "network";
+    url: string;
+  };
+  type M8RequestPolicy = {
+    fallback: "offline" | null;
+    storesResponse: boolean;
+    strategy: "cache-first" | "network-only" | "network-passthrough" | "network-with-offline";
+  };
+  type M8PolicyApi = {
+    decideRequestPolicy: (request: {
+      hasServerAction: boolean;
+      method: string;
+      mode: string;
+      pathname: string;
+    }) => M8RequestPolicy;
+    policies: Record<string, M8RequestPolicy>;
+    precacheUrls: readonly string[];
+  };
+  type M8FetchEvent = {
+    request: M8SyntheticRequest;
+    respondWith: (response: M8SyntheticResponse | Promise<M8SyntheticResponse | undefined>) => void;
+  };
+
+  const m8Origin = "https://kipu.test";
+  const m8Listeners = new Map<string, (event: M8FetchEvent) => void>();
+  const m8CacheReads: string[] = [];
+  const m8CacheWrites: string[] = [];
+  const m8NetworkReads: string[] = [];
+  const m8Response = (
+    source: M8SyntheticResponse["source"],
+    url: string,
+  ): M8SyntheticResponse => ({
+    clone: () => m8Response(source, url),
+    source,
+    url,
+  });
+  const m8OfflineResponse = m8Response("cache", `${m8Origin}/offline.html`);
+  const m8CachedPaths = new Set([
+    "/offline.html",
+    "/icon.svg",
+    "/pwa/icon/192",
+    "/pwa/icon/512",
+    "/pwa/icon/maskable",
+  ]);
+  const m8CachePath = (request: string | M8SyntheticRequest) =>
+    typeof request === "string" ? request : new URL(request.url).pathname;
+  const m8Cache = {
+    addAll: async () => undefined,
+    put: async (request: M8SyntheticRequest) => {
+      m8CacheWrites.push(new URL(request.url).pathname);
+    },
+  };
+  const m8WorkerSelf = {
+    addEventListener: (type: string, listener: (event: M8FetchEvent) => void) => {
+      m8Listeners.set(type, listener);
+    },
+    clients: { claim: async () => undefined },
+    location: { origin: m8Origin },
+    registration: { unregister: async () => true },
+    skipWaiting: async () => undefined,
+  };
+  let m8WorkerPolicyPass = false;
+  let m8WorkerExecutionPass = false;
+  let m8WorkerError: string | null = null;
+  try {
+    runInNewContext(m8WorkerSource, {
+      Promise,
+      URL,
+      caches: {
+        delete: async () => true,
+        keys: async () => [],
+        match: async (request: string | M8SyntheticRequest) => {
+          const pathname = m8CachePath(request);
+          m8CacheReads.push(pathname);
+          return m8CachedPaths.has(pathname)
+            ? pathname === "/offline.html"
+              ? m8OfflineResponse
+              : m8Response("cache", `${m8Origin}${pathname}`)
+            : undefined;
+        },
+        open: async () => m8Cache,
+      },
+      fetch: async (request: M8SyntheticRequest) => {
+        const pathname = new URL(request.url).pathname;
+        m8NetworkReads.push(pathname);
+        if (request.failNetwork) throw new Error("synthetic offline");
+        return m8Response("network", request.url);
+      },
+      self: m8WorkerSelf,
+    });
+
+    const m8Policy = (m8WorkerSelf as typeof m8WorkerSelf & { KIPU_SW_POLICY: M8PolicyApi })
+      .KIPU_SW_POLICY;
+    const decide = (pathname: string, mode = "cors", hasServerAction = false) =>
+      m8Policy.decideRequestPolicy({ hasServerAction, method: "GET", mode, pathname });
+    m8WorkerPolicyPass =
+      [...m8Policy.precacheUrls].join("|") ===
+        "/offline.html|/icon.svg|/pwa/icon/192|/pwa/icon/512|/pwa/icon/maskable" &&
+      ["/app", "/app/saldo", "/api/x"].every((pathname) => {
+        const policy = decide(pathname, "navigate");
+        return policy.strategy === "network-only" && policy.fallback === "offline";
+      }) &&
+      decide("/landing", "cors", true).strategy === "network-only" &&
+      decide("/landing", "cors", true).fallback === null &&
+      ["/pwa/icon/192", "/offline.html"].every(
+        (pathname) => decide(pathname).strategy === "cache-first",
+      ) &&
+      decide("/ayuda", "navigate").strategy === "network-with-offline" &&
+      Object.values(m8Policy.policies).every((policy) => policy.storesResponse === false);
+
+    const runM8Fetch = async ({
+      failNetwork = false,
+      hasServerAction = false,
+      method = "GET",
+      mode = "cors",
+      pathname,
+    }: {
+      failNetwork?: boolean;
+      hasServerAction?: boolean;
+      method?: string;
+      mode?: string;
+      pathname: string;
+    }) => {
+      const listener = m8Listeners.get("fetch");
+      if (!listener) throw new Error("fetch listener missing");
+      const request: M8SyntheticRequest = {
+        failNetwork,
+        headers: { has: (name) => hasServerAction && name === "next-action" },
+        method,
+        mode,
+        url: `${m8Origin}${pathname}`,
+      };
+      const response = await new Promise<M8SyntheticResponse | undefined>((resolve, reject) => {
+        let responded = false;
+        listener({
+          request,
+          respondWith: (value) => {
+            responded = true;
+            Promise.resolve(value).then(resolve, reject);
+          },
+        });
+        if (!responded) reject(new Error(`respondWith missing for ${pathname}`));
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      return response;
+    };
+
+    const moneyCacheReadStart = m8CacheReads.length;
+    await runM8Fetch({ pathname: "/app" });
+    await runM8Fetch({ pathname: "/app/saldo" });
+    await runM8Fetch({ pathname: "/api/x" });
+    await runM8Fetch({ hasServerAction: true, method: "POST", pathname: "/action" });
+    const moneySuccessNeverReadsCache = m8CacheReads.length === moneyCacheReadStart;
+    const offlineMoney = await runM8Fetch({ failNetwork: true, mode: "navigate", pathname: "/app" });
+    const cachedIcon = await runM8Fetch({ pathname: "/pwa/icon/192" });
+    const offlineNavigation = await runM8Fetch({ failNetwork: true, mode: "navigate", pathname: "/ayuda" });
+    m8WorkerExecutionPass =
+      moneySuccessNeverReadsCache &&
+      m8CacheWrites.length === 0 &&
+      offlineMoney === m8OfflineResponse &&
+      cachedIcon?.source === "cache" &&
+      offlineNavigation === m8OfflineResponse &&
+      m8NetworkReads.includes("/app") &&
+      m8NetworkReads.includes("/app/saldo") &&
+      m8NetworkReads.includes("/api/x") &&
+      m8NetworkReads.includes("/action");
+  } catch (error) {
+    m8WorkerError = error instanceof Error ? error.message : String(error);
+  }
+  assert(
+    "M8-2 · política y SW ejecutados: dinero/actions son NetworkOnly sin writes; sólo estáticos son CacheFirst y offline no muestra cifras",
+    m8WorkerPolicyPass &&
+      m8WorkerExecutionPass &&
+      !m8WorkerSource.includes('addEventListener("sync"') &&
+      !m8WorkerSource.includes('addEventListener("push"') &&
+      m8WorkerClientSource.includes('process.env.NODE_ENV !== "production"') &&
+      m8WorkerClientSource.includes('updateViaCache: "none"') &&
+      m8WorkerClientSource.includes("uninstallKipuServiceWorker") &&
+      m8WorkerSource.includes('event.data?.type === "KIPU_UNINSTALL"') &&
+      m8OfflineVisible.includes("Tus números viven en el servidor") &&
+      !/\d/u.test(m8OfflineVisible) &&
+      m8ManifestSource.includes('action: "/app/chat"') &&
+      (m8ManifestSource.match(/^\s+url: "\/app(?:\/chat)?"/gmu) ?? []).length === 2,
+    JSON.stringify({
+      cacheReads: m8CacheReads,
+      cacheWrites: m8CacheWrites,
+      error: m8WorkerError,
+      networkReads: m8NetworkReads,
+      offlineVisible: m8OfflineVisible,
+      policyPass: m8WorkerPolicyPass,
+      workerExecutionPass: m8WorkerExecutionPass,
+    }),
+  );
+
+  const m8StatesSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/living/states.tsx`,
+    "utf8",
+  );
+  const m8FunctionSource = (source: string, signature: string) => {
+    const start = source.indexOf(signature);
+    const open = source.indexOf("{", start);
+    if (start < 0 || open < 0) return "";
+    let depth = 0;
+    for (let index = open; index < source.length; index += 1) {
+      if (source[index] === "{") depth += 1;
+      if (source[index] === "}") depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+    return "";
+  };
+  const m8DashboardSkeleton = m8FunctionSource(
+    m8StatesSource,
+    "export function DashboardSkeleton()",
+  );
+  const m8LoadingSource = readFileSync(`${process.cwd()}/src/app/app/loading.tsx`, "utf8");
+  const m8LandingSource = readFileSync(`${process.cwd()}/src/app/page.tsx`, "utf8");
+  const m8NotFoundSource = readFileSync(`${process.cwd()}/src/app/not-found.tsx`, "utf8");
+  const m8ErrorSource = readFileSync(`${process.cwd()}/src/app/error.tsx`, "utf8");
+  assert(
+    "M8-3 · skeleton del santuario, landing con orbe estático y tres superficies públicas tokenizadas sin WebGL",
+    m8DashboardSkeleton.includes("kipu-skeleton-sanctuary") &&
+      m8DashboardSkeleton.includes('["saldo", "reserva", "metas", "patrimonio", "deuda"]') &&
+      m8DashboardSkeleton.includes('["chat", "camera", "voice"]') &&
+      !m8DashboardSkeleton.includes("size={168}") &&
+      !m8DashboardSkeleton.includes("[0, 1, 2, 3, 4, 5]") &&
+      m8LoadingSource.includes('import { DashboardSkeleton }') &&
+      m8LoadingSource.includes("return <DashboardSkeleton />;") &&
+      !m8LoadingSource.includes("getShellMode") &&
+      !m8LoadingSource.includes("LegacyDashboardSkeleton") &&
+      m8LandingSource.includes('data-product-image="orbe"') &&
+      m8LandingSource.includes("IconOrb") &&
+      m8LandingSource.includes("IconLayers") &&
+      !/IconRing|IconPulse|Margen ring/u.test(m8LandingSource) &&
+      !/WebGL|getContext|<canvas|mediaDevices|getUserMedia/u.test(m8LandingSource) &&
+      [m8LandingSource, m8NotFoundSource, m8ErrorSource].every(
+        (source) => !/white\/[0-9]/u.test(source) && source.includes("--kipu-shell"),
+      ),
+    "sanctuary loading anchors / static orb / theme tokens",
+  );
+
+  const m8LayoutSource = readFileSync(`${process.cwd()}/src/app/layout.tsx`, "utf8");
+  const m8AppContentSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/AppContent.tsx`,
+    "utf8",
+  );
+  const m8CssBlock = (start: string, end: string) =>
+    m4StylesSource.slice(m4StylesSource.indexOf(start), m4StylesSource.indexOf(end));
+  const m8FrameCss = m8CssBlock(".kipu-shell-frame {", ".kipu-shell-handle {");
+  const m8PerspectiveCss = m8CssBlock(
+    ".kipu-shell-sheet-backdrop {",
+    ".kipu-shell-sheet {",
+  );
+  const m8DialogueCss = m8CssBlock(".kipu-dialog-backdrop {", '.kipu-dialog-backdrop[data-open="true"]');
+  const m8DetailCss = m8CssBlock(".kipu-detail {", '.kipu-detail[data-detail-layer="saldo"]');
+  const m8PublicCss = m8CssBlock(".kipu-public-safe {", ".kipu-breathe {");
+  const m8FourInsets = (source: string) =>
+    ["top", "right", "bottom", "left"].every((side) =>
+      source.includes(`env(safe-area-inset-${side})`),
+    );
+  assert(
+    "M8-4 · viewport día/noche y safe areas cubren cuatro orillas del santuario, ambas hojas, detalle y superficies públicas",
+    m8LayoutSource.includes('{ color: "#edf2f6", media: "(prefers-color-scheme: light)" }') &&
+      m8LayoutSource.includes('{ color: "#060a10", media: "(prefers-color-scheme: dark)" }') &&
+      [m8FrameCss, m8PerspectiveCss, m8DialogueCss, m8DetailCss, m8PublicCss].every(m8FourInsets) &&
+      ["top", "right", "bottom", "left"].every((side) =>
+        m8PublicCss.includes(`max(20px, env(safe-area-inset-${side}))`),
+      ) &&
+      m8AppContentSource.includes("pl-[env(safe-area-inset-left)]") &&
+      m8AppContentSource.includes("pr-[env(safe-area-inset-right)]") &&
+      m4StylesSource.includes(".kipu-detail *,") &&
+      m4StylesSource.includes(".kipu-dialog-backdrop,") &&
+      !m7TouchedPages.includes("/app/cashflow"),
+    "light/dark chrome / sanctuary + perspective + dialogue + detail + public insets",
+  );
+
+  // M9 — Acto 2 removes runtime coexistence only after the living callers and
+  // reachability anchors exist. Physical orphan absence is strengthened below
+  // once the pre-delete gate has gone green.
+  const m9PageSource = readFileSync(`${process.cwd()}/src/app/app/page.tsx`, "utf8");
+  const m9LayoutSource = readFileSync(`${process.cwd()}/src/app/app/layout.tsx`, "utf8");
+  const m9EnvSource = readFileSync(`${process.cwd()}/.env.example`, "utf8");
+  const m9SaldoComponentSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/SaldoKipu.tsx`,
+    "utf8",
+  );
+  const m9RemovedPaths = [
+    "src/lib/shell-mode.ts",
+    "src/app/app/components/AppNav.tsx",
+    "src/app/app/components/DisplayCurrencyToggle.tsx",
+    "src/app/app/components/UpcomingCommitmentsCard.tsx",
+    "src/app/app/components/DashboardCards.tsx",
+    "src/app/dev/ui-preview/page.tsx",
+  ];
+  assert(
+    "M9-1 · el Acto 2 elimina la convivencia y conserva alcanzables santuario, detalles y loading",
+    m9PageSource.includes("return <SantuarioShell payload={payload} />;") &&
+      m9PageSource.includes("const payload = await buildShellPayload(session.user.id);") &&
+      // Auditoría Acto 2: que la línea del santuario EXISTA no prueba que se
+      // ALCANCE — un `redirect` puesto encima la deja intacta y muerta. La
+      // promesa «/app es el santuario» se sujeta por FORMA: un solo `return`,
+      // un solo `redirect(` (el guard de login) y ese guard ANTES del payload.
+      // Cualquier rama nueva cambia estas cuentas.
+      (m9PageSource.match(/\breturn\b/gu) ?? []).length === 1 &&
+      (m9PageSource.match(/\bredirect\(/gu) ?? []).length === 1 &&
+      m9PageSource.indexOf("redirect(") <
+        m9PageSource.indexOf("buildShellPayload(session.user.id)") &&
+      !/getShellMode|Legacy|buildUserFinancialContext/u.test(m9PageSource) &&
+      m8LoadingSource.includes("return <DashboardSkeleton />;") &&
+      !/getShellMode|LegacyDashboardSkeleton/u.test(m8LoadingSource) &&
+      m9LayoutSource.includes("<TimezoneCapture userId={session.user.id} />") &&
+      m9LayoutSource.includes("<AppContent>{children}</AppContent>") &&
+      m8AppContentSource.includes('data-app-content={sanctuary ? "sanctuary" : "detail"}') &&
+      m8AppContentSource.includes('const sanctuary = pathname === "/app";') &&
+      [...m7PageSources.values()].every((source) => source.includes("<DetailSurface")) &&
+      m6DoorRoutes.every((route) => m6SurfaceSource.includes(route)) &&
+      m9RemovedPaths.every((path) => !existsSync(`${process.cwd()}/${path}`)) &&
+      !m9EnvSource.includes("KIPU_SHELL") &&
+      !m8StatesSource.includes("LegacyDashboardSkeleton") &&
+      m9SaldoComponentSource.includes("export function QuipuCord") &&
+      (m9SaldoComponentSource.match(/^export function /gmu) ?? []).length === 1 &&
+      !/SaldoKipuHero|HoyCard|ReservaCard|MetaPrincipalCard|ProximoPagoCard|AccionCard|pickAccion/u.test(
+        m9SaldoComponentSource,
+      ),
+    "single living home / complete legacy absence / authenticated layout / detail wrapper + returns / sanctuary loading + nine doors / QuipuCord alive",
+  );
+
+  const m9CashflowSource = readFileSync(
+    `${process.cwd()}/src/app/app/cashflow/page.tsx`,
+    "utf8",
+  );
+  const m9RedirectTargets = new Map(
+    [
+      ["margen", "/app/saldo"],
+      ["readiness", "/app/saldo"],
+      ["precision", "/app/mis-datos"],
+      ["reality", "/app/spending"],
+    ].map(([route, target]) => [
+      route,
+      {
+        source: readFileSync(`${process.cwd()}/src/app/app/${route}/page.tsx`, "utf8"),
+        target,
+      },
+    ]),
+  );
+  assert(
+    "M9-2 · sólo salen huérfanos probados; cinco redirects sobreviven y cashflow ya no lee dinero",
+    !existsSync(`${process.cwd()}/src/app/app/components/GoalPlanCard.tsx`) &&
+      ["margen", "readiness", "precision", "reality"].every(
+        (route) => !existsSync(`${process.cwd()}/src/app/app/${route}/loading.tsx`),
+      ) &&
+      !readFileSync(`${process.cwd()}/src/lib/financial/margen-kipu.ts`, "utf8").includes(
+        "saldoStale",
+      ) &&
+      [...m9RedirectTargets.values()].every(({ source, target }) =>
+        source.includes(`redirect("${target}")`),
+      ) &&
+      m9CashflowSource.includes('redirect("/app/mes")') &&
+      !/buildCoachingBriefing|buildUserFinancialContext|createSupabaseServerClient/u.test(
+        m9CashflowSource,
+      ) &&
+      !m9SaldoComponentSource.includes("/app/cashflow") &&
+      m6SurfaceSource.includes("/app/mes"),
+    "huérfanos ausentes / redirects puros / puertas vivas a Tu mes",
+  );
+
+  const m9ProductSource = readFileSync(`${process.cwd()}/docs/PRODUCT_SPEC.md`, "utf8");
+  const m9ClaudeSource = readFileSync(`${process.cwd()}/CLAUDE.md`, "utf8");
+  const m9AgentsSource = readFileSync(`${process.cwd()}/AGENTS.md`, "utf8");
+  const m9RoadmapSource = readFileSync(`${process.cwd()}/docs/ROADMAP.md`, "utf8");
+  const m9AuthoritySource = [m9ProductSource, m9ClaudeSource, m9AgentsSource].join("\n");
+  const m9WalkProductCode = (dir: string, out: string[] = []): string[] => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "dev" || entry.name === "node_modules") continue;
+      const full = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) m9WalkProductCode(full, out);
+      else if (/\.tsx?$/u.test(entry.name)) out.push(full);
+    }
+    return out;
+  };
+  const m9ColchonLeaks: string[] = [];
+  const m9RetiredLeaks: string[] = [];
+  const m9WeeklySaldoLeaks: string[] = [];
+  const m9PermittedContext = (file: string, line: string) =>
+    /nunca .{0,4}colch/iu.test(line) ||
+    (file.endsWith("kipu-agent.ts") && line.includes("SALDO_FAMILY")) ||
+    (file.endsWith("coach-response-prompt.ts") && /Banned wording|NEVER frame/u.test(line));
+  const m9RetiredPatterns = [
+    /\bMargen Kipu\b/iu,
+    /REPARTO SUGERIDO DEL MARGEN/iu,
+    /POR QU[EÉ] CAMBI[OÓ] EL MARGEN/iu,
+    /\bmargen libre\b/iu,
+    /\b(?:tu|el|del)\s+margen\s+(?:actual|estimad[oa]|mensual|semanal)\b/iu,
+    /Readiness.{0,120}Flexibilidad.{0,120}Precisi[oó]n.{0,120}Realidad/iu,
+    /\b(?:Pulso Kipu|dinero flexible|flexibles esta semana)\b/iu,
+  ];
+  const m9WeeklySaldoPatterns = [
+    /\bweekly Saldo\b/iu,
+    /\bSaldo semanal\b/iu,
+    /\bSaldo.{0,100}(?:para esta semana|de la semana|\/sem\b)/iu,
+  ];
+  for (const file of m9WalkProductCode("src")) {
+    for (const raw of readFileSync(file, "utf8").split("\n")) {
+      const line = raw.trimStart().replace(/(?<!:)\/\/.*$/u, "");
+      if (line.startsWith("*") || line.startsWith("/*") || line.startsWith("{/*") || !line.trim()) {
+        continue;
+      }
+      if (/colch[oó]n/iu.test(line) && !m9PermittedContext(file, line)) {
+        m9ColchonLeaks.push(`${file}: ${line.slice(0, 90)}`);
+      }
+      if (!m9PermittedContext(file, line) && m9RetiredPatterns.some((pattern) => pattern.test(line))) {
+        m9RetiredLeaks.push(`${file}: ${line.slice(0, 120)}`);
+      }
+      if (!m9PermittedContext(file, line) && m9WeeklySaldoPatterns.some((pattern) => pattern.test(line))) {
+        m9WeeklySaldoLeaks.push(`${file}: ${line.slice(0, 120)}`);
+      }
+    }
+  }
+  assert(
+    "M9-3 · autoridad y vocabulario describen orbe+santuario; el trinquete queda en cero y /semana elegido sobrevive",
+    !m9AuthoritySource.includes("vertical quipu") &&
+      m9ProductSource.includes("living orb") &&
+      m9ProductSource.includes("perspective cord") &&
+      m9ProductSource.includes("`/app/cashflow` redirects to `/app/mes`") &&
+      m9ClaudeSource.includes("five-layer carousel") &&
+      m9AgentsSource.includes("five-layer carousel") &&
+      m9RoadmapSource.includes("puertas está CERRADO desde M6") &&
+      m9RoadmapSource.includes("CIERRE ACTO 1 ENTREGADO") &&
+      m9ColchonLeaks.length === 0 &&
+      m9RetiredLeaks.length === 0 &&
+      m9WeeklySaldoLeaks.length === 0 &&
+      (m7GoalsPageSource.match(/\/semana/g) ?? []).length === 3,
+    JSON.stringify({
+      colchon: m9ColchonLeaks,
+      retirado: m9RetiredLeaks,
+      saldoSemanal: m9WeeklySaldoLeaks,
+      goalWeeklyCadences: (m7GoalsPageSource.match(/\/semana/g) ?? []).length,
+    }),
+  );
+
+  const m9ScriptsSource = readFileSync(`${process.cwd()}/docs/TEST_SCRIPTS.md`, "utf8");
+  const m9ShellPreviewSource = readFileSync(
+    `${process.cwd()}/src/app/dev/shell-preview/page.tsx`,
+    "utf8",
+  );
+  const m9ChatPreviewSource = readFileSync(
+    `${process.cwd()}/src/app/dev/chat-preview/page.tsx`,
+    "utf8",
+  );
+  assert(
+    "M9-4 · TEST_SCRIPTS cubre santuario, perspectiva, diálogo, voz y los ocho estados honestos con fixtures reales",
+    m9ScriptsSource.includes("## Script 46 — Bloque M: front completo, cierre Acto 1") &&
+      ["Santuario", "Perspectiva", "Diálogo", "Ciclo real de voz"].every((term) =>
+        m9ScriptsSource.includes(term),
+      ) &&
+      [
+        "state=niebla",
+        "state=dia-1",
+        "perspective=lectura-caida",
+        "/offline.html",
+        "perspective=sin-objetivo-reserva",
+        "perspective=con-huecos",
+        "mode=receipt-incomplete",
+        "state=patrimonio-negativo",
+      ].every((fixture) => m9ScriptsSource.includes(fixture)) &&
+      ["niebla", '"dia-1"', '"patrimonio-negativo"', '"lectura-caida"', '"sin-objetivo-reserva"', '"con-huecos"'].every(
+        (fixture) => m9ShellPreviewSource.includes(fixture),
+      ) &&
+      m9ChatPreviewSource.includes('mode === "receipt-incomplete"') &&
+      m9ChatPreviewSource.includes('mode !== "incomplete"') &&
+      m9ChatPreviewSource.includes('mode === "read-failed"') &&
+      m8OfflineVisible.includes("Tus números viven en el servidor") &&
+      !/\d/u.test(m8OfflineVisible),
+    "behavior scripts / executable preview fixtures / offline truth",
   );
 
   // M0 closure: the old mixed envelope assertions also pinned live SQL/tools.

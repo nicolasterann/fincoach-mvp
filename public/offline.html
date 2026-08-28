@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="theme-color" content="#060a10" />
+    <title>Sin conexión · Kipu</title>
+    <style>
+      :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #060a10; color: #eef7f6; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100svh; display: grid; place-items: center; padding: max(1.5rem, env(safe-area-inset-top)) max(1.5rem, env(safe-area-inset-right)) max(1.5rem, env(safe-area-inset-bottom)) max(1.5rem, env(safe-area-inset-left)); background: radial-gradient(circle at top, #123036, #060a10 58%); }
+      main { width: min(100%, 28rem); text-align: center; }
+      .orb { width: 7rem; height: 7rem; margin: 0 auto 1.75rem; overflow: hidden; position: relative; border: .15rem solid rgba(223,252,247,.62); border-radius: 999rem; background: linear-gradient(145deg, #17232d, #061019); box-shadow: 0 0 3rem rgba(45,212,191,.24); }
+      .orb::before { content: ""; position: absolute; inset: 52% 0 0; background: linear-gradient(#2dd4bf, #0f766e); }
+      .orb::after { content: ""; position: absolute; top: 47%; left: 11%; width: 78%; height: .12rem; border-radius: 999rem; background: rgba(223,252,247,.58); }
+      h1 { margin: 0; font-size: 1.35rem; letter-spacing: -.02em; }
+      p { margin: .8rem auto 0; max-width: 25rem; color: #9fb2b3; font-size: .96rem; line-height: 1.65; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="orb" aria-hidden="true"></div>
+      <h1>Sin conexión</h1>
+      <p>Tus números viven en el servidor, así que prefiero no mostrarte uno viejo. Vuelvo apenas haya señal.</p>
+    </main>
+  </body>
+</html>

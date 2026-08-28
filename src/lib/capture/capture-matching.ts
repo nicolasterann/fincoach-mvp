@@ -8,6 +8,13 @@
 // functions only: every rule here is exercised by the build-time gate.
 
 import type { StoredTransaction } from "@/lib/financial/transaction-recovery";
+import {
+  AUDIO_MIMES,
+  IMAGE_MIMES,
+  MAX_EVIDENCE_BYTES,
+} from "@/lib/capture/evidence-file-contract";
+
+export { MAX_EVIDENCE_BYTES } from "@/lib/capture/evidence-file-contract";
 
 // ── Candidate events (what extraction produces) ──────────────────────────────
 
@@ -995,20 +1002,6 @@ export interface FileValidation {
   kind?: EvidenceFileKind;
   reason?: string;
 }
-
-export const MAX_EVIDENCE_BYTES = 12 * 1024 * 1024; // 12MB
-
-const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
-const AUDIO_MIMES = new Set([
-  "audio/ogg",
-  "audio/oga",
-  "audio/mpeg",
-  "audio/mp4",
-  "audio/m4a",
-  "audio/x-m4a",
-  "audio/wav",
-  "audio/webm",
-]);
 
 function startsWith(bytes: Uint8Array, sig: number[], offset = 0): boolean {
   return sig.every((b, i) => bytes[offset + i] === b);

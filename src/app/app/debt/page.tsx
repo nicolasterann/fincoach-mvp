@@ -15,7 +15,7 @@ import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { translateDebtPressure } from "../components/app-dashboard-helpers";
 import { TrendPill, type ChartAccent } from "../components/Charts";
 import { CurveChart, timeFractions } from "../components/living/CurveChart";
-import { MetricShell, Section } from "../components/living/shell";
+import { DetailSurface, MetricShell, Section } from "../components/living/shell";
 import type { CurrencyCode } from "@/types/financial";
 
 // Debt drill-down: what you owe, what each card asks for, and when — with the
@@ -120,7 +120,7 @@ export default async function DebtPage() {
     : null;
 
   return (
-    <div className="kipu-stagger mx-auto w-full max-w-2xl pb-28 lg:pb-12">
+    <DetailSurface layer="deuda">
       <MetricShell kicker="Detalle" title="Tu deuda" />
 
       {debts.length === 0 ? (
@@ -422,6 +422,6 @@ export default async function DebtPage() {
           </Link>
         </>
       )}
-    </div>
+    </DetailSurface>
   );
 }

@@ -10,6 +10,7 @@ import { DataCard } from "./data-card";
 import { signOutAction } from "../actions";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import type { CurrencyCode } from "@/types/financial";
+import { DetailSurface, TuKipuHeader } from "../components/living/shell";
 
 // Stage 20 PASS 2 (Micro-stage H) — a calm control hub so a founder/family beta
 // tester can FIND everything without a developer next to them. Most actions are
@@ -69,16 +70,8 @@ export default async function SettingsPage({
   const fxStatus = fx === "saved" || fx === "invalid" || fx === "error" ? fx : undefined;
 
   return (
-    <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
-      <header className="flex items-center justify-between">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Ajustes</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-zinc-50">Tu Kipu</h1>
-        </div>
-        <Link href="/app" className="text-xs font-semibold text-zinc-500 hover:text-zinc-300">
-          ← Resumen
-        </Link>
-      </header>
+    <DetailSurface layer="patrimonio">
+      <TuKipuHeader active="settings" title="Ajustes" />
 
       <section className="mt-6">
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-600">Apariencia</p>
@@ -160,6 +153,6 @@ export default async function SettingsPage({
           </button>
         </form>
       </section>
-    </div>
+    </DetailSurface>
   );
 }

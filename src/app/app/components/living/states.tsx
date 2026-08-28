@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { DetailSurface, type DetailLayer } from "./shell";
 
 // Stage 27 — honest, premium empty/loading states. "Kipu está aprendiendo" is
 // a FEATURE surface, never an apology: it says exactly what data unlocks the
@@ -53,9 +54,10 @@ export function SkeletonCircle({ size = 168 }: { size?: number }) {
 }
 
 // Generic metric-detail-page skeleton: header + hero + two sections.
-export function DetailPageSkeleton() {
+export function DetailPageSkeleton({ layer = "saldo" }: { layer?: DetailLayer }) {
   return (
-    <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12" role="status" aria-label="Cargando">
+    <DetailSurface layer={layer} className="max-w-2xl">
+      <div role="status" aria-label="Cargando">
       <div className="flex items-center gap-2">
         <SkeletonBlock className="h-11 w-11" />
         <div className="space-y-2">
@@ -67,33 +69,40 @@ export function DetailPageSkeleton() {
       <SkeletonBlock className="mt-5 h-32 w-full rounded-3xl" />
       <SkeletonBlock className="mt-5 h-32 w-full rounded-3xl" />
       <span className="sr-only">Cargando…</span>
-    </div>
+      </div>
+    </DetailSurface>
   );
 }
 
-// Dashboard skeleton: greeting, hero ring card, orb + metric grid.
+// The sanctuary skeleton mirrors its real spatial anchors and never invents a
+// financial value while the server is loading.
 export function DashboardSkeleton() {
   return (
-    <div className="mx-auto w-full max-w-2xl pb-28 lg:max-w-none lg:pb-12" role="status" aria-label="Cargando">
-      <div className="flex items-center justify-between">
-        <div className="space-y-2">
-          <SkeletonBlock className="h-3 w-24" />
-          <SkeletonBlock className="h-6 w-48" />
-        </div>
-        <SkeletonBlock className="h-11 w-32 rounded-2xl" />
+    <div className="kipu-shell-frame kipu-skeleton-sanctuary" role="status" aria-label="Cargando">
+      <div className="flex min-h-11 shrink-0 items-center justify-center">
+        <SkeletonBlock className="h-1 w-9 rounded-full" />
       </div>
-      <div className="mt-5 flex items-center gap-6 rounded-3xl border border-line/5 bg-zinc-900 p-6">
-        <SkeletonCircle size={168} />
-        <div className="flex-1 space-y-3">
-          <SkeletonBlock className="h-4 w-32" />
-          <SkeletonBlock className="h-3 w-full" />
-          <SkeletonBlock className="h-3 w-2/3" />
-        </div>
-      </div>
-      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-        {[0, 1, 2, 3, 4, 5].map((i) => (
-          <SkeletonBlock key={i} className="h-32 w-full rounded-3xl" />
+      <div className="grid shrink-0 grid-cols-5 gap-1.5 px-3">
+        {["saldo", "reserva", "metas", "patrimonio", "deuda"].map((layer) => (
+          <SkeletonBlock key={layer} className="h-8 w-full rounded-full" />
         ))}
+      </div>
+      <div className="mt-2 flex min-h-0 flex-1 flex-col items-center justify-center px-5">
+        <div className="mb-3 flex w-full max-w-56 items-center gap-2">
+          <SkeletonBlock className="h-1 flex-1 rounded-full" />
+          <SkeletonBlock className="h-2 w-2 rounded-full" />
+        </div>
+        <SkeletonCircle size={236} />
+        <SkeletonBlock className="mt-5 h-10 w-44 rounded-2xl" />
+        <SkeletonBlock className="mt-3 h-7 w-28 rounded-full" />
+        <SkeletonBlock className="mt-3 h-5 w-52 rounded-full" />
+      </div>
+      <div className="shrink-0 px-4 pb-1">
+        <div className="flex items-center justify-center gap-3 rounded-[1.75rem] border border-line/5 bg-zinc-900/60 p-3">
+          {["chat", "camera", "voice"].map((action) => (
+            <SkeletonBlock key={action} className="h-11 w-11 rounded-full" />
+          ))}
+        </div>
       </div>
       <span className="sr-only">Cargando…</span>
     </div>

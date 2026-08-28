@@ -85,6 +85,10 @@ export function buildUnavailableBriefingPlaceholder(
     timezone: null,
     objectives: emptyObjectives(),
     goalsIntel: emptyGoalsIntelligence(),
+    goalLayerSources: {
+      items: [],
+      readable: { goals: false, savingsPlans: false, investments: false },
+    },
     personalization: emptyPersonalizationIntelligence(),
     household: emptyHouseholdIntelligence(),
     trend: emptySnapshotTrend(),

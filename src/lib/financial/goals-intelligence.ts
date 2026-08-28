@@ -20,6 +20,11 @@ import { annualRatePctFromKind, type RateKind } from "@/lib/financial/interest-m
 
 export interface InvestmentInput {
   name: string;
+  /** Raw persisted identity for display. `name` retains its legacy fallback for
+   *  existing financial narration; M7 must never present that fallback as if
+   *  the user had named the source. */
+  sourceName?: string | null;
+  sourceId?: string;
   assetClass: AssetLike["assetClass"];
   valueBase: number;
   liquid: boolean;

@@ -1919,25 +1919,26 @@ por delante del front.
 
 ## Bloque M — El front, completo
 
-**Estado: ACTIVO Y DESBLOQUEADO (2026-08-24).** Prioridad única · el stage grande de cierre.
+**Estado: CIERRE ACTO 1 ENTREGADO (2026-08-27), PENDIENTE DE AUDITORÍA M9.**
+M1–M8 aceptados. El Acto 2 —retirar shell/flag legacy sólo después de la pasada
+del founder— queda explícitamente fuera de M9.
 
 Con el back sólido debajo: interfaz, UX, navegación, accesos, tableros, animaciones,
 estructura. Se hace ENTERO, no a parches.
 
-Entra aquí todo lo visual detectado hasta ahora, incluido el hallazgo de las
-**puertas**: `/app/spending` (la única superficie que renderiza el objetivo del Bloque
-H), `/app/debt` (todo el Bloque G + el plan de pago, con 22 deudas vivas) y
-`/app/wealth` (la curva de patrimonio que el snapshot lleva meses juntando) tienen
-CERO accesos alcanzables. Las páginas existen y están construidas contra el motor: lo
-que falta es la puerta. El rediseño del Bloque D mató la grilla de métricas —
-correctamente — y con ella las puertas que colgaban de ahí.
+El hallazgo de las **puertas está CERRADO desde M6**: la hoja de perspectiva
+expone caminos alcanzables a `/app/saldo`, `/app/mes`, `/app/spending`,
+`/app/debt`, `/app/wealth`, `/app/cuentas`, `/app/goals`, `/app/activity` y
+`/app/chat`. Esto incluye las tres superficies originalmente inaccesibles:
+spending, debt y wealth. `/app/cashflow` queda como compatibilidad y redirige a
+`/app/mes`.
 
 Restricción de diseño: no reintroducir la grilla de métricas ni los scores que el
 Bloque D retiró a propósito.
 
 **Bloque E, como estaba escrito en los docs viejos ("construir superficies
 secundarias: Tu mes, Actividad, Metas, Deudas, Patrimonio, Gasto, FX"), NO es un
-bloque**: las 7 superficies ya existen. Lo que falta es navegación, y vive aquí.
+bloque**: las 7 superficies ya existían; Bloque M cerró su navegación.
 
 ---
 

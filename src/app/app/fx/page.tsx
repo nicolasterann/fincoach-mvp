@@ -4,7 +4,7 @@ import { buildUserFinancialContext } from "@/lib/financial/user-financial-contex
 import { findRate, formatFxRate, type FxSource } from "@/lib/fx/fx-rates";
 import { currentFxRateIsFresh, loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
-import { ChatCta, MetricShell, Section } from "../components/living/shell";
+import { ChatCta, DetailSurface, MetricShell, Section } from "../components/living/shell";
 
 // Stage 27 — Monedas detail: the currencies the user actually touches and the
 // KNOWN rates Kipu uses to express them in the base currency. Rates are NOT
@@ -49,7 +49,7 @@ export default async function FxDetailPage() {
   const onlyBase = foreign.length === 0;
 
   return (
-    <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
+    <DetailSurface layer="patrimonio">
       <MetricShell
         kicker="Detalle"
         title="Monedas"
@@ -184,6 +184,6 @@ export default async function FxDetailPage() {
       </div>
 
       <ChatCta label="Pregúntale a Kipu por tus monedas" prompt="¿Cómo están mis monedas?" />
-    </div>
+    </DetailSurface>
   );
 }

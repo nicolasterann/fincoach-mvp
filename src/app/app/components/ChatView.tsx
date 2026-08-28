@@ -1,27 +1,34 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
+import type {
+  ThreadReceipt,
+  ThreadTurn,
+  TurnStatus,
+} from "@/lib/chat-memory/thread-view-contract";
 import {
   clearChatHistoryAction,
   sendChatMessageAndGetReply,
   sendWebEvidenceAction,
+  type ChatDeliveryResult,
 } from "../transaction-actions";
 
 // The Kipu conversation — a real DM experience: optimistic user bubble, typing
 // indicator, no page reload, keyboard-safe input. The bottom tab bar is hidden
 // on this route so the input owns the bottom of the screen.
 
-interface ChatMsg {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-}
-
 const SUGGESTIONS = [
   "¿Cuánto puedo gastar hoy?",
   "Gasté 12 en almuerzo",
-  "¿Cómo voy esta semana?",
+  "¿Cómo viene mi Saldo?",
 ];
 
 function TypingDots() {
@@ -42,6 +49,91 @@ function TypingDots() {
 
 const ACCEPTED_FILES = "image/jpeg,image/png,image/webp,application/pdf";
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+const INTERNAL_RECEIPT_SENTINEL = "KIPU_" + "INTERNAL_WRITE_RECEIPT";
+
+function localTurn(input: {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  status?: TurnStatus | null;
+  attachment?: ThreadTurn["attachment"];
+}): ThreadTurn {
+  return {
+    id: input.id,
+    role: input.role,
+    author: input.role === "user" ? "usuario" : "agente",
+    channel: "web",
+    createdAtISO: new Date().toISOString(),
+    text: input.text,
+    status: input.status ?? null,
+    receipt: null,
+    attachment: input.attachment ?? null,
+  };
+}
+
+function visibleAssistantText(text: string): string {
+  return text.replaceAll(INTERNAL_RECEIPT_SENTINEL, "").trim();
+}
+
+function timeLabel(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return "Ahora";
+  return new Intl.DateTimeFormat("es-419", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(parsed);
+}
+
+function provenanceLabel(turn: ThreadTurn): string | null {
+  const source =
+    turn.author === "calendario"
+      ? "Calendario"
+      : turn.author === "coach"
+        ? "Coach"
+        : turn.author === "cierre_de_mes"
+          ? "Cierre de mes"
+          : null;
+  if (turn.channel === "telegram") {
+    return source ? `Telegram · ${source}` : "Telegram";
+  }
+  return source;
+}
+
+function ReceiptCard({ receipt, createdAtISO }: { receipt: ThreadReceipt; createdAtISO: string }) {
+  return (
+    <div className="mt-2 rounded-2xl border border-emerald-300/15 bg-zinc-950/55 p-3 font-mono">
+      <p className="font-sans text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-300/80">
+        Quedó registrado
+      </p>
+      <div className="mt-2 divide-y divide-line/5">
+        {receipt.lines.map((line, index) => (
+          <div className="grid grid-cols-[1fr_auto] gap-3 py-2" key={`${line.label}-${index}`}>
+            <div className="min-w-0">
+              <p className="truncate text-[11px] text-zinc-300">{line.label}</p>
+              <p className="mt-0.5 text-[10px] text-zinc-600">
+                {timeLabel(createdAtISO)} · {line.kindLabel}
+              </p>
+            </div>
+            <p className="text-xs font-semibold tabular-nums text-zinc-200">
+              {line.amountLabel}
+            </p>
+          </div>
+        ))}
+      </div>
+      {receipt.saldoLabel && (
+        <p className="mt-2 border-t border-line/5 pt-2 font-sans text-xs text-zinc-400">
+          {receipt.saldoLabel}
+        </p>
+      )}
+      {receipt.incomplete && (
+        <p className="mt-2 font-sans text-[11px] leading-5 text-amber-200/80">
+          No pude releer todo el recibo ahora.
+        </p>
+      )}
+    </div>
+  );
+}
 
 // One trusted submission id per send → a double-fire of THIS submission
 // converges to a single financial result server-side (durable idempotency).
@@ -50,18 +142,56 @@ function makeSubmissionId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `sub-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+export interface ChatViewHandle {
+  sendText(text: string): Promise<void>;
+  sendEvidence(file: File): Promise<ChatDeliveryResult | null>;
+  openFilePicker(): void;
+  focusComposer(): void;
+  scrollToTurn(turnId: string): void;
+}
+
+interface ChatViewProps {
+  initialMessages: ThreadTurn[];
+  firstName: string;
+  /** Text shared into Kipu via the PWA share target (?share=). */
+  initialShareText?: string;
+  initialTurnId?: string;
+  threadComplete: boolean;
+  threadReadFailed: boolean;
+  variant?: "route" | "sheet";
+  onClose?: () => void;
+  draftValue?: string;
+  onDraftValueChange?: (value: string) => void;
+  imperativeRef?: RefObject<ChatViewHandle | null>;
+  onCaptureStart?: () => void;
+  onDeliverySettled?: (result: ChatDeliveryResult | null) => void;
+}
+
 export function ChatView({
   initialMessages,
   firstName,
   initialShareText,
-}: {
-  initialMessages: ChatMsg[];
-  firstName: string;
-  /** Text shared into Kipu via the PWA share target (?share=). */
-  initialShareText?: string;
-}) {
-  const [messages, setMessages] = useState<ChatMsg[]>(initialMessages);
-  const [input, setInput] = useState("");
+  initialTurnId,
+  threadComplete,
+  threadReadFailed,
+  variant = "route",
+  onClose,
+  draftValue,
+  onDraftValueChange,
+  imperativeRef,
+  onCaptureStart,
+  onDeliverySettled,
+}: ChatViewProps) {
+  const [messages, setMessages] = useState<ThreadTurn[]>(initialMessages);
+  const [localInput, setLocalInput] = useState("");
+  const input = draftValue ?? localInput;
+  const setInput = useCallback(
+    (value: string) => {
+      if (onDraftValueChange) onDraftValueChange(value);
+      else setLocalInput(value);
+    },
+    [onDraftValueChange],
+  );
   const [isTyping, setIsTyping] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [failedDelivery, setFailedDelivery] = useState<{
@@ -73,10 +203,38 @@ export function ChatView({
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const turnRefs = useRef(new Map<string, HTMLDivElement>());
+  const deepLinkHandled = useRef(false);
+  const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length, isTyping]);
+
+  useEffect(() => {
+    if (!initialTurnId || deepLinkHandled.current) return;
+    let frame = 0;
+    let timer = 0;
+    let attempts = 0;
+    const reveal = () => {
+      const target = turnRefs.current.get(initialTurnId);
+      if (!target && attempts < 8) {
+        attempts += 1;
+        frame = window.requestAnimationFrame(reveal);
+        return;
+      }
+      if (!target) return;
+      deepLinkHandled.current = true;
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHighlightedTurnId(initialTurnId);
+      timer = window.setTimeout(() => setHighlightedTurnId(null), 2200);
+    };
+    frame = window.requestAnimationFrame(reveal);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [initialTurnId, messages.length]);
 
   // Text shared into Kipu (PWA share target or an internal CTA) PREFILLS the
   // box — never auto-sends. ?share= is URL-controllable, so auto-sending would
@@ -89,44 +247,94 @@ export function ChatView({
       setInput(initialShareText);
       inputRef.current?.focus();
     }
-  }, [initialShareText]);
+  }, [initialShareText, setInput]);
 
   // Send a file (attach / paste / drop) through the evidence pipeline.
   const sendFile = useCallback(
     async (file: File) => {
-      if (isTyping) return;
+      if (isTyping) return null;
       setFileError(null);
       if (file.size > MAX_UPLOAD_BYTES) {
         setFileError("El archivo supera el límite de 12 MB.");
-        return;
+        return null;
       }
+      const isAudio = file.type.toLowerCase().startsWith("audio/");
+      const localId = `local-${Date.now()}`;
       setMessages((prev) => [
         ...prev,
-        {
-          id: `local-${Date.now()}`,
+        localTurn({
+          id: localId,
           role: "user",
-          content: file.type === "application/pdf" ? `📄 ${file.name}` : `📷 ${file.name || "Imagen"}`,
-        },
+          text:
+            isAudio
+              ? "🎙 Nota de voz"
+              : file.type === "application/pdf"
+              ? `📄 ${file.name}`
+              : `📷 ${file.name || "Imagen"}`,
+          attachment: isAudio
+            ? null
+            : {
+                kind: file.type === "application/pdf" ? "document" : "image",
+                label: file.name || (file.type === "application/pdf" ? "Documento" : "Imagen"),
+              },
+        }),
       ]);
       setIsTyping(true);
+      onCaptureStart?.();
+      let settled: ChatDeliveryResult | null = null;
       try {
         const formData = new FormData();
         formData.set("file", file);
-        const { reply } = await sendWebEvidenceAction(formData);
-        setMessages((prev) => [
-          ...prev,
-          { id: `local-${Date.now()}-r`, role: "assistant", content: reply },
-        ]);
+        const result = await sendWebEvidenceAction(formData);
+        settled = result;
+        if (result.deliveryError) {
+          if (isAudio) {
+            setMessages((prev) => prev.filter((turn) => turn.id !== localId));
+          }
+          setFileError(result.deliveryError.message);
+          return result;
+        }
+        const safeReply = visibleAssistantText(result.reply);
+        if (result.status === "failed" || !safeReply) {
+          if (isAudio) {
+            setMessages((prev) => prev.filter((turn) => turn.id !== localId));
+          }
+          setFileError("No llegó una respuesta visible. Puedes volver a adjuntarlo.");
+          return result;
+        }
+        setMessages((prev) => {
+          const userTurn = result.userTurn;
+          const durableUserTurns =
+            isAudio && userTurn
+              ? prev.map((turn) => (turn.id === localId ? userTurn : turn))
+              : prev;
+          return [
+            ...durableUserTurns,
+            result.turn ??
+              localTurn({
+                id: `local-${Date.now()}-r`,
+                role: "assistant",
+                text: safeReply,
+                status: result.status,
+              }),
+          ];
+        });
+        return result;
       } catch {
         // Delivery/validation state belongs to the interface, not to Kipu's
         // authored conversation. A retryable evidence failure keeps the exact
         // server identity and never fabricates an assistant turn.
+        if (isAudio) {
+          setMessages((prev) => prev.filter((turn) => turn.id !== localId));
+        }
         setFileError("No se pudo procesar el archivo. Puedes volver a adjuntarlo.");
+        return null;
       } finally {
         setIsTyping(false);
+        onDeliverySettled?.(settled);
       }
     },
-    [isTyping],
+    [isTyping, onCaptureStart, onDeliverySettled],
   );
 
   async function send(
@@ -140,27 +348,45 @@ export function ChatView({
     if (!retry) {
       setMessages((prev) => [
         ...prev,
-        { id: `local-${Date.now()}`, role: "user", content: trimmed },
+        localTurn({ id: `local-${Date.now()}`, role: "user", text: trimmed }),
       ]);
     }
     setIsTyping(true);
+    onCaptureStart?.();
     const submissionId = retry?.submissionId ?? makeSubmissionId();
+    let settled: ChatDeliveryResult | null = null;
     try {
-      const { reply, deliveryError } = await sendChatMessageAndGetReply(
+      const result = await sendChatMessageAndGetReply(
         trimmed,
         submissionId,
       );
-      if (deliveryError) {
+      settled = result;
+      if (result.deliveryError) {
         setFailedDelivery({
           text: trimmed,
           submissionId,
-          message: deliveryError.message,
+          message: result.deliveryError.message,
+        });
+        return;
+      }
+      const safeReply = visibleAssistantText(result.reply);
+      if (result.status === "failed" || !safeReply) {
+        setFailedDelivery({
+          text: trimmed,
+          submissionId,
+          message: "No pude completar este envío. Puedes reintentarlo sin duplicar movimientos.",
         });
         return;
       }
       setMessages((prev) => [
         ...prev,
-        { id: `local-${Date.now()}-r`, role: "assistant", content: reply },
+        result.turn ??
+          localTurn({
+            id: `local-${Date.now()}-r`,
+            role: "assistant",
+            text: safeReply,
+            status: result.status,
+          }),
       ]);
     } catch {
       // Transport state is UI, not Kipu-authored conversation. The durable
@@ -173,15 +399,39 @@ export function ChatView({
       });
     } finally {
       setIsTyping(false);
+      onDeliverySettled?.(settled);
       inputRef.current?.focus();
     }
   }
+
+  useImperativeHandle(
+    imperativeRef,
+    () => ({
+      sendText: (text) => send(text),
+      sendEvidence: (file) => sendFile(file),
+      openFilePicker: () => fileRef.current?.click(),
+      focusComposer: () => inputRef.current?.focus(),
+      scrollToTurn: (turnId) => {
+        const target = turnRefs.current.get(turnId);
+        if (!target) return;
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        setHighlightedTurnId(turnId);
+        window.setTimeout(() => setHighlightedTurnId(null), 2200);
+      },
+    }),
+  );
 
   const isEmpty = messages.length === 0;
 
   return (
     <div
-      className="relative mx-auto flex h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col"
+      className={
+        variant === "sheet"
+          ? "relative mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col"
+          : "relative mx-auto flex h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col"
+      }
+      data-initial-turn-id={initialTurnId}
+      data-share-prefill={initialShareText ? "ready" : undefined}
       onDragLeave={(e) => {
         if (e.currentTarget === e.target) setIsDragging(false);
       }}
@@ -215,15 +465,28 @@ export function ChatView({
       {/* Header */}
       <header className="flex shrink-0 items-center justify-between pb-3">
         <div className="flex items-center gap-3">
-          <Link
-            href="/app"
-            aria-label="Volver"
-            className="flex h-9 w-9 items-center justify-center rounded-full border border-line/10 text-zinc-400 transition hover:bg-line/5 lg:hidden"
-          >
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </Link>
+          {variant === "sheet" ? (
+            <button
+              aria-label="Cerrar conversación"
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-line/10 text-zinc-400 transition hover:bg-line/5"
+              onClick={onClose}
+              type="button"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
+              </svg>
+            </button>
+          ) : (
+            <Link
+              href="/app"
+              aria-label="Volver"
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-line/10 text-zinc-400 transition hover:bg-line/5 lg:hidden"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </Link>
+          )}
           <div className="flex items-center gap-2.5">
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-400/15 text-sm font-black text-emerald-300">
               K
@@ -236,20 +499,33 @@ export function ChatView({
             </div>
           </div>
         </div>
-        <form action={clearChatHistoryAction}>
+        {variant === "route" && <form action={clearChatHistoryAction}>
           <button
             className="rounded-full border border-line/10 px-3 py-1.5 text-[11px] font-semibold text-zinc-500 transition hover:bg-line/5 hover:text-zinc-300"
             type="submit"
           >
             Nueva conversación
           </button>
-        </form>
+        </form>}
       </header>
 
       {/* Messages — anchored to the bottom like a real DM, calm scrollbar */}
       <div className="kipu-scroll flex-1 overflow-y-auto overscroll-contain">
         <div className="flex min-h-full flex-col justify-end space-y-3 py-2">
-          {isEmpty ? (
+          {threadReadFailed ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+              <p className="text-sm font-semibold text-zinc-200">
+                No pude leer tu conversación ahora.
+              </p>
+              <button
+                className="rounded-full border border-line/10 px-4 py-2 text-xs font-semibold text-zinc-300 transition hover:bg-line/5"
+                onClick={() => window.location.reload()}
+                type="button"
+              >
+                Reintentar
+              </button>
+            </div>
+          ) : isEmpty ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
               <span className="flex h-16 w-16 items-center justify-center rounded-3xl bg-emerald-400/15 text-2xl font-black text-emerald-300">
                 K
@@ -264,22 +540,65 @@ export function ChatView({
               </div>
             </div>
           ) : (
-            messages.map((m) => (
+            messages
+              .filter((m) => !(m.role === "assistant" && m.status === "failed"))
+              .map((m) => (
               <div
                 key={m.id}
-                className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+                ref={(node) => {
+                  if (node) turnRefs.current.set(m.id, node);
+                  else turnRefs.current.delete(m.id);
+                }}
+                data-turn-id={m.id}
+                className={`flex scroll-m-20 transition duration-700 ${
+                  m.role === "user" ? "justify-end" : "justify-start"
+                } ${highlightedTurnId === m.id ? "rounded-3xl bg-emerald-300/10 ring-1 ring-emerald-300/30" : ""}`}
               >
-                <div
-                  className={`max-w-[82%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-6 ${
-                    m.role === "user"
-                      ? "rounded-br-md bg-emerald-400 text-zinc-950"
-                      : "rounded-bl-md bg-zinc-800 text-zinc-100"
-                  }`}
-                >
-                  {m.content}
+                <div className="max-w-[86%]">
+                  {provenanceLabel(m) && (
+                    <p
+                      className={`mb-1 px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-600 ${
+                        m.role === "user" ? "text-right" : "text-left"
+                      }`}
+                    >
+                      {provenanceLabel(m)}
+                    </p>
+                  )}
+                  <div
+                    className={`whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-6 ${
+                      m.role === "user"
+                        ? "rounded-br-md bg-emerald-400 text-zinc-950"
+                        : "rounded-bl-md bg-zinc-800 text-zinc-100"
+                    }`}
+                  >
+                    {m.status === "needs_clarification" && (
+                      <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-300/80">
+                        Pregunta pendiente
+                      </p>
+                    )}
+                    {m.text}
+                    {m.attachment && (
+                      <div className="mt-2 rounded-xl border border-current/10 px-3 py-2 text-xs opacity-75">
+                        {m.attachment.kind === "document" ? "Documento" : "Imagen"} · {m.attachment.label}
+                      </div>
+                    )}
+                    {m.status === "unsupported" && (
+                      <p className="mt-2 border-t border-line/10 pt-2 text-xs text-zinc-400">
+                        Eso todavía no lo sé hacer.
+                      </p>
+                    )}
+                  </div>
+                  {m.role === "assistant" && m.receipt && (
+                    <ReceiptCard receipt={m.receipt} createdAtISO={m.createdAtISO} />
+                  )}
                 </div>
               </div>
-            ))
+              ))
+          )}
+          {!threadReadFailed && !threadComplete && (
+            <p className="px-3 py-2 text-center text-xs text-zinc-600" role="status">
+              Hay más historial del que puedo mostrar aquí.
+            </p>
           )}
           {isTyping && <TypingDots />}
           <div ref={bottomRef} />
@@ -318,7 +637,7 @@ export function ChatView({
             </button>
           </div>
         )}
-        {isEmpty && (
+        {isEmpty && !threadReadFailed && (
           <div className="mb-3 flex flex-wrap gap-2">
             {SUGGESTIONS.map((s) => (
               <button

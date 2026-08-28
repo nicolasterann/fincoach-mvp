@@ -52,18 +52,20 @@ must NOT break because we didn't pre-code that exact phrase.
 ## Product surface today (do not resurrect retired concepts)
 
 - **Daily hero = Saldo Kipu:** an accumulating balance for gustos, rendered as
-  a vertical quipu. It is refilled from monthly free cash, capped at ten days,
-  drained by real gustos, and bounded by the calendar. Every channel must quote
-  the same engine value as the dashboard.
+  the liquid level of one living orb in a five-layer carousel. The quipu remains
+  as history/identity in the carousel indicators and perspective cord, not as
+  the hero. It is refilled from monthly free cash, capped at ten days, drained
+  by real gustos, and bounded by the calendar. Every channel must quote the
+  same engine value as the sanctuary.
 - **Layers:** Saldo → Reserva → Metas → Ahorro → Patrimonio → Deuda. Crossing a
   layer warns but never blocks. Reserva is the protected layer; “colchón” is
   retired product copy.
 - **Retired face:** Margen Kipu, Pulso Kipu, Flexibilidad, Precisión, Realidad,
   named states and weekly hero framing. Their old routes redirect; internal
   engine fields may remain.
-- **Current work order:** `docs/ROADMAP.md` is authoritative. Bloque M, the
-  complete front, is the only active block and is UNBLOCKED. No monetization and
-  no bank connections; manual capture remains deliberate.
+- **Current work order:** `docs/ROADMAP.md` is authoritative. Bloque M's Acto 1
+  closure is the only active work: M1–M8 are accepted and M9 awaits its audit.
+  No monetization and no bank connections; manual capture remains deliberate.
 
 **M0 CLOSED on 2026-08-24.** The native tool-calling loop is Kipu's single AI
 brain in production: it reads the live structured financial state and memory,

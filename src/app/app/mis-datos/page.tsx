@@ -11,6 +11,7 @@ import type { CurrencyCode } from "@/types/financial";
 import { DataSection, type SectionSpec, type FieldSpec } from "./data-editor";
 import { Fragment } from "react";
 import { loadActiveInstallmentPlansForDisplay, installmentProgress } from "@/lib/financial/installment-plans-store";
+import { DetailSurface, TuKipuHeader } from "../components/living/shell";
 
 // S8 — "Mis datos": the onboarding tables, re-openable. View / validate / edit / delete
 // everything you entered (accounts, income, fixed expenses, debts, reserves, goals,
@@ -298,14 +299,11 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
   ];
 
   return (
-    <div className="mx-auto w-full max-w-2xl px-4 py-6">
-      <header className="mb-4">
-        <h1 className="text-xl font-bold text-zinc-50">Mis datos</h1>
-        <p className="mt-1 text-sm leading-6 text-zinc-500">
-          Todo lo que pusiste en el onboarding, para revisar y corregir cuando quieras. Nada queda escrito en
-          piedra. Los cambios ajustan tu Saldo Kipu y tu plan al instante.
-        </p>
-      </header>
+    <DetailSurface layer="patrimonio">
+      <TuKipuHeader active="data" title="Mis datos" />
+      <p className="mt-3 text-sm leading-6 text-zinc-500">
+        Revisa y corrige lo que registraste. Tus cambios actualizan tu Saldo Kipu y tu plan.
+      </p>
 
       {saved && (
         <div className="mb-4 rounded-xl border border-emerald-500/30 bg-emerald-950/40 px-3 py-2 text-sm text-emerald-300">
@@ -375,6 +373,6 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
         </Link>
         .
       </p>
-    </div>
+    </DetailSurface>
   );
 }

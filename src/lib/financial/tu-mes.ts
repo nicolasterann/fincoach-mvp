@@ -69,6 +69,39 @@ export function goalMonthlyEquivalent(amount: number, cadence: string | null | u
   return factor ? roundMoney(amount * factor) : 0;
 }
 
+export interface GoalReserveRow {
+  contributionAmount: number;
+  cadence: string | null;
+  currency: string;
+  protected: boolean;
+}
+
+// M7 · D-M7.2 — exact extraction of the pre-existing /app/mes derivation.
+// The page now asks the server-side financial helper for the foreign slice; the
+// formula and cent rounding are intentionally byte-for-byte equivalent to M6.
+export function foreignGoalReserveMonthly({
+  goals,
+  baseCurrency,
+  protectedGoalsMonthly,
+}: {
+  goals: GoalReserveRow[];
+  baseCurrency: string;
+  protectedGoalsMonthly: number;
+}): number {
+  const base = baseCurrency.toUpperCase();
+  const baseGoalsMonthly = goals
+    .filter((goal) => goal.protected && goal.currency === base)
+    .reduce(
+      (sum, goal) =>
+        sum + goalMonthlyEquivalent(goal.contributionAmount, goal.cadence),
+      0,
+    );
+  return Math.max(
+    0,
+    Math.round((protectedGoalsMonthly - baseGoalsMonthly) * 100) / 100,
+  );
+}
+
 const pctOf = (part: number, whole: number): number =>
   whole > 0 ? Math.round((Math.max(0, part) / whole) * 100) : 0;
 

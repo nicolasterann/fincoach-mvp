@@ -244,8 +244,11 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
     if (!error && data) {
       out.investments = data.slice(0, INVESTMENTS_READ_CAP).map((r0) => {
         const r = r0 as Row;
+        const sourceName = str(r.name) ?? null;
         return {
-          name: String(r.name ?? "Inversión"),
+          name: sourceName ?? "Inversión",
+          sourceName,
+          sourceId: String(r.id),
           assetClass: (str(r.asset_class) ?? "investment") as AssetClass,
           valueBase: valueAtLiveRate(num(r.value_base), r.value_original, r.currency),
           liquid: typeof r.liquid === "boolean" ? r.liquid : false,

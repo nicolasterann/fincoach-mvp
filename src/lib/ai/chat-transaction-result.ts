@@ -87,9 +87,10 @@ export interface ChatTransactionResult {
   // follow-up state (e.g. a recovery confirmation candidate or a partial
   // person-transfer) without a new pending-clarification DB kind.
   assistantMetadata?: Record<string, unknown>;
-  /** Internal receipt for callers that must bind this write to a durable agent
-   * operation. It is never rendered to the user. A successful ledger write
-   * without its transaction identity cannot later be corrected atomically. */
+  /** Internal identity receipt for callers that must bind this write to a
+   * durable agent operation. These ids are never user copy; a visible receipt
+   * must re-read the corresponding ledger rows on the server. A successful
+   * ledger write without its identity cannot later be corrected atomically. */
   financialWriteReceipt?: {
     transactionIds: string[];
   };
@@ -101,14 +102,16 @@ export function buildChatActionResult({
   message,
   redirectCode,
   assistantMetadata,
+  status = "success",
 }: {
   message: string;
   redirectCode: ChatTransactionResult["redirectCode"];
   assistantMetadata?: Record<string, unknown>;
+  status?: ChatResponse["status"];
 }): ChatTransactionResult {
   return {
     redirectCode,
-    chatResponse: { status: "success", message },
+    chatResponse: { status, message },
     assistantMetadata,
   };
 }

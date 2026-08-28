@@ -258,10 +258,12 @@ software. Tone: close, playful, clear, zero-judgment, financially responsible.
 The daily hero is **Saldo Kipu** (Bloque D): an accumulating spend-for-fun
 balance — a tank refilled by monthly-free/30, capped at 10 days of gustos,
 drained by real gustos; shown = min(tank, calendar-without-Reserva) —
-rendered as a vertical quipu of knots. Money sits in layers Saldo → Reserva →
-Metas → Ahorro → Patrimonio → Deuda; crossing a layer always warns, never
-blocks. The protected layer is **Reserva** — the word "colchón" is banned in
-UI. Day boundaries use the user's timezone. Retired from the product face:
+rendered as the liquid level of one living orb in a five-layer carousel. The
+quipu survives as history/identity in the carousel indicators and perspective
+cord, not as the hero. Money sits in layers Saldo → Reserva → Metas → Ahorro →
+Patrimonio → Deuda; crossing a layer always warns, never blocks. The protected
+layer is **Reserva** — the word "colchón" is banned in UI. Day boundaries use
+the user's timezone. Retired from the product face:
 Margen Kipu as a visible brand, Pulso Kipu (0–100 score), Flexibilidad,
 Precisión, Realidad, the named states (Holgado/Justo/Estirando), and weekly
 hero framing. `/app/margen`, `/app/readiness`, `/app/precision`, `/app/reality`

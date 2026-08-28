@@ -4,8 +4,8 @@ import Link from "next/link";
 // redirect home, never an error page in English.
 export default function NotFound() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-zinc-950 px-5 text-zinc-50">
-      <div className="w-full max-w-md rounded-3xl border border-white/10 bg-zinc-900 p-8 text-center">
+    <main className="kipu-public-safe flex min-h-screen items-center justify-center bg-[var(--kipu-shell-bg)] text-[var(--kipu-shell-ink-1)]">
+      <div className="w-full max-w-md rounded-3xl border border-[var(--kipu-shell-glass-line)] bg-[var(--kipu-shell-card)] p-8 text-center shadow-[var(--kipu-shell-shadow)]">
         <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">404</p>
         <h1 className="mt-2 text-xl font-bold text-zinc-50">Esta página no existe — volvamos a tu plata.</h1>
         <p className="mt-3 text-sm leading-6 text-zinc-400">
@@ -20,7 +20,7 @@ export default function NotFound() {
           </Link>
           <Link
             href="/"
-            className="kipu-press flex min-h-11 items-center justify-center rounded-2xl border border-white/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-white/20"
+            className="kipu-press flex min-h-11 items-center justify-center rounded-2xl border border-[var(--kipu-shell-glass-line)] px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-emerald-400/30"
           >
             Ir al inicio
           </Link>
