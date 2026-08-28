@@ -448,3 +448,93 @@ N1 queda **VERDE** y es el mejor trabajo del bloque: sacó 463 kB de cada carga,
 midió el antes con bytes reales, declaró con su número que la promesa de 1,5 s
 no se alcanza en frío en vez de maquillarla, y en esta ronda endureció tres
 pines sin agregar una sola aserción ni cambiar una conducta.
+
+---
+
+# Medición real en producción — 2026-08-28, `ef6f56d`
+
+Cierra el «No verificado #1» de las dos rondas: **el después ya no es una
+proyección.** Dos corridas del founder en su iPhone contra producción, tras una
+carga de descarte para no medir el arranque en frío del deploy.
+
+| | Línea base (`221575b`) | **Real (`ef6f56d`)** |
+|---|---|---|
+| | frío / caliente | frío / recarga |
+| `contexto` | 881 / 378 | **181 / 141** |
+| `hilo` | 1626 / 474 | **fuera** |
+| `briefing` | 916 / 818 | **439 / 531** |
+| `cotizaciones` | 1 / 1 | 158 / 79 |
+| hito **`orbe`** | — | **620 / 672** |
+| hito `píldora` | — | 621 / 673 |
+| hito `perspectiva` | — | 660 / 703 |
+| total | 3896 / 1963 | — *(reemplazado por los tres hitos)* |
+| TTFB | 248 / 121 | **124 / 41** |
+
+**El instrumento vuelve a cerrar consigo mismo**, que es lo primero que hay que
+comprobar antes de creerle a un número: `contexto + briefing` da **exactamente**
+el hito `orbe` en las dos corridas (181+439=620 · 141+531=672).
+
+## La cifra del orbe
+
+```
+FRÍO      4144 ms  →   744 ms     (−82 %)
+RECARGA   2084 ms  →   713 ms     (−66 %)
+PANTALLA COMPLETA (hasta la perspectiva), frío:  4144 → 784 ms
+```
+
+**La promesa de ~1,5 s se cumple, y en frío.** El reporte la había declarado
+incumplida en frío con una proyección de ~2045 ms; la realidad da **744 ms**,
+**1301 ms mejor que lo proyectado**.
+
+Declarar el incumplimiento en vez de maquillarlo fue lo correcto, y el que se
+equivocó fui yo tanto como el implementador: **la proyección excluía el cambio
+de región porque nadie sabía cuánto valía.** Valía casi todo lo que faltaba.
+
+## Por qué bajó tanto lo que la proyección daba por fijo
+
+- **`contexto` 881 → 181 ms (−79 %).** `buildUserFinancialContext` hace muchas
+  consultas; con las funciones en Virginia y la base en Ohio, cada una pagaba un
+  salto entre regiones. Del orden de 15–25 ms × unas treinta consultas da
+  450–750 ms, que es casi exactamente lo que desapareció. La explicación cuadra
+  en magnitud, no sólo en dirección.
+- **`briefing` 916 → 439 ms (−52 %).** Lo mismo, en menor proporción: parte de
+  su costo no son viajes a la base.
+- **`hilo` 1626 → fuera.** Estructural: el builder ya no sabe leerlo.
+
+**El caveat honesto:** las dos corridas no están perfectamente controladas. La de
+hoy tuvo la función caliente (pedí una carga de descarte a propósito); no sabemos
+si la línea base la tuvo. Pero un arranque en frío de la función infla el
+**TTFB**, no un tramo interno — y el TTFB sólo bajó de 248 a 124. La caída de
+`contexto` no se explica por eso.
+
+## Lo que el streaming consiguió, y lo que no hizo falta
+
+En producción **la píldora llega 1 ms después del orbe y la perspectiva 40 ms
+después**. Las cinco lecturas que salieron del camino crítico
+—`preferencias · movimiento · recibo · historia · cotizaciones`, 554 ms sumados—
+caben enteras dentro de la ventana del orbe (620 ms), así que hoy no se ve una
+sola pantalla a medio llenar.
+
+Eso no vuelve inútil el trabajo: significa que **el orbe ya no puede ser
+retrasado por ninguna de ellas**. Cuando una se ponga lenta o se caiga —que es
+el caso que N1 vino a arreglar— la cifra sigue apareciendo a los 620 ms. La
+promesa era esa, y la forma fuerte se cumple: el orbe no corre ninguna carrera.
+
+## Un detalle nuevo para N2
+
+**`cotizaciones` pasó de 1 ms a 158 ms.** No es un defecto y hoy no cuesta nada
+—corre en paralelo y cabe dentro de la ventana del orbe—, pero es real: antes
+corría *después* del briefing y encontraba el trabajo ya hecho; ahora arranca al
+principio y paga la lectura de verdad.
+
+Importa como **piso futuro**: si N2 lograra bajar `contexto + briefing` por
+debajo de ~158 ms, `cotizaciones` pasaría a ser el tramo que manda. Está dentro
+del grupo `orbe` (`SHELL_TIMING_GROUPS`), así que se vería solo en el metro.
+
+## Lo que sigue sin medirse
+
+**LCP, INP y CLS siguen en `—`.** La segunda foto fue una recarga, no un toque,
+y esas tres necesitan una interacción o que la página se oculte (§7.6). Todo lo
+de arriba es **tiempo de servidor**, que es donde estaba el problema y donde se
+arregló — pero el tiempo *percibido* incluye pintar, y ése todavía no tiene
+número. Un toque en la pantalla y una foto lo cierran.
