@@ -26502,21 +26502,24 @@ assert(
     }) => {
       const listener = m8Listeners.get("fetch");
       if (!listener) throw new Error("fetch listener missing");
-      let responsePromise: Promise<M8SyntheticResponse | undefined> | null = null;
-      listener({
-        request: {
-          failNetwork,
-          headers: { has: (name) => hasServerAction && name === "next-action" },
-          method,
-          mode,
-          url: `${m8Origin}${pathname}`,
-        },
-        respondWith: (response) => {
-          responsePromise = Promise.resolve(response);
-        },
+      const request: M8SyntheticRequest = {
+        failNetwork,
+        headers: { has: (name) => hasServerAction && name === "next-action" },
+        method,
+        mode,
+        url: `${m8Origin}${pathname}`,
+      };
+      const response = await new Promise<M8SyntheticResponse | undefined>((resolve, reject) => {
+        let responded = false;
+        listener({
+          request,
+          respondWith: (value) => {
+            responded = true;
+            Promise.resolve(value).then(resolve, reject);
+          },
+        });
+        if (!responded) reject(new Error(`respondWith missing for ${pathname}`));
       });
-      if (!responsePromise) throw new Error(`respondWith missing for ${pathname}`);
-      const response = await responsePromise;
       await Promise.resolve();
       await Promise.resolve();
       return response;
