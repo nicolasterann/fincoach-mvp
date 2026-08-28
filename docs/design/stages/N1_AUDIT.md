@@ -630,3 +630,91 @@ de rendimiento del cliente.
 **Lo que hace falta para asentarlo:** una corrida con el teléfono cargado (sin
 Modo de Bajo Consumo), carga de descarte, y toque. Es la línea base de cliente
 que N2 va a necesitar, igual que N1 necesitó la de servidor.
+
+---
+
+# Cuarta corrida (8:40, 40 % y cargando) — la medición de N1 queda CERRADA
+
+Sin Modo de Bajo Consumo. **Descarta mi propio caveat de la corrida anterior:**
+la batería no era la explicación.
+
+```
+TTFB 148 · LCP 4014 [malo] · orbe 1744 · contexto 1050 · briefing 691
+cotizaciones 976 · preferencias 1054 · movimiento 1040 · recibo 82
+píldora 1747 · perspectiva 1797 · historia 44
+```
+
+## El instrumento, en las cuatro corridas
+
+```
+7:58   contexto+briefing =  620   hito orbe =  620    +0 ms
+7:59                     =  672               =  672    +0 ms
+8:11                     = 1523               = 1526    +3 ms
+8:40                     = 1741               = 1744    +3 ms
+```
+
+Cuatro de cuatro. El metro no inventa nada.
+
+## Dos regímenes, cada uno medido dos veces
+
+| | conexión CALIENTE | conexión FRÍA |
+|---|---|---|
+| `contexto` | 141–181 ms | **1050–1059 ms** |
+| hito `orbe` | 620–672 ms | **1526–1744 ms** |
+| servidor (TTFB+orbe) | 713–744 ms | **1701–1892 ms** |
+
+**El sobrecosto de la primera conexión es ~893 ms y es reproducible.** No es
+ruido: son dos pares de mediciones con casi cero dispersión dentro de cada
+régimen. Para un usuario que abre la app una vez al día, **el régimen frío es el
+único que existe**.
+
+## El LCP: el cliente es la mitad más grande, y está confirmado
+
+```
+8:11 (8 %, bajo consumo)   LCP 4096 = servidor 1701 + cliente 2395   (58 %)
+8:40 (40 %, cargando)      LCP 4014 = servidor 1892 + cliente 2122   (53 %)
+```
+
+Dos muestras independientes, en estados de batería opuestos, dan **~2,1–2,4 s de
+trabajo de cliente**. El Modo de Bajo Consumo no lo explicaba. Es real y es
+estable.
+
+## El balance honesto de N1
+
+```
+servidor, frío contra frío:   4144 ms  →  ~1796 ms     (−57 %)
+lo que el usuario VE (LCP):              ~4055 ms      [malo, umbral 4000]
+```
+
+**N1 hizo su mitad y la hizo bien.** Pero la promesa del bloque no era «el
+servidor tarda menos», era «que abra». Y abrir sigue tardando **cuatro
+segundos**, porque el tiempo que N1 no podía tocar —el navegador— nunca se movió,
+y encima el régimen frío se come casi 900 ms antes de la primera consulta.
+
+Esto no invalida N1: sin N1, el usuario esperaría esos ~2,2 s de cliente
+**además** de 4,1 s de servidor. Lo que hace es **mover el problema de sitio**, y
+decirlo con número es exactamente para lo que se construyó el metro.
+
+## Lo que esto le manda a N2 — con una hipótesis y su prueba
+
+La sospecha principal sobre esos ~2,2 s tiene nombre y ya está en el plan del
+bloque: **Causa C, el orbe se dibuja dos veces y se sustituye a la vista.** Una
+sustitución del elemento más grande de la pantalla **registra un candidato LCP
+nuevo y tardío** — que es exactamente la forma que tiene este número.
+
+**Es una hipótesis, no una conclusión.** La alternativa —bajar e hidratar el
+JS— explicaría lo mismo. Y hay una prueba barata que las separa: la entrada
+`largest-contentful-paint` trae `element`. Si el metro mostrara **qué** elemento
+fue el LCP además de cuándo, la respuesta llega sola en la primera foto:
+
+```
+LCP 4014 ms  (canvas.kipu-live-orb)     ⇒ es la sustitución: Causa C
+LCP 4014 ms  (div.kipu-shell-amount)    ⇒ es hidratación: otro problema
+```
+
+Debería ser lo primero que haga N2, antes de tocar el orbe: **hoy no sabemos qué
+estamos optimizando.** Es la misma lección que N1 aprendió con la región —
+medir antes de proyectar.
+
+**La medición de N1 queda cerrada.** Ya no hay nada declarado como «no
+verificado» que este entorno o el founder puedan cerrar sin entrar en N2.
