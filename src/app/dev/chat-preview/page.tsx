@@ -79,11 +79,27 @@ export default async function ChatPreviewPage({
   }>;
 }) {
   const { mode, share, turn } = await searchParams;
+  const previewTurns =
+    mode === "receipt-incomplete"
+      ? turns.map((item) =>
+          item.id === "m3-receipt"
+            ? {
+                ...item,
+                text: "Registré lo que pude verificar.",
+                receipt: {
+                  lines: [],
+                  saldoLabel: null,
+                  incomplete: true,
+                },
+              }
+            : item,
+        )
+      : turns;
   return (
     <main className="min-h-screen bg-zinc-950 px-3 pt-3 text-zinc-50">
       <ChatView
         firstName="Nico"
-        initialMessages={mode === "read-failed" ? [] : turns}
+        initialMessages={mode === "read-failed" ? [] : previewTurns}
         initialShareText={share?.trim().slice(0, 1000) || undefined}
         initialTurnId={turn?.trim() || undefined}
         threadComplete={mode !== "incomplete"}

@@ -26814,12 +26814,13 @@ assert(
         "/offline.html",
         "perspective=sin-objetivo-reserva",
         "perspective=con-huecos",
-        "mode=incomplete",
+        "mode=receipt-incomplete",
         "state=patrimonio-negativo",
       ].every((fixture) => m9ScriptsSource.includes(fixture)) &&
       ["niebla", '"dia-1"', '"patrimonio-negativo"', '"lectura-caida"', '"sin-objetivo-reserva"', '"con-huecos"'].every(
         (fixture) => m9ShellPreviewSource.includes(fixture),
       ) &&
+      m9ChatPreviewSource.includes('mode === "receipt-incomplete"') &&
       m9ChatPreviewSource.includes('mode !== "incomplete"') &&
       m9ChatPreviewSource.includes('mode === "read-failed"') &&
       m8OfflineVisible.includes("Tus números viven en el servidor") &&

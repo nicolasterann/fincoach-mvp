@@ -3778,24 +3778,25 @@ este Acto 1; esta batería usa `KIPU_SHELL=orbe`.
       tienen invitaciones reales; Metas y Patrimonio sin entidad no reciben 0
       inventado.
 - [ ] **46.9 Lectura caída.**
-      `/dev/shell-preview?sheet=1&perspective=lectura-caida&tier=0`: la hoja
+      `/dev/shell-preview?sheet=perspectiva&perspective=lectura-caida&tier=0`: la hoja
       conserva sus cinco módulos, pero el cordón dice «No pude leer esto ahora»
       y ofrece reintentar; nunca interpreta fallo como ausencia.
 - [ ] **46.10 Sin conexión.** `/offline.html`: sólo explica que los números
       viven en el servidor y ofrece reintentar; no contiene cifra monetaria ni
       snapshot. `/app/**`, `/api/**` y server actions siguen NetworkOnly.
 - [ ] **46.11 Reserva sin objetivo.**
-      `/dev/shell-preview?sheet=1&perspective=sin-objetivo-reserva&tier=0`:
+      `/dev/shell-preview?sheet=perspectiva&perspective=sin-objetivo-reserva&tier=0`:
       muestra la cifra leída, una invitación para definir objetivo y ningún
       porcentaje/barra.
 - [ ] **46.12 Cordón con huecos.**
-      `/dev/shell-preview?sheet=1&perspective=con-huecos&tier=0`: cada tramo
+      `/dev/shell-preview?sheet=perspectiva&perspective=con-huecos&tier=0`: cada tramo
       continuo es un path separado; los días faltantes son huecos, no una línea
       interpolada.
-- [ ] **46.13 Recibo incompleto.** `/dev/chat-preview?mode=incomplete`: aviso
-      «No pude comprobar todo el historial» y sólo líneas verificadas; no
-      rellena monto, saldo ni movimiento. Repetir `?mode=read-failed`: mensaje
-      de reintento y cero falsa ausencia.
+- [ ] **46.13 Recibo incompleto.**
+      `/dev/chat-preview?mode=receipt-incomplete`: aviso «No pude releer todo
+      el recibo ahora» y sólo líneas verificadas; no rellena monto, saldo ni
+      movimiento. Repetir `?mode=read-failed`: mensaje de reintento y cero
+      falsa ausencia. `?mode=incomplete` queda reservado para hilo paginado.
 - [ ] **46.14 Patrimonio negativo.**
       `/dev/shell-preview?state=patrimonio-negativo&tier=0`: cifra y material
       propios de Patrimonio; nunca rojo de deuda, score o estado nombrado.
