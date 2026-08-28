@@ -379,4 +379,3 @@ Salida: `exit 0`.
 ## Preguntas
 
 Ninguna.
-
