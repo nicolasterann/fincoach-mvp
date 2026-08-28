@@ -26576,9 +26576,22 @@ assert(
     `${process.cwd()}/src/app/app/components/living/states.tsx`,
     "utf8",
   );
-  const m8DashboardSkeleton = m8StatesSource
-    .split("export function DashboardSkeleton()", 2)[1]
-    ?.split("export function LegacyDashboardSkeleton()", 1)[0] ?? "";
+  const m8FunctionSource = (source: string, signature: string) => {
+    const start = source.indexOf(signature);
+    const open = source.indexOf("{", start);
+    if (start < 0 || open < 0) return "";
+    let depth = 0;
+    for (let index = open; index < source.length; index += 1) {
+      if (source[index] === "{") depth += 1;
+      if (source[index] === "}") depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+    return "";
+  };
+  const m8DashboardSkeleton = m8FunctionSource(
+    m8StatesSource,
+    "export function DashboardSkeleton()",
+  );
   const m8LoadingSource = readFileSync(`${process.cwd()}/src/app/app/loading.tsx`, "utf8");
   const m8LandingSource = readFileSync(`${process.cwd()}/src/app/page.tsx`, "utf8");
   const m8NotFoundSource = readFileSync(`${process.cwd()}/src/app/not-found.tsx`, "utf8");
@@ -26590,8 +26603,10 @@ assert(
       m8DashboardSkeleton.includes('["chat", "camera", "voice"]') &&
       !m8DashboardSkeleton.includes("size={168}") &&
       !m8DashboardSkeleton.includes("[0, 1, 2, 3, 4, 5]") &&
-      m8LoadingSource.includes('getShellMode() === "orbe"') &&
-      m8LoadingSource.includes("LegacyDashboardSkeleton") &&
+      m8LoadingSource.includes('import { DashboardSkeleton }') &&
+      m8LoadingSource.includes("return <DashboardSkeleton />;") &&
+      !m8LoadingSource.includes("getShellMode") &&
+      !m8LoadingSource.includes("LegacyDashboardSkeleton") &&
       m8LandingSource.includes('data-product-image="orbe"') &&
       m8LandingSource.includes("IconOrb") &&
       m8LandingSource.includes("IconLayers") &&
@@ -26604,8 +26619,8 @@ assert(
   );
 
   const m8LayoutSource = readFileSync(`${process.cwd()}/src/app/layout.tsx`, "utf8");
-  const m8AppNavSource = readFileSync(
-    `${process.cwd()}/src/app/app/components/AppNav.tsx`,
+  const m8AppContentSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/AppContent.tsx`,
     "utf8",
   );
   const m8CssBlock = (start: string, end: string) =>
@@ -26630,43 +26645,33 @@ assert(
       ["top", "right", "bottom", "left"].every((side) =>
         m8PublicCss.includes(`max(20px, env(safe-area-inset-${side}))`),
       ) &&
-      m8AppNavSource.includes("pl-[env(safe-area-inset-left)]") &&
-      m8AppNavSource.includes("pr-[env(safe-area-inset-right)]") &&
+      m8AppContentSource.includes("pl-[env(safe-area-inset-left)]") &&
+      m8AppContentSource.includes("pr-[env(safe-area-inset-right)]") &&
       m4StylesSource.includes(".kipu-detail *,") &&
       m4StylesSource.includes(".kipu-dialog-backdrop,") &&
       !m7TouchedPages.includes("/app/cashflow"),
     "light/dark chrome / sanctuary + perspective + dialogue + detail + public insets",
   );
 
-  // M9 — Acto 1 closes the redesigned face without removing the founder's
-  // rollback path. Four checks pin the two-act boundary, safe deletions,
-  // authority vocabulary and the complete behavior/visual QA map.
+  // M9 — Acto 2 removes runtime coexistence only after the living callers and
+  // reachability anchors exist. Physical orphan absence is strengthened below
+  // once the pre-delete gate has gone green.
   const m9PageSource = readFileSync(`${process.cwd()}/src/app/app/page.tsx`, "utf8");
-  const m9ShellModeSource = readFileSync(`${process.cwd()}/src/lib/shell-mode.ts`, "utf8");
   const m9LayoutSource = readFileSync(`${process.cwd()}/src/app/app/layout.tsx`, "utf8");
-  const m9EnvSource = readFileSync(`${process.cwd()}/.env.example`, "utf8");
-  const m9PredeleteSource = readFileSync(
-    `${process.cwd()}/docs/design/stages/M9_PREDELETE_AUDIT.md`,
-    "utf8",
-  );
   assert(
-    "M9-1 · el Acto 1 conserva flag, shell/nav/skeleton legacy y deja probado el corte conjunto del Acto 2",
-    m9EnvSource.includes("KIPU_SHELL=legacy") &&
-      m9ShellModeSource.includes('export type ShellMode = "legacy" | "orbe"') &&
-      m9ShellModeSource.includes('if (!raw || raw === "legacy") return "legacy"') &&
-      m9PageSource.includes('if (getShellMode() === "orbe")') &&
-      m9PageSource.includes("const ctx = await buildUserFinancialContext(session.user.id)") &&
-      m8LoadingSource.includes("LegacyDashboardSkeleton") &&
-      m9LayoutSource.includes("<AppMain shellMode={shellMode}>") &&
-      m8AppNavSource.includes("const PARENT_TAB:") &&
-      m8StatesSource.includes("export function LegacyDashboardSkeleton()") &&
-      [
-        "## 1. Qué quedaría huérfano al retirar el shell viejo",
-        "## 2. Anclajes del gate que se caerían",
-        "## 3. Dependencias actuales de `KIPU_SHELL`",
-        "## 4. Qué no se puede borrar aunque lo parezca",
-      ].every((heading) => m9PredeleteSource.includes(heading)),
-    "rollback legacy intacto / auditoría pre-delete completa",
+    "M9-1 · el Acto 2 elimina la convivencia y conserva alcanzables santuario, detalles y loading",
+    m9PageSource.includes("return <SantuarioShell payload={payload} />;") &&
+      m9PageSource.includes("const payload = await buildShellPayload(session.user.id);") &&
+      !/getShellMode|Legacy|buildUserFinancialContext/u.test(m9PageSource) &&
+      m8LoadingSource.includes("return <DashboardSkeleton />;") &&
+      !/getShellMode|LegacyDashboardSkeleton/u.test(m8LoadingSource) &&
+      m9LayoutSource.includes("<TimezoneCapture userId={session.user.id} />") &&
+      m9LayoutSource.includes("<AppContent>{children}</AppContent>") &&
+      m8AppContentSource.includes('data-app-content={sanctuary ? "sanctuary" : "detail"}') &&
+      m8AppContentSource.includes('const sanctuary = pathname === "/app";') &&
+      [...m7PageSources.values()].every((source) => source.includes("<DetailSurface")) &&
+      m6DoorRoutes.every((route) => m6SurfaceSource.includes(route)),
+    "single living home / authenticated layout / detail wrapper + returns / sanctuary loading + nine doors",
   );
 
   const m9CashflowSource = readFileSync(

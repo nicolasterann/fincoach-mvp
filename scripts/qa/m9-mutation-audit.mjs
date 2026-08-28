@@ -4,11 +4,11 @@ import { spawnSync } from "node:child_process";
 const runner = ["scripts/qa/run-capture-gate.mjs"];
 const mutations = [
   {
-    file: ".env.example",
-    from: "KIPU_SHELL=legacy",
+    file: "src/app/app/layout.tsx",
+    from: "<AppContent>{children}</AppContent>",
     name: "M9-1",
-    result: "la convivencia desaparece",
-    to: "KIPU_SHELL=removed",
+    result: "el wrapper vivo deja de alcanzar santuario y detalles",
+    to: "<main>{children}</main>",
   },
   {
     file: "src/app/app/cashflow/page.tsx",

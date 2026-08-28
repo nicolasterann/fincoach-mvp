@@ -33,16 +33,18 @@ const mutations = [
   }`,
   },
   {
-    file: "src/app/page.tsx",
-    from: 'data-product-image="orbe"',
+    file: "src/app/app/components/living/states.tsx",
+    from: 'className="kipu-shell-frame kipu-skeleton-sanctuary"',
     name: "M8-3",
-    to: 'data-product-image="ring"',
+    result: "geometría identificable del skeleton retirada",
+    to: 'className="kipu-shell-frame"',
   },
   {
-    file: "src/app/globals.css",
-    from: "    env(safe-area-inset-left);",
+    file: "src/app/app/components/AppContent.tsx",
+    from: "pl-[env(safe-area-inset-left)]",
     name: "M8-4",
-    to: "    0;",
+    result: "orilla izquierda del wrapper vivo retirada",
+    to: "pl-0",
   },
 ];
 
