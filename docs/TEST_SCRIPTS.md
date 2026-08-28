@@ -184,24 +184,27 @@ explicitly asks to track it). No inflated total debt.
 
 ---
 
-## Script 4 — App dashboard sanity check
+## Script 4 — App sanctuary sanity check
 
 **Preconditions.** Logged in, Script 1 completed.
 
 **Steps.**
 1. Open `/app`.
-2. Inspect dashboard.
+2. Inspect the sanctuary, its perspective sheet and its dialog sheet.
 
 **Expected.**
-- ✅ Name shown matches profile.
-- ✅ Accounts list visible with correct balances.
-- ✅ Debts list visible with correct balances.
-- ✅ Main goal visible with target amount.
-- ✅ Recent movements list renders (may be empty for a fresh user).
-- ✅ Chat input present.
+- ✅ One living orb is the hero; its Saldo amount matches the engine and chat.
+- ✅ The five carousel layers are Saldo / Reserva / Metas / Patrimonio / Deuda;
+  no missing value is invented.
+- ✅ The top handle opens a perspective sheet with Hoy / Tu mes / Tu Saldo /
+  Tus progresos / Lo que viene and reachable detail doors.
+- ✅ The bottom dock opens one persistent dialog sheet; text, camera and voice
+  enter the same conversation.
+- ✅ Day 1, fog and read-failure states explain what is unknown without showing
+  a stale amount as current.
 
 **❌ Bugs to watch for.**
-- Empty dashboard for a freshly onboarded user.
+- Empty or fabricated sanctuary for a freshly onboarded user.
 - Wrong base currency in the totals.
 - Cents truncated for amounts that have them.
 
@@ -3001,12 +3004,12 @@ No new migration. Behavior-level (judge coherence and reliability).
   `/app`: the hero number must be the SAME Saldo Kipu that chat/ambient/
   fallback quote (saldo = min(tanque, calendario-sin-Reserva)) — never a
   different number across surfaces, never a legacy "gasto flexible".
-- **34.2** The hero shows the quipu + the layers (Saldo → Reserva → Metas →
-  Ahorro → Patrimonio → Deuda) with a heads-up when a spend crosses a layer
-  — no named statuses, never blocking. (The old con aire / cuida el ritmo /
-  sobre lo seguro statuses are retired.)
-- **34.3** The home's Secundario block = Reserva / Meta principal / Próximo
-  pago / Tu mes / Actividad (Bloque D). The six-metric wellness grid
+- **34.2** The hero is one living orb whose liquid level changes only from the
+  server-provided layer value. Five carousel views cover Saldo / Reserva /
+  Metas / Patrimonio / Deuda; quipu identity lives in the indicators and the
+  perspective cord. A layer crossing warns and never blocks.
+- **34.3** The perspective sheet = Hoy / Tu mes / Tu Saldo / Tus progresos /
+  Lo que viene, with all nine detail doors reachable. The six-metric wellness grid
   (Readiness, Meta, Deuda, Flexibilidad, Precisión, Realidad) no longer
   exists on the product face; the briefing stays agent-internal.
 - **34.4** Viewing the dashboard does NOT silence a chat nudge that should still
@@ -3038,21 +3041,23 @@ No new migration. Behavior-level (judge coherence and reliability).
 
 ---
 
-## Script 35 — Stage 8: customer-facing product UI, navigation & chat
+## Script 35 — Bloque M: sanctuary navigation & unified dialog
 
 No new migration. UI/UX-level (judge feel, hierarchy, and that nothing fights
 for space). Test on a phone width AND a desktop width.
 
 ### Navigation & shell
-- **35.1** Persistent nav: a bottom tab bar on mobile, a left sidebar on
-  desktop, with Resumen / Actividad / Kipu / Metas. Active tab is highlighted;
-  switching tabs keeps you in the app shell.
-- **35.2** The dashboard no longer contains an embedded chat box, the "cómo
-  hablarle a Kipu" guide, the manual register, or a raw movements table.
+- **35.1** `/app` is a narrow sanctuary on phone and desktop: no sidebar or
+  bottom tab bar surrounds the hero. The top handle opens perspective and the
+  three-action dock opens dialog, camera or voice.
+- **35.2** Perspective exposes links to `/app/saldo`, `/app/mes`,
+  `/app/spending`, `/app/debt`, `/app/wealth`, `/app/cuentas`, `/app/goals`,
+  `/app/activity` and `/app/chat`. Every built surface has a reachable door.
 
 ### Resumen (overview)
-- **35.3** The Saldo Kipu is the hero (vertical quipu of knots); tapping it
-  opens `/app/saldo` (Tus capas + flow receipt + honest historical curve).
+- **35.3** The Saldo Kipu is the living-orb hero; selecting its layer opens the
+  corresponding detail door. `/app/saldo` keeps Tus capas + flow receipt +
+  honest historical curve, with quipu identity in the cord.
   The former Margen Kipu hero is superseded by Saldo Kipu (Bloque D);
   `/app/margen` is now just a redirect to `/app/saldo`.
 - **35.4** The metric cards are retired from the product face (superseded
@@ -3061,11 +3066,14 @@ for space). Test on a phone width AND a desktop width.
 - **35.5** One insight ("lo que yo cuidaría hoy") = the same `nextBestAction`
   the chat coach would lead with; it isn't repetitive receivable spam.
 
-### Chat (its own space)
-- **35.6** `/app/chat` is a full conversation page with message bubbles, an
-  empty-state intro + suggestion chips, and a send box; history loads. Sending a
-  message returns to `/app/chat` (not the dashboard).
-- **35.7** The "Hablar con Kipu" CTA from Resumen opens the chat page.
+### Dialog (one conversation, three inputs)
+- **35.6** The dock opens a bottom sheet with the persisted web/Telegram thread,
+  message bubbles, receipts, suggestions and composer. Closing/reopening or
+  refreshing preserves the active layer, sheet state and draft.
+- **35.7** Text, camera and real voice all call the existing chat/evidence write
+  path. Voice without microphone/permission fails honestly; it never simulates
+  recording. `/app/chat` remains the stable full-page route for deep links and
+  share targets.
 
 ### Activity feed (human-readable)
 - **35.8** Movements read like a feed grouped by Hoy/Ayer/date: a reversal shows
@@ -3079,9 +3087,9 @@ for space). Test on a phone width AND a desktop width.
 
 ### Safety / non-regression
 - **35.10** Manual register is only at `/dev/manual-entry` (not linked in-app);
-  the product's primary input is Kipu chat. All pages are read-only except chat
-  send (existing pipeline) — no new writes, no schema change, ledger/engine
-  untouched. Auth enforced in the app layout.
+  the product's primary input is Kipu dialog. All pages are read-only except the
+  existing chat/evidence actions — no new writer, no schema change,
+  ledger/engine untouched. Auth is enforced in the app layout.
 
 ---
 
@@ -3091,10 +3099,10 @@ Requires migration `016` applied. UI/UX + behavior level; test phone AND
 desktop widths.
 
 ### Saldo hero & detail (formerly the Margen ring)
-- **36.1** The dashboard hero shows the Saldo Kipu quipu (knots =
-  accumulated gustos days, capped at 10 days; it drains with real gustos).
-  The Margen Kipu RING and the weekly-air arc are retired — superseded by
-  Saldo Kipu (Bloque D).
+- **36.1** The sanctuary hero shows the Saldo Kipu in one living orb. Its
+  liquid level comes from the server-calculated layer value; no client state
+  computes money. The Margen Kipu ring and weekly-air arc are retired. Quipu
+  history survives in carousel indicators and the perspective cord.
 - **36.2** `/app/saldo` shows Tus capas + the flow receipt + the honest
   historical curve (`saldo_kipu` from the snapshot, migration 048); day
   boundaries use the user's timezone. `/app/margen` redirects there; the
@@ -3111,11 +3119,11 @@ desktop widths.
   repeat excluded receivables or generic filler.
 
 ### Chat as a real DM
-- **36.5** Sending a message shows the user bubble INSTANTLY, then a typing
-  indicator, then Kipu's reply — no page reload. The reply matches what the
-  pipeline would answer (same engine as Telegram/web).
-- **36.6** On mobile, the bottom tab bar is hidden on chat; the composer sits
-  above the keyboard (safe-area respected); Enter/send key works.
+- **36.5** Sending from the dialog sheet shows the user bubble immediately,
+  then pending state and Kipu's reply — no page reload. The reply matches the
+  same pipeline as Telegram/web and the thread survives in `/app/chat`.
+- **36.6** On mobile, the dialog composer sits above the keyboard and safe area;
+  its sheet owns focus without fighting the dock. Enter/send key works.
 - **36.7** "Nueva conversación" hides previous (incl. fallback-era) messages
   from the view and starts clean. Nothing is deleted from chat_messages; agent
   memory unaffected.
@@ -3557,9 +3565,10 @@ Gate: the disposable-persona E2E calendar battery must pass 18/18.
 
 Requires migration `048` applied. Behavior-level.
 
-- **42.1** Hero = vertical quipu of knots; saldo = min(tanque,
+- **42.1** Hero = living orb; saldo = min(tanque,
   calendario-sin-Reserva); fillDaily = free-of-month/30; capped at 10
-  days; it drains with real gustos.
+  days; it drains with real gustos. The quipu is history/identity in carousel
+  indicators and the perspective cord, not the hero.
 - **42.2** Layers Saldo → Reserva → Metas → Ahorro → Patrimonio (liquid
   investment only) → Deuda: crossing a layer ALWAYS warns, never blocks;
   the word "colchón" never appears in the UI (it is "Reserva").
@@ -3723,6 +3732,83 @@ existentes SON el objetivo). Usuario sin esos rows = comportamiento legacy.
 
 Gate: /dev/capture-test H.1–H.52 verdes + batería E2E con persona disposable +
 red team.
+
+---
+
+## Script 46 — Bloque M: front completo, cierre Acto 1
+
+No requiere migración. Ejecutar en tema oscuro y claro, primero a 390×844 y
+después en desktop. El shell legacy y `KIPU_SHELL` siguen disponibles durante
+este Acto 1; esta batería usa `KIPU_SHELL=orbe`.
+
+### Santuario y perspectiva
+
+- [ ] **46.1 Santuario.** `/app` muestra una sola columna, un solo orbe vivo,
+      cinco capas en orden Saldo / Reserva / Metas / Patrimonio / Deuda, cinta
+      contextual y dock. No hay grilla, score compuesto ni navegación legacy
+      alrededor del héroe.
+- [ ] **46.2 Perspectiva.** El handle abre una hoja con Hoy / Tu mes / Tu
+      Saldo / Tus progresos / Lo que viene. Existen puertas a las nueve rutas:
+      `/app/saldo`, `/app/mes`, `/app/spending`, `/app/debt`, `/app/wealth`,
+      `/app/cuentas`, `/app/goals`, `/app/activity` y `/app/chat`.
+- [ ] **46.3 Redirects.** `/app/margen` y `/app/readiness` llegan a
+      `/app/saldo`; `/app/precision` a `/app/mis-datos`; `/app/reality` a
+      `/app/spending`; `/app/cashflow` a `/app/mes`. Ninguna carga una pantalla
+      retirada antes de redirigir.
+
+### Diálogo, cámara y ciclo real de voz
+
+- [ ] **46.4 Diálogo.** El botón central abre la hoja de diálogo con una única
+      `ChatView`; el hilo web/Telegram mantiene orden, dedupe durable, recibos y
+      estados. Cerrar/reabrir y refresh conservan capa, hoja y borrador.
+- [ ] **46.5 Cámara.** El botón de cámara abre el input real y envía evidencia
+      por `sendWebEvidenceAction`; no existe un segundo writer.
+- [ ] **46.6 Ciclo real de voz.** El aura sólo aparece después de obtener una
+      pista real de micrófono. Permiso denegado o API ausente muestra fallo
+      honesto; cancelar, cerrar, ocultar, timeout o desmontar detienen tracks.
+      El MIME enviado es el base (`audio/ogg`, no codecs) y `setVoice` no mueve
+      el nivel del orbe.
+
+### Estados honestos — red team visual
+
+- [ ] **46.7 Niebla.** `/dev/shell-preview?state=niebla&tier=0`: sin cifra,
+      nivel ni perspectiva; explica que Kipu no pudo leer y no muestra un
+      snapshot viejo como actual.
+- [ ] **46.8 Día 1.** `/dev/shell-preview?state=dia-1&tier=0`: las cinco capas
+      tienen invitaciones reales; Metas y Patrimonio sin entidad no reciben 0
+      inventado.
+- [ ] **46.9 Lectura caída.**
+      `/dev/shell-preview?sheet=1&perspective=lectura-caida&tier=0`: la hoja
+      conserva sus cinco módulos, pero el cordón dice «No pude leer esto ahora»
+      y ofrece reintentar; nunca interpreta fallo como ausencia.
+- [ ] **46.10 Sin conexión.** `/offline.html`: sólo explica que los números
+      viven en el servidor y ofrece reintentar; no contiene cifra monetaria ni
+      snapshot. `/app/**`, `/api/**` y server actions siguen NetworkOnly.
+- [ ] **46.11 Reserva sin objetivo.**
+      `/dev/shell-preview?sheet=1&perspective=sin-objetivo-reserva&tier=0`:
+      muestra la cifra leída, una invitación para definir objetivo y ningún
+      porcentaje/barra.
+- [ ] **46.12 Cordón con huecos.**
+      `/dev/shell-preview?sheet=1&perspective=con-huecos&tier=0`: cada tramo
+      continuo es un path separado; los días faltantes son huecos, no una línea
+      interpolada.
+- [ ] **46.13 Recibo incompleto.** `/dev/chat-preview?mode=incomplete`: aviso
+      «No pude comprobar todo el historial» y sólo líneas verificadas; no
+      rellena monto, saldo ni movimiento. Repetir `?mode=read-failed`: mensaje
+      de reintento y cero falsa ausencia.
+- [ ] **46.14 Patrimonio negativo.**
+      `/dev/shell-preview?state=patrimonio-negativo&tier=0`: cifra y material
+      propios de Patrimonio; nunca rojo de deuda, score o estado nombrado.
+
+### Gates y seguridad
+
+- [ ] **46.15** `npm run lint`, `npm run build`, captura por runner Node y HTTP,
+      harness M8+M9 y `scripts/qa/m4-thread-persona-e2e.mjs` verdes; la persona
+      termina con residuo cero en DB y auth.
+- [ ] **46.16** El service worker nunca cachea dinero; el cliente no calcula
+      dinero; no aparece writer nuevo, migración, dependencia, merge ni deploy.
+      El Acto 1 conserva shell legacy, `KIPU_SHELL`, `AppNav`/`PARENT_TAB` y
+      `LegacyDashboardSkeleton` para la pasada del founder.
 
 ## Cross-script regression checklist
 

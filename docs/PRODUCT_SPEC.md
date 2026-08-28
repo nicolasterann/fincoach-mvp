@@ -35,8 +35,10 @@ you a single, trustworthy answer.
 It works like a tank: it refills daily with fillDaily = libre-del-mes/30
 (structural), caps at 10 days of gustos, drains with real gustos, and the
 number shown is saldo = min(tanque, calendario-sin-Reserva). Visual: a
-vertical quipu of knots. Day boundaries are computed in the USER'S TIMEZONE.
-With no active income, it switches to runway mode.
+living orb whose liquid level is the server-calculated layer value. The quipu
+survives as Kipu's history/identity in the five carousel indicators and the
+perspective cord, not as the hero itself. Day boundaries are computed in the
+USER'S TIMEZONE. With no active income, it switches to runway mode.
 
 The **Reserva** (never "colchón" in UI) is a separate protected layer.
 Layers: Saldo → Reserva → Metas → Ahorro → Patrimonio (liquid investment
@@ -114,7 +116,7 @@ Example messages:
 9. Financial coach
 10. Hybrid savings plan
 11. Weekly flexible plan
-12. Home Whoop-for-money (Saldo Kipu quipu hero)
+12. Home Whoop-for-money (Saldo Kipu living-orb hero)
 13. Contextual celebrations (no gamification contract in MVP)
 14. Visual goal/avatar
 15. Smart reminders
@@ -126,7 +128,7 @@ Example messages:
 21. Return mode
 22. Light mode
 23. Future shared goals foundation
-24. Saldo Kipu — accumulating tank + quipu (Bloque D)
+24. Saldo Kipu — accumulating tank + living orb (Bloque D + Bloque M)
 25. Capas & Reserva (crossing always warns, never blocks)
 26. Universal materialization calendar + AI-generated notifications (Bloque C)
 27. Dónde está tu plata / Tesorería — per-account cashflow (Bloque F)
@@ -506,13 +508,17 @@ Priority 5: investment
 
 ## Home (Whoop-for-money)
 
-The home answers at a glance: cuánto tengo para gustos, qué pasa hoy, qué
-viene. Two levels:
+The home is a narrow sanctuary that answers at a glance: cuánto tengo para
+gustos and which layer I am looking at. Its hero is one living orb over a
+five-layer carousel: Saldo / Reserva / Metas / Patrimonio / Deuda. The active
+layer's server-calculated amount, honest state pill and one contextual ribbon
+sit with the orb; the three-action dock opens dialog, camera or voice.
 
-- **Principal**: Saldo Kipu hero — the vertical quipu of knots — plus "Hoy"
-  and "Lo que viene".
-- **Secundario**: Reserva / Meta principal / Próximo pago / Tu mes /
-  Actividad.
+Two sheets keep depth close without turning the sanctuary into a dashboard:
+the perspective sheet answers Hoy / Tu mes / Tu Saldo / Tus progresos / Lo que
+viene and opens every detail surface; the dialog sheet holds one persistent
+conversation across text, camera and real microphone capture. Quipu identity
+remains in the carousel indicators and the perspective cord.
 
 Retired from the product face: Pulso Kipu (0–100 score), Flexibilidad,
 Precisión, Realidad, named states (Holgado/Justo/Estirando) and any weekly
@@ -526,20 +532,16 @@ that IS the Saldo Kipu.
 
 ## Information architecture & navigation
 
-The app is a real product shell, not one long page. Persistent navigation —
-left sidebar on desktop, bottom tab bar on mobile — across four sections, with
-detail layers reachable on demand (simple at the top, deep if you want it):
+The app is a real product shell, not one long page. `/app` is the sanctuary:
+one orb, five layer views and two nearby sheets. The top handle opens the
+perspective sheet; the bottom dock opens dialog, camera or voice. Those sheets
+are the primary navigation on home, without a persistent tab bar around the
+hero. `/app/chat` remains a stable full-page conversation route for deep links
+and sharing.
 
-- **Resumen** (home): two levels. Principal: Saldo Kipu hero (quipu) / Hoy /
-  Lo que viene. Secundario: Reserva / Meta principal / Próximo pago / Tu mes /
-  Actividad. A "Hablar con Kipu" CTA opens chat.
-- **Actividad**: the financial activity feed — a wellness timeline grouped by
-  day with human labels and Kipu money, never a ledger export.
-- **Kipu** (chat): its OWN full conversation space (feed vs DMs), not a box
-  inside the dashboard.
-- **Metas**: goals as plans — progress, the nudge to add a deadline, a CTA to
-  contribute.
-- **Detail layers** (drill-down, not tabs): `/app/saldo` — Tus capas + recibo
+**Detail surfaces** are one tap from the perspective sheet (and may link to one
+another): `/app/activity` is the financial activity timeline; `/app/goals`
+holds goal plans and contributions; `/app/saldo` provides Tus capas + recibo
   de flujo + honest historical curve (saldo_kipu from the daily snapshot,
   migration 048); `/app/cuentas` "Dónde está tu plata" (Bloque F) —
   per-account cashflow on the same universal calendar, per-account operating
@@ -549,6 +551,8 @@ detail layers reachable on demand (simple at the top, deep if you want it):
   LEARNED from the ledger with confidence, and TransferAlert (Tesorería,
   recommend-only) derived from the same model; ambient topics transfer_needed
   and payday_distribution; mono-account users see the module stay silent.
+  `/app/mes`, `/app/spending`, `/app/debt` and `/app/wealth` complete the nine
+  reachable doors. `/app/cashflow` redirects to `/app/mes`.
   `/app/margen`, `/app/readiness`, `/app/precision` and `/app/reality` are
   redirects.
 
@@ -560,13 +564,13 @@ feel); broad light-mode theming is a later refinement.
 ### Stage 9 product quality (historical — superseded by Bloques D/F)
 
 The Margen ring, the six-metric system and the `/app/margen` layers were
-replaced by the Saldo Kipu quipu hero and `/app/saldo` + `/app/cuentas`.
+replaced by the Saldo Kipu living-orb hero and `/app/saldo` + `/app/cuentas`.
 Still current: chat as a real DM, direct goal actions, habit loop, native PWA
 feel.
 
 - **Margen Kipu ring** (retired): the hero WAS an iconic arc (share of the
   week's air still available) with the weekly number inside — Kipu's "Recovery
-  ring". Replaced by the Saldo Kipu quipu; the hero has no weekly framing.
+  ring". Replaced by the Saldo Kipu living orb; the hero has no weekly framing.
 - **Metric system** (retired): six wellness metrics, each with its own accent
   color, icon, and score bar, each tapping into a real detail page. Retired
   from the product face along with Pulso Kipu.
@@ -613,14 +617,15 @@ user confirms the review.
 Saldo Kipu (and its Reserva layer) with the real engine, shows why it is
 lower than the bank balance, and frames it as a first photo to refine
 together. That is the product promise landing before the first save — and
-the bridge into the dashboard, where the same saldo (the quipu) is waiting.
+the bridge into the sanctuary, where the same saldo is waiting in the orb.
 
 ### Pulso Kipu (retired)
 
 Pulso Kipu (the 0–100 wellness score, Stage 10) was retired from the product
 face along with Flexibilidad, Precisión, Realidad and the named states.
 `/app/readiness`, `/app/precision` and `/app/reality` are redirects. Kipu's
-signature visual identity today is the Saldo Kipu quipu.
+signature visual identity today is the Saldo Kipu living orb. The quipu remains
+as history and identity in the carousel indicators and perspective cord.
 
 ## Roadmap
 
