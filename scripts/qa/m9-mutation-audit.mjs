@@ -4,45 +4,32 @@ import { spawnSync } from "node:child_process";
 const runner = ["scripts/qa/run-capture-gate.mjs"];
 const mutations = [
   {
-    file: "src/app/manifest.ts",
-    from: 'sizes: "192x192"',
-    name: "M8-1",
-    to: 'sizes: "191x191"',
+    file: ".env.example",
+    from: "KIPU_SHELL=legacy",
+    name: "M9-1",
+    result: "la convivencia desaparece",
+    to: "KIPU_SHELL=removed",
   },
   {
-    file: "public/sw.js",
-    from: `  if (policy.strategy === "network-only") {
-    const networkResponse = fetch(request);
-    event.respondWith(
-      policy.fallback === "offline"
-        ? networkResponse.catch(() => caches.match(OFFLINE_URL))
-        : networkResponse,
-    );
-    return;
-  }`,
-    name: "M8-2",
-    result: "escritura cache con alias c muerta por nombre",
-    to: `  if (policy.strategy === "network-only") {
-    event.respondWith(
-      caches.match(request).then((hit) => hit || fetch(request).then((res) => {
-        caches.open(CACHE_NAME).then((c) => c.put(request, res.clone()));
-        return res;
-      })),
-    );
-    return;
-  }`,
+    file: "src/app/app/cashflow/page.tsx",
+    from: 'redirect("/app/mes")',
+    name: "M9-2",
+    result: "cashflow deja de llegar a Tu mes",
+    to: 'redirect("/app/saldo")',
   },
   {
-    file: "src/app/page.tsx",
-    from: 'data-product-image="orbe"',
-    name: "M8-3",
-    to: 'data-product-image="ring"',
+    file: "docs/PRODUCT_SPEC.md",
+    from: "living orb whose liquid level",
+    name: "M9-3",
+    result: "la autoridad vuelve a declarar al quipu como héroe",
+    to: "vertical quipu whose liquid level",
   },
   {
-    file: "src/app/globals.css",
-    from: "    env(safe-area-inset-left);",
-    name: "M8-4",
-    to: "    0;",
+    file: "docs/TEST_SCRIPTS.md",
+    from: "state=patrimonio-negativo",
+    name: "M9-4",
+    result: "el guion pierde el estado de patrimonio negativo",
+    to: "state=patrimonio-positivo",
   },
 ];
 
@@ -59,7 +46,7 @@ function runGate() {
 
 const baseline = runGate();
 if (baseline.status !== 0 || !baseline.output.includes("854/854 capture checks")) {
-  process.stderr.write("FAIL · M8 mutation baseline is not green\n");
+  process.stderr.write("FAIL · M9 mutation baseline is not green\n");
   process.stderr.write(baseline.output);
   process.exit(1);
 }
@@ -82,9 +69,7 @@ for (const mutation of mutations) {
       process.exitCode = 1;
       break;
     }
-    process.stdout.write(
-      `${mutation.name}: ${mutation.result ?? "mutación muerta por nombre"} (853/854)\n`,
-    );
+    process.stdout.write(`${mutation.name}: ${mutation.result} (853/854)\n`);
   } finally {
     writeFileSync(mutation.file, original);
   }
@@ -93,7 +78,7 @@ for (const mutation of mutations) {
 if (!process.exitCode) {
   const restored = runGate();
   if (restored.status !== 0 || !restored.output.includes("854/854 capture checks")) {
-    process.stderr.write("FAIL · restoration did not return to 850/850\n");
+    process.stderr.write("FAIL · restoration did not return to 854/854\n");
     process.stderr.write(restored.output);
     process.exit(1);
   }

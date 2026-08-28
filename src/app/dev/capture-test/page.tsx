@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import {
   correctionIdentityToken,
@@ -26636,6 +26636,195 @@ assert(
       m4StylesSource.includes(".kipu-dialog-backdrop,") &&
       !m7TouchedPages.includes("/app/cashflow"),
     "light/dark chrome / sanctuary + perspective + dialogue + detail + public insets",
+  );
+
+  // M9 — Acto 1 closes the redesigned face without removing the founder's
+  // rollback path. Four checks pin the two-act boundary, safe deletions,
+  // authority vocabulary and the complete behavior/visual QA map.
+  const m9PageSource = readFileSync(`${process.cwd()}/src/app/app/page.tsx`, "utf8");
+  const m9ShellModeSource = readFileSync(`${process.cwd()}/src/lib/shell-mode.ts`, "utf8");
+  const m9LayoutSource = readFileSync(`${process.cwd()}/src/app/app/layout.tsx`, "utf8");
+  const m9EnvSource = readFileSync(`${process.cwd()}/.env.example`, "utf8");
+  const m9PredeleteSource = readFileSync(
+    `${process.cwd()}/docs/design/stages/M9_PREDELETE_AUDIT.md`,
+    "utf8",
+  );
+  assert(
+    "M9-1 · el Acto 1 conserva flag, shell/nav/skeleton legacy y deja probado el corte conjunto del Acto 2",
+    m9EnvSource.includes("KIPU_SHELL=legacy") &&
+      m9ShellModeSource.includes('export type ShellMode = "legacy" | "orbe"') &&
+      m9ShellModeSource.includes('if (!raw || raw === "legacy") return "legacy"') &&
+      m9PageSource.includes('if (getShellMode() === "orbe")') &&
+      m9PageSource.includes("const ctx = await buildUserFinancialContext(session.user.id)") &&
+      m8LoadingSource.includes("LegacyDashboardSkeleton") &&
+      m9LayoutSource.includes("<AppMain shellMode={shellMode}>") &&
+      m8AppNavSource.includes("const PARENT_TAB:") &&
+      m8StatesSource.includes("export function LegacyDashboardSkeleton()") &&
+      [
+        "## 1. Qué quedaría huérfano al retirar el shell viejo",
+        "## 2. Anclajes del gate que se caerían",
+        "## 3. Dependencias actuales de `KIPU_SHELL`",
+        "## 4. Qué no se puede borrar aunque lo parezca",
+      ].every((heading) => m9PredeleteSource.includes(heading)),
+    "rollback legacy intacto / auditoría pre-delete completa",
+  );
+
+  const m9CashflowSource = readFileSync(
+    `${process.cwd()}/src/app/app/cashflow/page.tsx`,
+    "utf8",
+  );
+  const m9RedirectTargets = new Map(
+    [
+      ["margen", "/app/saldo"],
+      ["readiness", "/app/saldo"],
+      ["precision", "/app/mis-datos"],
+      ["reality", "/app/spending"],
+    ].map(([route, target]) => [
+      route,
+      {
+        source: readFileSync(`${process.cwd()}/src/app/app/${route}/page.tsx`, "utf8"),
+        target,
+      },
+    ]),
+  );
+  const m9SaldoCardSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/SaldoKipu.tsx`,
+    "utf8",
+  );
+  const m9UpcomingSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/UpcomingCommitmentsCard.tsx`,
+    "utf8",
+  );
+  assert(
+    "M9-2 · sólo salen huérfanos probados; cinco redirects sobreviven y cashflow ya no lee dinero",
+    !existsSync(`${process.cwd()}/src/app/app/components/GoalPlanCard.tsx`) &&
+      ["margen", "readiness", "precision", "reality"].every(
+        (route) => !existsSync(`${process.cwd()}/src/app/app/${route}/loading.tsx`),
+      ) &&
+      !readFileSync(`${process.cwd()}/src/lib/financial/margen-kipu.ts`, "utf8").includes(
+        "saldoStale",
+      ) &&
+      [...m9RedirectTargets.values()].every(({ source, target }) =>
+        source.includes(`redirect("${target}")`),
+      ) &&
+      m9CashflowSource.includes('redirect("/app/mes")') &&
+      !/buildCoachingBriefing|buildUserFinancialContext|createSupabaseServerClient/u.test(
+        m9CashflowSource,
+      ) &&
+      !m9SaldoCardSource.includes("/app/cashflow") &&
+      !m9UpcomingSource.includes("/app/cashflow") &&
+      m9SaldoCardSource.includes('href="/app/mes"') &&
+      m9UpcomingSource.includes('href="/app/mes"'),
+    "huérfanos ausentes / redirects puros / puertas directas a Tu mes",
+  );
+
+  const m9ProductSource = readFileSync(`${process.cwd()}/docs/PRODUCT_SPEC.md`, "utf8");
+  const m9ClaudeSource = readFileSync(`${process.cwd()}/CLAUDE.md`, "utf8");
+  const m9AgentsSource = readFileSync(`${process.cwd()}/AGENTS.md`, "utf8");
+  const m9RoadmapSource = readFileSync(`${process.cwd()}/docs/ROADMAP.md`, "utf8");
+  const m9AuthoritySource = [m9ProductSource, m9ClaudeSource, m9AgentsSource].join("\n");
+  const m9WalkProductCode = (dir: string, out: string[] = []): string[] => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "dev" || entry.name === "node_modules") continue;
+      const full = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) m9WalkProductCode(full, out);
+      else if (/\.tsx?$/u.test(entry.name)) out.push(full);
+    }
+    return out;
+  };
+  const m9ColchonLeaks: string[] = [];
+  const m9RetiredLeaks: string[] = [];
+  const m9WeeklySaldoLeaks: string[] = [];
+  const m9PermittedContext = (file: string, line: string) =>
+    /nunca .{0,4}colch/iu.test(line) ||
+    (file.endsWith("kipu-agent.ts") && line.includes("SALDO_FAMILY")) ||
+    (file.endsWith("coach-response-prompt.ts") && /Banned wording|NEVER frame/u.test(line));
+  const m9RetiredPatterns = [
+    /\bMargen Kipu\b/iu,
+    /REPARTO SUGERIDO DEL MARGEN/iu,
+    /POR QU[EÉ] CAMBI[OÓ] EL MARGEN/iu,
+    /\bmargen libre\b/iu,
+    /\b(?:tu|el|del)\s+margen\s+(?:actual|estimad[oa]|mensual|semanal)\b/iu,
+    /Readiness.{0,120}Flexibilidad.{0,120}Precisi[oó]n.{0,120}Realidad/iu,
+    /\b(?:Pulso Kipu|dinero flexible|flexibles esta semana)\b/iu,
+  ];
+  const m9WeeklySaldoPatterns = [
+    /\bweekly Saldo\b/iu,
+    /\bSaldo semanal\b/iu,
+    /\bSaldo.{0,100}(?:para esta semana|de la semana|\/sem\b)/iu,
+  ];
+  for (const file of m9WalkProductCode("src")) {
+    for (const raw of readFileSync(file, "utf8").split("\n")) {
+      const line = raw.trimStart().replace(/(?<!:)\/\/.*$/u, "");
+      if (line.startsWith("*") || line.startsWith("/*") || line.startsWith("{/*") || !line.trim()) {
+        continue;
+      }
+      if (/colch[oó]n/iu.test(line) && !m9PermittedContext(file, line)) {
+        m9ColchonLeaks.push(`${file}: ${line.slice(0, 90)}`);
+      }
+      if (!m9PermittedContext(file, line) && m9RetiredPatterns.some((pattern) => pattern.test(line))) {
+        m9RetiredLeaks.push(`${file}: ${line.slice(0, 120)}`);
+      }
+      if (!m9PermittedContext(file, line) && m9WeeklySaldoPatterns.some((pattern) => pattern.test(line))) {
+        m9WeeklySaldoLeaks.push(`${file}: ${line.slice(0, 120)}`);
+      }
+    }
+  }
+  assert(
+    "M9-3 · autoridad y vocabulario describen orbe+santuario; el trinquete queda en cero y /semana elegido sobrevive",
+    !m9AuthoritySource.includes("vertical quipu") &&
+      m9ProductSource.includes("living orb") &&
+      m9ProductSource.includes("perspective cord") &&
+      m9ProductSource.includes("`/app/cashflow` redirects to `/app/mes`") &&
+      m9ClaudeSource.includes("five-layer carousel") &&
+      m9AgentsSource.includes("five-layer carousel") &&
+      m9RoadmapSource.includes("puertas está CERRADO desde M6") &&
+      m9RoadmapSource.includes("CIERRE ACTO 1 ENTREGADO") &&
+      m9ColchonLeaks.length === 0 &&
+      m9RetiredLeaks.length === 0 &&
+      m9WeeklySaldoLeaks.length === 0 &&
+      (m7GoalsPageSource.match(/\/semana/g) ?? []).length === 3,
+    JSON.stringify({
+      colchon: m9ColchonLeaks,
+      retirado: m9RetiredLeaks,
+      saldoSemanal: m9WeeklySaldoLeaks,
+      goalWeeklyCadences: (m7GoalsPageSource.match(/\/semana/g) ?? []).length,
+    }),
+  );
+
+  const m9ScriptsSource = readFileSync(`${process.cwd()}/docs/TEST_SCRIPTS.md`, "utf8");
+  const m9ShellPreviewSource = readFileSync(
+    `${process.cwd()}/src/app/dev/shell-preview/page.tsx`,
+    "utf8",
+  );
+  const m9ChatPreviewSource = readFileSync(
+    `${process.cwd()}/src/app/dev/chat-preview/page.tsx`,
+    "utf8",
+  );
+  assert(
+    "M9-4 · TEST_SCRIPTS cubre santuario, perspectiva, diálogo, voz y los ocho estados honestos con fixtures reales",
+    m9ScriptsSource.includes("## Script 46 — Bloque M: front completo, cierre Acto 1") &&
+      ["Santuario", "Perspectiva", "Diálogo", "Ciclo real de voz"].every((term) =>
+        m9ScriptsSource.includes(term),
+      ) &&
+      [
+        "state=niebla",
+        "state=dia-1",
+        "perspective=lectura-caida",
+        "/offline.html",
+        "perspective=sin-objetivo-reserva",
+        "perspective=con-huecos",
+        "mode=incomplete",
+        "state=patrimonio-negativo",
+      ].every((fixture) => m9ScriptsSource.includes(fixture)) &&
+      ["niebla", '"dia-1"', '"patrimonio-negativo"', '"lectura-caida"', '"sin-objetivo-reserva"', '"con-huecos"'].every(
+        (fixture) => m9ShellPreviewSource.includes(fixture),
+      ) &&
+      m9ChatPreviewSource.includes('mode !== "incomplete"') &&
+      m9ChatPreviewSource.includes('mode === "read-failed"') &&
+      m8OfflineVisible.includes("Tus números viven en el servidor") &&
+      !/\d/u.test(m8OfflineVisible),
+    "behavior scripts / executable preview fixtures / offline truth",
   );
 
   // M0 closure: the old mixed envelope assertions also pinned live SQL/tools.
