@@ -26675,6 +26675,15 @@ assert(
     "M9-1 · el Acto 2 elimina la convivencia y conserva alcanzables santuario, detalles y loading",
     m9PageSource.includes("return <SantuarioShell payload={payload} />;") &&
       m9PageSource.includes("const payload = await buildShellPayload(session.user.id);") &&
+      // Auditoría Acto 2: que la línea del santuario EXISTA no prueba que se
+      // ALCANCE — un `redirect` puesto encima la deja intacta y muerta. La
+      // promesa «/app es el santuario» se sujeta por FORMA: un solo `return`,
+      // un solo `redirect(` (el guard de login) y ese guard ANTES del payload.
+      // Cualquier rama nueva cambia estas cuentas.
+      (m9PageSource.match(/\breturn\b/gu) ?? []).length === 1 &&
+      (m9PageSource.match(/\bredirect\(/gu) ?? []).length === 1 &&
+      m9PageSource.indexOf("redirect(") <
+        m9PageSource.indexOf("buildShellPayload(session.user.id)") &&
       !/getShellMode|Legacy|buildUserFinancialContext/u.test(m9PageSource) &&
       m8LoadingSource.includes("return <DashboardSkeleton />;") &&
       !/getShellMode|LegacyDashboardSkeleton/u.test(m8LoadingSource) &&

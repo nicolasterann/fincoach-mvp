@@ -31,6 +31,18 @@ const mutations = [
     result: "el guion pierde el estado de patrimonio negativo",
     to: "state=patrimonio-positivo",
   },
+  {
+    file: "src/app/app/page.tsx",
+    from: `  const payload = await buildShellPayload(session.user.id);
+  return <SantuarioShell payload={payload} />;`,
+    name: "M9-1",
+    result: "bifurcacion reintroducida sin getShellMode muerta por nombre",
+    to: `  const payload = await buildShellPayload(session.user.id);
+  if (process.env.KIPU_SHELL !== "orbe") {
+    redirect("/app/saldo");
+  }
+  return <SantuarioShell payload={payload} />;`,
+  },
 ];
 
 function runGate() {
