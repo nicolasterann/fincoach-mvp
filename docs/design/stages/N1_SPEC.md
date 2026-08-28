@@ -75,6 +75,33 @@ bien). Falta ver escribir a `buildShellPayload`.
 Si N1 mueve los tramos primero, la línea base se pierde para siempre y la
 promesa de esta etapa deja de ser medible. Es la orden **O3** del audit de N0.
 
+### 4.1 La línea base — YA TOMADA (2026-08-28, iPhone del founder, producción)
+
+Dos corridas reales sobre `221575b`. Los cuatro tramos de cabecera suman el
+total **exacto** en las dos, así que el instrumento cierra consigo mismo.
+
+| Tramo | Arranque en FRÍO (Safari recién abierto) | Recarga CALIENTE |
+|---|---|---|
+| `contexto` | **881 ms** (22,6 %) | 378 ms (19,3 %) |
+| `hilo` | **1626 ms (41,7 %)** | 474 ms (24,1 %) |
+| `briefing` | **916 ms** (23,5 %) | 818 ms (41,7 %) |
+| `resto` | 473 ms (12,1 %) | 293 ms (14,9 %) |
+| **total** | **3896 ms** | **1963 ms** |
+| TTFB | 248 ms | 121 ms |
+
+Cola del `resto` en frío: `cliente 1 · preferencias 223 · cotizaciones 1 ·
+historia 84 · movimiento 83 · recibo 74`.
+
+**Tres lecturas que N1 debe tener presentes:**
+
+1. **`hilo` es el 42 % del arranque en frío.** La premisa del bloque queda
+   confirmada con número: sacarlo lleva el total de **3896 → 2270 ms**.
+2. **TTFB es sano (121–248 ms, verde).** El problema no es la red hasta el
+   borde: es trabajo de servidor. Por eso fijar la región (§5.5) ataca los
+   viajes a la base que viven DENTRO de los tramos, no el TTFB.
+3. **El `resto` es chico** (473 ms en frío repartidos en seis lecturas). No hay
+   premio grande ahí; el premio está en `hilo`, `contexto` y `briefing`.
+
 ---
 
 ## 5. El trabajo
@@ -137,6 +164,40 @@ Dos hechos verificados que condicionan **cómo** se hace esto:
 
 El hueco de la píldora mientras llega es `KipuLoading shape="linea"` — **no una
 barra gris improvisada** (§7.4).
+
+**Y acá está el hallazgo que la línea base destapó, y que este spec no sabía
+cuando se escribió la primera versión:**
+
+> `shell-payload.ts:233` dice `const saldo = briefing.margenKipu.saldo;`
+> **La cifra del orbe NO sale de `contexto`: sale de `briefing`.**
+
+O sea que «primero el orbe» no es barato. El camino crítico del orbe es
+**`contexto` + `briefing`**, y eso son:
+
+- **en frío: 881 + 916 = 1797 ms**, más 248 de TTFB ⇒ **~2045 ms de suelo**
+- en caliente: 378 + 818 = 1196 ms, más 121 ⇒ ~1317 ms
+
+**La promesa de ~1,5 s no se alcanza en frío ni sacando el hilo ni
+transmitiendo todo lo demás**, porque lo caro *es el orbe*. Transmitir sigue
+valiendo muchísimo —el orbe pasaría de aparecer a los ~4,1 s a aparecer a los
+~2,0 s, la mitad— pero el último tramo hasta 1,5 s exige que `briefing` salga
+del camino crítico o se abarate.
+
+**N1 tiene que investigarlo y declarar qué encontró.** Dos pistas, ninguna
+obligatoria:
+
+- `buildCoachingBriefing` vive en `src/lib/financial/coaching-signals.ts` y
+  además de leer **escribe la foto diaria**. Si esa escritura es parte de los
+  916 ms, mover *sólo la escritura* fuera del render la saca del camino sin
+  cambiar un número. **`after` existe y está exportado por `next/server`** (lo
+  verifiqué: `NextRequest, NextResponse, ImageResponse, userAgentFromString,
+  userAgent, URLPattern, after, connection`).
+- Si la cifra del saldo se puede derivar con una lectura más angosta que el
+  briefing completo, esa es la otra puerta.
+
+**Lo que no se vale:** llegar a 1,5 s mostrando una cifra que el motor todavía
+no respaldó. Antes que eso, el orbe se dibuja en `KipuLoading` y la promesa se
+declara incumplida con su número al lado.
 
 ### 5.4 El archivo de sesión que nunca se escribió — **frontera de seguridad**
 
@@ -231,6 +292,7 @@ Verificables **por ejecución**. El reporte pega la salida real de cada uno.
 | **B13** | `lint` 0 errores · `build` exit 0 · captura **860 + nuevas**, ninguna anterior removida ni relajada. Si un pin se re-ancló (M9-1, N0-6), **se dice cuál, por qué, y qué promesa conserva** |
 | **B14** | **Mutación propia con dientes:** romper a mano que el movimiento ilegible degrade (volver a `throw`) hace fallar una aserción **con nombre**, no el build. Se pega la salida y se revierte |
 | **B15** | Cero dependencias nuevas, cero `supabase/**`, cero migraciones, cero cambios en `src/lib/financial/**` ni en `src/lib/ai/**` |
+| **B17** | **El camino crítico del orbe está medido y declarado.** El reporte dice cuánto tardan `contexto` y `briefing` después de N1, si `briefing` salió o no del camino, y —si no salió— cuál es el número real de apertura en frío. Una promesa incumplida se declara con su cifra; no se redondea |
 | **B16** | **Ningún número cambió de valor.** Las cinco cifras del carrusel siguen siendo `82.40$ · 1,200$ · 260$ · 3,480$ · 760$` y la paridad posición/slide/tab/capa/acento/nudo/cifra se mantiene |
 
 ---
@@ -284,7 +346,21 @@ para esto: **corre antes del render**, así que no puede conocer los tiempos.
 Si se quiere la cabecera de verdad, es una decisión aparte; la cadena ya está
 armada y ya se sabe leer.
 
-### 7.6 Las trampas de medición que ya costaron caro
+### 7.6 LCP, INP y CLS no se pueden fotografiar sin tocar la pantalla
+Verificado en la librería que trae Next
+(`node_modules/next/dist/compiled/web-vitals/web-vitals.js`): **LCP** se
+finaliza y se reporta en `keydown`/`click` o cuando la página pasa a `hidden`;
+**CLS** e **INP** se reportan al pasar a `hidden`. **TTFB** se reporta en
+`load` — por eso es el único que sale lleno en una captura recién abierta.
+
+No es un defecto del metro: es cómo se miden esas métricas. Pero significa que
+el ritual de medición tiene un paso más: **abrir, tocar una vez la pantalla, y
+recién ahí leer LCP.** Para CLS e INP hay que mandar la app al fondo y volver.
+Si N1 quiere que se puedan fotografiar de una, tiene que decidirlo — y la
+regla de N0 sigue mandando: **un valor provisional jamás se muestra como
+final.** Antes `—` que un número que va a cambiar.
+
+### 7.7 Las trampas de medición que ya costaron caro
 1. **Una pestaña oculta pausa `requestAnimationFrame`** y nunca dispara LCP.
    Medir ahí da cero sin avisar.
 2. **`innerWidth = 0` con el panel oculto** hace que el carrusel no tenga a
