@@ -538,3 +538,95 @@ y esas tres necesitan una interacción o que la página se oculte (§7.6). Todo 
 de arriba es **tiempo de servidor**, que es donde estaba el problema y donde se
 arregló — pero el tiempo *percibido* incluye pintar, y ése todavía no tiene
 número. Un toque en la pantalla y una foto lo cierran.
+
+---
+
+# Tercera corrida (8:11) — el LCP, y una corrección al número anterior
+
+El founder tocó la pantalla, así que **LCP por fin se midió**: confirma por
+ejecución la trampa §7.6 (una recarga no basta; hace falta un toque).
+
+```
+TTFB 175 ms · LCP 4096 ms [malo] · INP — · CLS —
+orbe 1526 ms   contexto 1059 · cliente 8 · briefing 464 · cotizaciones 1061
+píldora 1528   preferencias 1069 · movimiento 1062 · recibo 73
+perspectiva 1578   historia 40
+```
+
+## 1. Corrección: el −82 % que reporté estaba inflado por mi propia instrucción
+
+Le pedí al founder **una carga de descarte antes de medir**, para no medir el
+arranque en frío del deploy. Fue un error de método: esa carga no sólo calienta
+el deploy, **calienta la conexión a la base** — y la conexión fría es parte de la
+experiencia real de un usuario que abre la app una vez al día.
+
+Comparando manzanas con manzanas:
+
+| | Antes | Ahora | |
+|---|---|---|---|
+| **frío → frío** (lo que el founder vive cada mañana) | 4144 ms | **1701 ms** | **−59 %** |
+| **caliente → caliente** | 2084 ms | **713 ms** | **−66 %** |
+| ~~frío → caliente~~ *(la comparación que hice mal)* | ~~4144~~ | ~~744~~ | ~~−82 %~~ |
+
+La mejora sigue siendo grande y real. Pero **−59 % es la cifra honesta para el
+uso diario**, no −82 %. Y con un solo usuario, casi toda apertura es fría.
+
+## 2. Lo que la corrida fría enseña: ~918 ms de primera conexión, sobre el orbe
+
+Cuatro operaciones que **arrancan en paralelo** terminan a menos de 10 ms una de
+otra:
+
+```
+contexto 1059 · cotizaciones 1061 · movimiento 1062 · preferencias 1069
+dispersión: 10 ms sobre ~1059  (0,9 %)
+```
+
+Eso no son cuatro consultas lentas: es **un costo compartido** que las bloquea a
+todas. Y `briefing` —que arranca *después*, porque necesita el contexto— vale
+464 ms, igual que en las corridas rápidas (439 / 531). O sea que el sobrecosto lo
+paga quien llega primero a la base:
+
+```
+contexto con conexión caliente: 141 ms
+contexto con conexión fría:    1059 ms
+          diferencia ≈ 918 ms, y cae entera sobre el camino crítico del orbe
+```
+
+**No es de N1 ni de N2:** es el primer viaje a la base (conexión + TLS + despertar
+PostgREST). Queda anotado como el mayor costo único que le queda a la apertura, y
+como candidato para una etapa que pueda tocar la capa de datos.
+
+## 3. El hallazgo grande: la mitad del cliente ya es la mitad más grande
+
+```
+servidor:  TTFB 175 + orbe 1526 =  1701 ms
+LCP:                               4096 ms
+⇒ cliente (bajar JS, hidratar, pintar) ≈ 2395 ms  ·  58 % del LCP
+```
+
+Y proyectado sobre las corridas buenas de servidor, **el LCP seguiría en
+«regular»**:
+
+```
+servidor 744 ms + cliente ~2395  ⇒  LCP ~3139 ms   [regular]
+servidor 713 ms + cliente ~2395  ⇒  LCP ~3108 ms   [regular]
+```
+
+**N1 arregló la mitad que le tocaba.** El cuello de botella se mudó: ya no está
+en leer la base, está en el navegador. Y eso cae **exactamente** sobre lo que N2
+tiene que hacer —el orbe dibujado dos veces y sustituido a la vista (Causa C)—,
+así que N2 deja de ser sólo una etapa de acabado y pasa a ser también la etapa
+de rendimiento del cliente.
+
+## 4. Caveats — es UNA muestra, y degradada
+
+- **Batería al 8 %.** Con Modo de Bajo Consumo, iOS frena CPU y red. Los
+  ~2395 ms de cliente son un **techo**, no un número asentado.
+- **Una sola corrida** con LCP. Las otras dos no lo tienen.
+- Por eso la descomposición de arriba **orienta**, no cierra. Lo que sí queda
+  cerrado por ejecución: LCP se mide con un toque, y la mitad del cliente es
+  material — no es ruido.
+
+**Lo que hace falta para asentarlo:** una corrida con el teléfono cargado (sin
+Modo de Bajo Consumo), carga de descarte, y toque. Es la línea base de cliente
+que N2 va a necesitar, igual que N1 necesitó la de servidor.
