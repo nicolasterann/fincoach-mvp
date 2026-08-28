@@ -19,4 +19,3 @@ export default async function AppPage() {
   const payload = await buildShellPayload(session.user.id);
   return <SantuarioShell payload={payload} />;
 }
-
