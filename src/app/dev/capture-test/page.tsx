@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import {
   correctionIdentityToken,
   correctivePhrasing,
@@ -26366,18 +26367,187 @@ assert(
     .replace(/<[^>]+>/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
+
+  type M8SyntheticRequest = {
+    failNetwork?: boolean;
+    headers: { has: (name: string) => boolean };
+    method: string;
+    mode: string;
+    url: string;
+  };
+  type M8SyntheticResponse = {
+    clone: () => M8SyntheticResponse;
+    source: "cache" | "network";
+    url: string;
+  };
+  type M8RequestPolicy = {
+    fallback: "offline" | null;
+    storesResponse: boolean;
+    strategy: "cache-first" | "network-only" | "network-passthrough" | "network-with-offline";
+  };
+  type M8PolicyApi = {
+    decideRequestPolicy: (request: {
+      hasServerAction: boolean;
+      method: string;
+      mode: string;
+      pathname: string;
+    }) => M8RequestPolicy;
+    policies: Record<string, M8RequestPolicy>;
+    precacheUrls: readonly string[];
+  };
+  type M8FetchEvent = {
+    request: M8SyntheticRequest;
+    respondWith: (response: M8SyntheticResponse | Promise<M8SyntheticResponse | undefined>) => void;
+  };
+
+  const m8Origin = "https://kipu.test";
+  const m8Listeners = new Map<string, (event: M8FetchEvent) => void>();
+  const m8CacheReads: string[] = [];
+  const m8CacheWrites: string[] = [];
+  const m8NetworkReads: string[] = [];
+  const m8Response = (
+    source: M8SyntheticResponse["source"],
+    url: string,
+  ): M8SyntheticResponse => ({
+    clone: () => m8Response(source, url),
+    source,
+    url,
+  });
+  const m8OfflineResponse = m8Response("cache", `${m8Origin}/offline.html`);
+  const m8CachedPaths = new Set([
+    "/offline.html",
+    "/icon.svg",
+    "/pwa/icon/192",
+    "/pwa/icon/512",
+    "/pwa/icon/maskable",
+  ]);
+  const m8CachePath = (request: string | M8SyntheticRequest) =>
+    typeof request === "string" ? request : new URL(request.url).pathname;
+  const m8Cache = {
+    addAll: async () => undefined,
+    put: async (request: M8SyntheticRequest) => {
+      m8CacheWrites.push(new URL(request.url).pathname);
+    },
+  };
+  const m8WorkerSelf = {
+    addEventListener: (type: string, listener: (event: M8FetchEvent) => void) => {
+      m8Listeners.set(type, listener);
+    },
+    clients: { claim: async () => undefined },
+    location: { origin: m8Origin },
+    registration: { unregister: async () => true },
+    skipWaiting: async () => undefined,
+  };
+  let m8WorkerPolicyPass = false;
+  let m8WorkerExecutionPass = false;
+  let m8WorkerError: string | null = null;
+  try {
+    runInNewContext(m8WorkerSource, {
+      Promise,
+      URL,
+      caches: {
+        delete: async () => true,
+        keys: async () => [],
+        match: async (request: string | M8SyntheticRequest) => {
+          const pathname = m8CachePath(request);
+          m8CacheReads.push(pathname);
+          return m8CachedPaths.has(pathname)
+            ? pathname === "/offline.html"
+              ? m8OfflineResponse
+              : m8Response("cache", `${m8Origin}${pathname}`)
+            : undefined;
+        },
+        open: async () => m8Cache,
+      },
+      fetch: async (request: M8SyntheticRequest) => {
+        const pathname = new URL(request.url).pathname;
+        m8NetworkReads.push(pathname);
+        if (request.failNetwork) throw new Error("synthetic offline");
+        return m8Response("network", request.url);
+      },
+      self: m8WorkerSelf,
+    });
+
+    const m8Policy = (m8WorkerSelf as typeof m8WorkerSelf & { KIPU_SW_POLICY: M8PolicyApi })
+      .KIPU_SW_POLICY;
+    const decide = (pathname: string, mode = "cors", hasServerAction = false) =>
+      m8Policy.decideRequestPolicy({ hasServerAction, method: "GET", mode, pathname });
+    m8WorkerPolicyPass =
+      [...m8Policy.precacheUrls].join("|") ===
+        "/offline.html|/icon.svg|/pwa/icon/192|/pwa/icon/512|/pwa/icon/maskable" &&
+      ["/app", "/app/saldo", "/api/x"].every((pathname) => {
+        const policy = decide(pathname, "navigate");
+        return policy.strategy === "network-only" && policy.fallback === "offline";
+      }) &&
+      decide("/landing", "cors", true).strategy === "network-only" &&
+      decide("/landing", "cors", true).fallback === null &&
+      ["/pwa/icon/192", "/offline.html"].every(
+        (pathname) => decide(pathname).strategy === "cache-first",
+      ) &&
+      decide("/ayuda", "navigate").strategy === "network-with-offline" &&
+      Object.values(m8Policy.policies).every((policy) => policy.storesResponse === false);
+
+    const runM8Fetch = async ({
+      failNetwork = false,
+      hasServerAction = false,
+      method = "GET",
+      mode = "cors",
+      pathname,
+    }: {
+      failNetwork?: boolean;
+      hasServerAction?: boolean;
+      method?: string;
+      mode?: string;
+      pathname: string;
+    }) => {
+      const listener = m8Listeners.get("fetch");
+      if (!listener) throw new Error("fetch listener missing");
+      let responsePromise: Promise<M8SyntheticResponse | undefined> | null = null;
+      listener({
+        request: {
+          failNetwork,
+          headers: { has: (name) => hasServerAction && name === "next-action" },
+          method,
+          mode,
+          url: `${m8Origin}${pathname}`,
+        },
+        respondWith: (response) => {
+          responsePromise = Promise.resolve(response);
+        },
+      });
+      if (!responsePromise) throw new Error(`respondWith missing for ${pathname}`);
+      const response = await responsePromise;
+      await Promise.resolve();
+      await Promise.resolve();
+      return response;
+    };
+
+    const moneyCacheReadStart = m8CacheReads.length;
+    await runM8Fetch({ pathname: "/app" });
+    await runM8Fetch({ pathname: "/app/saldo" });
+    await runM8Fetch({ pathname: "/api/x" });
+    await runM8Fetch({ hasServerAction: true, method: "POST", pathname: "/action" });
+    const moneySuccessNeverReadsCache = m8CacheReads.length === moneyCacheReadStart;
+    const offlineMoney = await runM8Fetch({ failNetwork: true, mode: "navigate", pathname: "/app" });
+    const cachedIcon = await runM8Fetch({ pathname: "/pwa/icon/192" });
+    const offlineNavigation = await runM8Fetch({ failNetwork: true, mode: "navigate", pathname: "/ayuda" });
+    m8WorkerExecutionPass =
+      moneySuccessNeverReadsCache &&
+      m8CacheWrites.length === 0 &&
+      offlineMoney === m8OfflineResponse &&
+      cachedIcon?.source === "cache" &&
+      offlineNavigation === m8OfflineResponse &&
+      m8NetworkReads.includes("/app") &&
+      m8NetworkReads.includes("/app/saldo") &&
+      m8NetworkReads.includes("/api/x") &&
+      m8NetworkReads.includes("/action");
+  } catch (error) {
+    m8WorkerError = error instanceof Error ? error.message : String(error);
+  }
   assert(
-    "M8-2 · SW sólo precachea cinco estáticos sin dinero; app/api/actions son NetworkOnly y offline nunca muestra cifras",
-    m8WorkerSource.includes(
-      'const PRECACHE_URLS = Object.freeze([\n  OFFLINE_URL,\n  "/icon.svg",\n  "/pwa/icon/192",\n  "/pwa/icon/512",\n  "/pwa/icon/maskable",\n]);',
-    ) &&
-      m8WorkerSource.includes('request.method !== "GET" || request.headers.has(SERVER_ACTION_HEADER)') &&
-      m8WorkerSource.includes('url.pathname === "/app"') &&
-      m8WorkerSource.includes('url.pathname.startsWith("/app/")') &&
-      m8WorkerSource.includes('url.pathname.startsWith("/api/")') &&
-      m8WorkerSource.includes("PRECACHE_URLS.includes(url.pathname)") &&
-      m8WorkerSource.includes("fetch(request).catch(() => caches.match(OFFLINE_URL))") &&
-      !m8WorkerSource.includes("cache.put(") &&
+    "M8-2 · política y SW ejecutados: dinero/actions son NetworkOnly sin writes; sólo estáticos son CacheFirst y offline no muestra cifras",
+    m8WorkerPolicyPass &&
+      m8WorkerExecutionPass &&
       !m8WorkerSource.includes('addEventListener("sync"') &&
       !m8WorkerSource.includes('addEventListener("push"') &&
       m8WorkerClientSource.includes('process.env.NODE_ENV !== "production"') &&
@@ -26388,7 +26558,15 @@ assert(
       !/\d/u.test(m8OfflineVisible) &&
       m8ManifestSource.includes('action: "/app/chat"') &&
       (m8ManifestSource.match(/^\s+url: "\/app(?:\/chat)?"/gmu) ?? []).length === 2,
-    JSON.stringify({ offlineVisible: m8OfflineVisible }),
+    JSON.stringify({
+      cacheReads: m8CacheReads,
+      cacheWrites: m8CacheWrites,
+      error: m8WorkerError,
+      networkReads: m8NetworkReads,
+      offlineVisible: m8OfflineVisible,
+      policyPass: m8WorkerPolicyPass,
+      workerExecutionPass: m8WorkerExecutionPass,
+    }),
   );
 
   const m8StatesSource = readFileSync(
