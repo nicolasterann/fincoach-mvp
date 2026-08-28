@@ -366,3 +366,311 @@ DOM: heading "Sin conexión" + copy vinculante; ninguna cifra
 ## Preguntas
 
 Ninguna.
+
+---
+
+# M8_REPORT — Ronda 2
+
+- Rama/commits: `stage-m-front` · `ff3fa8f` · `7546646` · `206ec25` · `2d3c2ae` · este reporte
+- Auditoría respondida: `M8_AUDIT.md` Ronda 1
+- Estado: LISTO PARA RE-AUDITORÍA
+
+## Respuesta a las órdenes de Ronda 1
+
+### O1 · Regla «el service worker no cachea dinero» defendida por comportamiento
+
+**CERRADA.** La corrección tiene tres defensas complementarias:
+
+1. `public/sw.js` contiene ahora `decideRequestPolicy`, una función pura que devuelve `strategy`, `fallback` y `storesResponse`. El mismo worker la usa para atender cada `fetch`; no existe una política duplicada sólo para pruebas.
+2. `M8-2` ejecuta el archivo real completo en una VM con `fetch`, `Cache Storage` y eventos instrumentados. Prueba peticiones representativas a `/app`, `/app/saldo`, `/api/x`, una server action, los estáticos allowlisted y una navegación arbitraria. Verifica tanto la decisión como las lecturas/escrituras observadas: las rutas de dinero exitosas ni leen ni escriben cache; si su red falla, sólo leen `/offline.html`; todas las políticas declaran `storesResponse: false`.
+3. `scripts/qa/m8-mutation-audit.mjs` aplica literalmente la mutación de la auditoría: `caches.match(request)` y escritura `c.put(request, res.clone())` con la variable renombrada. El gate cae únicamente como `M8-2`, en 849/850, y vuelve a 850/850 al restaurar.
+
+El nombre de cache subió a `kipu-static-m8-v2`, por lo que una instalación existente activa el worker corregido y elimina la versión M8 anterior mediante el flujo de `activate` ya existente.
+
+## Qué cambió en Ronda 2
+
+- `public/sw.js`: política pura y ejecutable, consumida por el routing real; la lista de precache y el comportamiento del producto no cambiaron.
+- `src/app/dev/capture-test/page.tsx`: simulación conductual del worker real con decisiones, red, fallos, lecturas y escrituras de Cache Storage observables.
+- `scripts/qa/m8-mutation-audit.mjs`: mutación exacta con alias `c` y salida nominal específica.
+- No se tocaron íconos, landing, skeleton, safe areas, datos financieros, server actions, migraciones, dependencias ni superficies M1–M7.
+
+## Desviaciones del spec
+
+Ninguna.
+
+## Huecos honestos
+
+- Siguen **NO VERIFICABLES EN MI ENTORNO** la instalación/recorte en launcher físico, el cromo nativo por tema, la desinstalación desde la UI del sistema, share sheet/shortcuts físicos, inspección visual autenticada sin credenciales y cualquier medición de fps.
+- La política y la ejecución del SW sí quedaron verificadas localmente sin depender de un browser físico: la prueba carga exactamente `public/sw.js` y observa todos sus efectos sobre Cache Storage.
+- Lint conserva ocho warnings preexistentes en dos scripts M0. Build conserva el warning preexistente de trazado NFT desde `next.config.ts` a `capture-test`. Ambos terminan con código 0.
+
+## Qué cachea el SW y qué no
+
+Lista literal y única de precache, sin cambios:
+
+```text
+/offline.html
+/icon.svg
+/pwa/icon/192
+/pwa/icon/512
+/pwa/icon/maskable
+```
+
+| Entrada | Razón de seguridad |
+|---|---|
+| `/offline.html` | Documento autocontenido, sin sesión, lecturas financieras ni dígitos visibles. |
+| `/icon.svg` | Arte estático sin parámetros ni contexto del usuario. |
+| `/pwa/icon/192` | PNG generado desde constantes; no lee dinero. |
+| `/pwa/icon/512` | PNG generado desde constantes; no lee dinero. |
+| `/pwa/icon/maskable` | PNG generado desde constantes y zona segura; no lee dinero. |
+
+| Tráfico no cacheado | Decisión ejecutada y razón |
+|---|---|
+| `/app`, `/app/**` | `network-only`, con `/offline.html` como único fallback de navegación. Nunca almacena ni sirve la URL financiera desde cache. |
+| `/api`, `/api/**` | `network-only`; nunca almacena respuestas de datos. |
+| No-GET y header `next-action` | `network-only` sin lectura ni escritura de Cache Storage. |
+| Otras navegaciones | Red con `/offline.html` como fallback; la URL solicitada no se almacena. |
+| Otros assets same-origin | Passthrough de red sin almacenamiento. |
+| Cross-origin | No se intercepta. |
+
+La invariante `storesResponse === false` se ejecuta sobre el conjunto completo de políticas. Además, la simulación del worker exige cero llamadas observadas a `put` para dinero/actions y mata una implementación que intente escribir mediante cualquier variable local llamada `c`.
+
+## Íconos generados
+
+Sin cambios respecto de Ronda 1: se mantienen `ImageResponse`/`next/og`, 192×192, 512×512, Apple 180×180, maskable 512×512 al 56% del lienzo y el SVG `any`. La auditoría Ronda 1 verificó por HTTP tipo MIME, firma PNG y tamaños reales; O1 no modifica esos archivos ni rutas.
+
+## Autochequeo Y1–Y16
+
+| Criterio | Evidencia de Ronda 2 | Resultado |
+|---|---|---|
+| Y1 | Sin cambios; los generadores/rutas de íconos no fueron tocados y build vuelve a enumerarlos. | CUMPLE |
+| Y2 | Sin cambios; zona segura maskable ya verificada estructuralmente. Recorte físico sigue **NO VERIFICABLE EN MI ENTORNO**. | CUMPLE estructural |
+| Y3 | Sin cambios en `themeColor` ni tokens. Validación nativa física sigue **NO VERIFICABLE EN MI ENTORNO**. | CUMPLE |
+| Y4 | `decideRequestPolicy` y el worker real ejecutado prueban la allowlist exacta y el cache versionado `kipu-static-m8-v2`. | CUMPLE |
+| Y5 | `/app`, `/app/saldo`, `/api/x` y server action se ejecutan como `network-only`; la instrumentación observa cero cache reads para respuestas exitosas y cero writes siempre. El mutante con `c.put` cae como `M8-2`. | CUMPLE |
+| Y6 | El fallback financiero observado es exclusivamente el objeto de `/offline.html`; su texto visible sigue sin dígitos. | CUMPLE |
+| Y7 | Sin cambios en update/uninstall; el nombre v2 fuerza actualización y el branch `activate` conserva el borrado por prefijo fijado por el gate. Desinstalación física: **NO VERIFICABLE EN MI ENTORNO**. | CUMPLE estructural |
+| Y8 | Manifest/shortcuts/share target sin cambios; las rutas de app quedan explícitamente bajo `network-only`. Prueba física: **NO VERIFICABLE EN MI ENTORNO**. | CUMPLE web |
+| Y9 | Skeleton sin cambios; M8-3 permanece verde y su mutante muere por nombre. | CUMPLE |
+| Y10 | Landing sin cambios; M8-3 permanece verde y fija orbe, no anillo. | CUMPLE |
+| Y11 | Landing sin cambios; continúa sin WebGL/canvas/permisos. | CUMPLE |
+| Y12 | Públicas sin cambios; M8-3 permanece verde. Error visual provocado: **NO VERIFICABLE EN MI ENTORNO**. | CUMPLE estructural |
+| Y13 | Safe areas sin cambios; M8-4 permanece verde y su mutante muere por nombre. Dispositivo con notch: **NO VERIFICABLE EN MI ENTORNO**. | CUMPLE estructural |
+| Y14 | Capture completo 850/850 y E2E 11/11; no se tocó lógica de dinero ni código de M1–M7. | CUMPLE |
+| Y15 | Persona real desechable: 11 verdes, 0 rojos y residuo cero verificado en DB/Auth. | CUMPLE |
+| Y16 | Lint exit 0; build exit 0; Node 850/850; HTTP 850/850; cuatro mutantes 849/850 con su propio nombre y restauración 850/850. | CUMPLE |
+
+## Gates — salida real de Ronda 2
+
+### Lint
+
+```text
+$ npm run lint
+
+> fincoach-mvp@0.1.0 lint
+> eslint
+
+[BABEL] Note: The code generator has deoptimised the styling of /Users/nicot/Projects/fincoach-mvp/src/app/dev/capture-test/page.tsx as it exceeds the max of 500KB.
+
+/Users/nicot/Projects/fincoach-mvp/scripts/qa/m0-loop-122-e2e.mjs
+  39:3  warning  'authorizeAgentOperationManifest' is assigned a value but never used  @typescript-eslint/no-unused-vars
+  40:3  warning  'beginAgentOperationApplication' is assigned a value but never used   @typescript-eslint/no-unused-vars
+  41:3  warning  'beginAgentOperationManifest' is assigned a value but never used      @typescript-eslint/no-unused-vars
+  45:3  warning  'transitionAgentOperation' is assigned a value but never used         @typescript-eslint/no-unused-vars
+  46:3  warning  'verifyAgentLoopManifest' is assigned a value but never used          @typescript-eslint/no-unused-vars
+  47:3  warning  'verifyAgentLoopStep' is assigned a value but never used              @typescript-eslint/no-unused-vars
+
+/Users/nicot/Projects/fincoach-mvp/scripts/qa/m0-loop-123-e2e.mjs
+   37:3   warning  'quarantineAgentLoopOperation' is assigned a value but never used  @typescript-eslint/no-unused-vars
+  107:10  warning  'digest' is defined but never used                                 @typescript-eslint/no-unused-vars
+
+✖ 8 problems (0 errors, 8 warnings)
+```
+
+Salida: `exit 0`.
+
+### Build
+
+```text
+$ npm run build
+
+> fincoach-mvp@0.1.0 build
+> next build
+
+▲ Next.js 16.2.4 (Turbopack)
+- Environments: .env.local
+
+  Creating an optimized production build ...
+Turbopack build encountered 1 warnings:
+./next.config.ts
+Encountered unexpected file in NFT list
+A file was traced that indicates that the whole project was traced unintentionally.
+Somewhere in the import trace below, there are:
+- filesystem operations (like path.join, path.resolve or fs.readFile), or
+- very dynamic requires (like require('./' + foo)).
+To resolve this, you can
+- remove them if possible, or
+- only use them in development, or
+- make sure they are statically scoped to some subfolder: path.join(process.cwd(), 'data', bar), or
+- add ignore comments: path.join(/*turbopackIgnore: true*/ process.cwd(), bar)
+
+Import trace:
+  Server Component:
+    ./next.config.ts
+    ./src/app/dev/capture-test/page.tsx
+
+✓ Compiled successfully in 3.0s
+  Running TypeScript ...
+  Finished TypeScript in 5.5s ...
+  Collecting page data using 11 workers ...
+  Generating static pages using 11 workers (0/39) ...
+  Generating static pages using 11 workers (9/39)
+  Generating static pages using 11 workers (19/39)
+  Generating static pages using 11 workers (29/39)
+✓ Generating static pages using 11 workers (39/39) in 184ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/cron/ambient-loop
+├ ƒ /api/cron/card-interest
+├ ƒ /api/cron/fx-refresh
+├ ƒ /api/cron/recurring-materialize
+├ ƒ /api/cron/scheduled-changes
+├ ƒ /api/cron/scheduled-payments
+├ ƒ /api/inbound-email
+├ ƒ /api/telegram/webhook
+├ ƒ /app
+├ ƒ /app/activity
+├ ƒ /app/cashflow
+├ ƒ /app/chat
+├ ƒ /app/cuentas
+├ ƒ /app/debt
+├ ƒ /app/fx
+├ ƒ /app/goals
+├ ƒ /app/household
+├ ƒ /app/join/[token]
+├ ƒ /app/kipu-fit
+├ ƒ /app/margen
+├ ƒ /app/mes
+├ ƒ /app/mis-datos
+├ ƒ /app/precision
+├ ƒ /app/readiness
+├ ƒ /app/reality
+├ ƒ /app/saldo
+├ ƒ /app/settings
+├ ƒ /app/settings/export
+├ ƒ /app/spending
+├ ƒ /app/wealth
+├ ○ /apple-icon
+├ ƒ /auth/confirm
+├ ƒ /dev/ai-parser-test
+├ ƒ /dev/capture-sim
+├ ƒ /dev/capture-test
+├ ƒ /dev/chat-handler-test
+├ ƒ /dev/chat-preview
+├ ƒ /dev/chat-review
+├ ƒ /dev/coach-response-test
+├ ƒ /dev/m0-agent-eval
+├ ƒ /dev/manual-entry
+├ ƒ /dev/onboarding-loop-test
+├ ƒ /dev/onboarding-sim
+├ ƒ /dev/onboarding-wizard-test
+├ ƒ /dev/parser-test
+├ ƒ /dev/preferences-test
+├ ƒ /dev/shell-preview
+├ ƒ /dev/supabase-test
+├ ƒ /dev/telegram-link-test
+├ ƒ /dev/transaction-test
+├ ƒ /dev/ui-preview
+├ ƒ /dev/user-financial-context-test
+├ ○ /icon.svg
+├ ● /icon/[__metadata_id__]
+│ ├ /icon/192
+│ └ /icon/512
+├ ƒ /login
+├ ƒ /login/reset
+├ ○ /manifest.webmanifest
+├ ƒ /onboarding
+├ ƒ /onboarding/template
+├ ○ /opengraph-image
+├ ƒ /pwa/icon/[variant]
+├ ƒ /reset-password
+└ ƒ /signup
+
+○  (Static)   prerendered as static content
+●  (SSG)      prerendered as static HTML (uses generateStaticParams)
+ƒ  (Dynamic)  server-rendered on demand
+```
+
+Salida: `exit 0`.
+
+### Capture — runner Node
+
+```text
+$ node scripts/qa/run-capture-gate.mjs
+[kipu.cron.scheduled-changes] finalize failed — recovery lo cerrará n1
+[kipu.route] {"ts":"2026-08-28T00:07:05.161Z","route":"commitment","outcome":"fixed_expense_clarification","dbWrite":false,"transactionType":"fixed_expense_create"}
+[kipu.route] {"ts":"2026-08-28T00:07:05.161Z","route":"commitment","outcome":"fixed_expense_clarification","dbWrite":true,"transactionType":"fixed_expense_create"}
+[kipu.route] {"ts":"2026-08-28T00:07:05.161Z","route":"commitment","outcome":"fixed_expense_clarification","dbWrite":false,"transactionType":"fixed_expense_create"}
+850/850 capture checks
+(node:71086) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/nicot/Projects/fincoach-mvp/src/lib/capture/capture-matching.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/nicot/Projects/fincoach-mvp/package.json.
+```
+
+### Capture — runner HTTP
+
+```text
+$ curl -sS http://127.0.0.1:3000/dev/capture-test | rg -o '([0-9]+)/([0-9]+) aserciones pasan|[0-9]+ de [0-9]+ aserciones fallan' | head -1
+850/850 aserciones pasan
+```
+
+### Mutaciones M8
+
+```text
+$ node scripts/qa/m8-mutation-audit.mjs
+M8-1: mutación muerta por nombre (849/850)
+M8-2: escritura cache con alias c muerta por nombre (849/850)
+M8-3: mutación muerta por nombre (849/850)
+M8-4: mutación muerta por nombre (849/850)
+restauración: 850/850 capture checks
+```
+
+### E2E de persona desechable
+
+```text
+$ node --env-file=.env.local scripts/qa/m4-thread-persona-e2e.mjs
+persona desechable: ef0858e9-f2b6-4429-a897-f124ccbbb3f3
+  ok   · M7-E10 · Metas muestra meta, ahorro e inversión por nombre y declara la identidad ausente
+  ok   · M6-E8 · persona sin objetivo de Reserva publica cifra e invitación, nunca porcentaje
+  ok   · M6-E9 · snapshots con día faltante conservan hueco y jamás interpolan el cordón
+  ok   · M4-E0 · lectura productiva del hilo es completa
+  ok   · M4-E1 · write real aparece con recibo reconstruido desde el ledger
+  ok   · M4-E2 · digest y cierre web con chat_id NULL aparecen y conservan autor
+  ok   · M4-E3 · Telegram queda intercalado en orden cronológico real
+  ok   · M4-E4 · identidad durable compartida dedupea a web; texto solo no dedupea
+  ok   · M4-E5 · referencia inexistente produce recibo incompleto sin relleno
+  ok   · M5-E7 · audio válido falla como failed honesto sin turno de asistente inventado
+  ok   · M4-E6 · chat_cleared_at oculta el hilo sin borrar una sola fila
+
+11 verdes, 0 rojos antes de limpieza
+limpieza: residuo cero verificado en DB y auth
+11 verdes, 0 rojos finales
+```
+
+## Cómo verlo — QA manual de Ronda 2
+
+1. Ejecutar `npm run build && npm run start` y abrir DevTools → Application → Service Workers. Confirmar que el worker activo contiene `kipu-static-m8-v2` y que el cache anterior desapareció.
+2. En Cache Storage, confirmar exactamente cinco URLs: `/offline.html`, `/icon.svg`, `/pwa/icon/192`, `/pwa/icon/512`, `/pwa/icon/maskable`.
+3. Con red disponible, visitar `/app`, `/app/saldo` y una ruta `/api/**`; confirmar en Cache Storage que ninguna respuesta nueva aparece.
+4. Poner el navegador offline y recargar `/app` y `/app/saldo`: debe aparecer sólo «Sin conexión» y el copy fijo, nunca una cifra ni la pantalla visitada antes.
+5. Volver online y ejecutar una server action con DevTools abierto; debe ir a red y no crear ninguna entrada de cache.
+6. Ejecutar `node scripts/qa/m8-mutation-audit.mjs`; exigir literalmente `M8-2: escritura cache con alias c muerta por nombre (849/850)` y restauración 850/850.
+7. Repetir `node scripts/qa/run-capture-gate.mjs`, HTTP `/dev/capture-test` y el E2E; exigir 850/850 en ambos runners, 11/11 y residuo cero.
+8. En dispositivo físico, completar los puntos aún **NO VERIFICABLES EN MI ENTORNO** de Ronda 1: launcher/maskable, cromo por tema, share sheet, shortcuts, notch/rotación y desinstalación desde el sistema.
+
+## Preguntas
+
+Ninguna.
