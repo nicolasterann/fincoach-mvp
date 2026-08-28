@@ -42,6 +42,27 @@ import {
 } from "@/lib/ai/agent/agent-action-guard";
 import { appendChatMessageWithStatusUsing } from "@/lib/chat-memory/chat-messages";
 import { buildChatResponse } from "@/lib/ai/chat-response-mapper";
+import {
+  KIPU_STATE_KINDS,
+  KIPU_STATE_SHAPES,
+  KIPU_UNMEASURED,
+  formatMetric,
+  kipuStateContract,
+  stateDifferences,
+  stateMayRenderZero,
+  statesAreDistinguishable,
+  type KipuStateKind,
+} from "@/app/app/components/state/state-contract";
+import {
+  SHELL_TIMING_SEGMENTS,
+  formatMetroValue,
+  formatSegmentValue,
+  formatServerTiming,
+  metroRequested,
+  metroVerdict,
+  parseServerTiming,
+  segmentMs,
+} from "@/lib/metro/metro-contract";
 import { buildFallbackCoachResponse } from "@/lib/ai/fallback-coach-response";
 import { validateHumanizedCoachMessage } from "@/lib/ai/coach-response-validation";
 import { coachResponseSystemPrompt } from "@/lib/ai/coach-response-prompt";
@@ -27416,6 +27437,332 @@ assert(
     "IR300 · cierre M0 conserva cada pin vivo separado del envelope borrado",
     m0ClosureIR300.length === 0,
     JSON.stringify(m0ClosureIR300.map(({ name, file }) => ({ name, file }))),
+  );
+
+  // ── Bloque N0 · la regla y el metro ───────────────────────────────────────
+  // Seis aserciones, una por criterio verificable sin navegador. Las visuales
+  // (A3 en el DOM, A5 a simple vista, A7 y A9 con el santuario abierto) se
+  // rinden en el reporte, no aquí: este gate no compone cuadros.
+
+  const n0Css = readFileSync(`${process.cwd()}/src/app/globals.css`, "utf8");
+  const n0Regions = ["SANTUARIO", "ESTADOS", "METRO", "SISTEMA"] as const;
+  const n0Region = (name: string): string => {
+    const from = n0Css.indexOf(`/* N0 · INICIO REGION ${name}`);
+    const to = n0Css.indexOf(`/* N0 · FIN REGION ${name} */`);
+    return from >= 0 && to > from ? n0Css.slice(from, to) : "";
+  };
+
+  // N0-1 · la escala existe con los nombres y valores EXACTOS del spec, y el
+  // tema claro no la rompe: sólo puede re-declarar la elevación (una sombra
+  // negra sobre papel blanco sería otra cosa), jamás borrar un token.
+  const n0TokenBlockStart = n0Css.indexOf("/* ── Bloque N0: la regla ─");
+  const n0TokenBlock =
+    n0TokenBlockStart >= 0
+      ? n0Css.slice(n0TokenBlockStart, n0Css.indexOf("\n}\n", n0TokenBlockStart))
+      : "";
+  const n0RequiredTokens: [string, string][] = [
+    ["--kipu-t-instant", "90ms"],
+    ["--kipu-t-quick", "180ms"],
+    ["--kipu-t-move", "320ms"],
+    ["--kipu-t-settle", "620ms"],
+    ["--kipu-e-out", "cubic-bezier(0.22, 0.61, 0.24, 1)"],
+    ["--kipu-e-in-out", "cubic-bezier(0.50, 0.00, 0.20, 1)"],
+    ["--kipu-e-settle", "cubic-bezier(0.20, 0.90, 0.30, 1.06)"],
+    ["--kipu-fs-cifra", "clamp(34px, 7svh, 58px)"],
+    ["--kipu-fs-title", "clamp(19px, 3.4svh, 24px)"],
+    ["--kipu-fs-body", "15px"],
+    ["--kipu-fs-label", "13px"],
+    ["--kipu-fs-micro", "11px"],
+    ["--kipu-sp-1", "4px"],
+    ["--kipu-sp-2", "8px"],
+    ["--kipu-sp-3", "12px"],
+    ["--kipu-sp-4", "16px"],
+    ["--kipu-sp-5", "24px"],
+    ["--kipu-sp-6", "36px"],
+    ["--kipu-r-1", "10px"],
+    ["--kipu-r-2", "14px"],
+    ["--kipu-r-3", "20px"],
+    ["--kipu-r-4", "28px"],
+    ["--kipu-r-full", "999px"],
+    ["--kipu-el-0", "none"],
+    ["--kipu-el-1", "0 2px 10px -4px rgba(0, 0, 0, 0.5)"],
+    ["--kipu-el-2", "0 18px 42px -20px rgba(0, 0, 0, 0.92)"],
+  ];
+  const n0Declared = (block: string): Map<string, string> =>
+    new Map(
+      [...block.matchAll(/(--kipu-[a-z0-9-]+)\s*:\s*([^;]+);/gu)].map((match) => [
+        match[1],
+        match[2].trim(),
+      ]),
+    );
+  const n0DeclaredValue = (block: string, token: string): string | null =>
+    n0Declared(block).get(token) ?? null;
+  const n0MissingTokens = n0RequiredTokens.filter(
+    ([token, value]) => n0DeclaredValue(n0TokenBlock, token) !== value,
+  );
+  const n0LightStart = n0Css.indexOf('[data-theme="light"] {');
+  const n0LightBlock =
+    n0LightStart >= 0
+      ? n0Css.slice(n0LightStart, n0Css.indexOf("\n}\n", n0LightStart))
+      : "";
+  const n0LightRedeclared = n0RequiredTokens
+    .map(([token]) => token)
+    .filter((token) => n0DeclaredValue(n0LightBlock, token) !== null);
+  assert(
+    "N0-1 · la escala vive en :root con los nombres y valores exactos, y el tema claro sólo re-declara la elevación",
+    n0TokenBlock.length > 0 &&
+      n0MissingTokens.length === 0 &&
+      n0LightRedeclared.every((token) => token.startsWith("--kipu-el-")) &&
+      n0LightRedeclared.length === 2,
+    JSON.stringify({
+      faltan: n0MissingTokens.map(([token]) => token),
+      claroRedeclara: n0LightRedeclared,
+    }),
+  );
+
+  // N0-2 · cero duraciones literales en transiciones/animaciones de respuesta
+  // de TODO el espacio de nombres del santuario y del sistema, y lo ambiental
+  // con su token propio — sólo ahí.
+  //
+  // O1 del N0_AUDIT (2026-08-28). Esto ataba antes por RANGO DE LÍNEAS entre
+  // comentarios, y la mutación AUD-M1 lo demostró hueco: una regla
+  // `.kipu-shell-audit-probe { transition: opacity 0.7s ease }` escrita una
+  // línea DEBAJO del último marcador pasaba 860/860. Una regla que existe para
+  // atar siete etapas no puede esquivarse escribiendo debajo de un comentario.
+  // Ahora se ata por SELECTOR: una regla del namespace obedece la escala viva
+  // donde viva en la hoja. Los marcadores se siguen exigiendo como
+  // documentación — borrarlos falla igual.
+  const n0LiteralDuration = /(?<![\w-])\d*\.?\d+m?s(?![\w-])/u;
+  const n0Namespace =
+    /\.kipu-(?:santuario|shell-|dialog-|orb-|live-orb|perspective-|state(?![a-z])|metro(?![a-z])|sistema)/u;
+  // Recorre la hoja ENTERA llevando el selector envolvente y si venimos dentro
+  // del bloque de movimiento reducido — ese bloque declara `none` a propósito y
+  // es la ÚNICA exención. Los `@keyframes` quedan fuera solos: su selector
+  // interno es un porcentaje, no una clase.
+  const n0MotionRules: { selector: string; declaration: string }[] = [];
+  {
+    const source = n0Css.replace(/\/\*[\s\S]*?\*\//gu, "");
+    const stack: string[] = [];
+    let buffer = "";
+    const flush = () => {
+      const match = /^\s*(?:transition|animation)\s*:\s*([\s\S]+)$/u.exec(buffer);
+      if (match) {
+        const selector =
+          [...stack].reverse().find((entry) => !entry.startsWith("@")) ?? "";
+        const reduced = stack.some((entry) =>
+          entry.includes("prefers-reduced-motion"),
+        );
+        if (!reduced && n0Namespace.test(selector)) {
+          n0MotionRules.push({ selector, declaration: match[1].trim() });
+        }
+      }
+      buffer = "";
+    };
+    for (const character of source) {
+      if (character === "{") {
+        stack.push(buffer.trim());
+        buffer = "";
+      } else if (character === "}") {
+        flush();
+        stack.pop();
+      } else if (character === ";") {
+        flush();
+      } else {
+        buffer += character;
+      }
+    }
+  }
+  const n0Literals = n0MotionRules
+    .filter((rule) => n0LiteralDuration.test(rule.declaration))
+    .map((rule) => `${rule.selector}: ${rule.declaration}`);
+  // Lo ambiental (infinite) lleva su token con nombre, Y la puerta inversa
+  // también se cierra: un token ambiental jamás vale para una respuesta, o la
+  // escala de cuatro duraciones se evade con un 2,8 s de nombre bonito.
+  const n0UnnamedAmbient = n0MotionRules
+    .filter(
+      (rule) =>
+        rule.declaration.includes("infinite") !==
+        rule.declaration.includes("--kipu-t-breath-"),
+    )
+    .map((rule) => `${rule.selector}: ${rule.declaration}`);
+  const n0EmptyRegions = n0Regions.filter((name) => n0Region(name).length === 0);
+  assert(
+    "N0-2 · cero duraciones literales en TODO el namespace del santuario; lo ambiental usa --kipu-t-breath-* y sólo ahí",
+    n0EmptyRegions.length === 0 &&
+      // si el recorrido se rompe y no ve una sola regla, esto falla CERRADO
+      n0MotionRules.length > 0 &&
+      n0Literals.length === 0 &&
+      n0UnnamedAmbient.length === 0,
+    JSON.stringify({
+      regionesVacias: n0EmptyRegions,
+      reglasVistas: n0MotionRules.length,
+      literales: n0Literals,
+      ambientalMalNombrado: n0UnnamedAmbient,
+    }),
+  );
+
+  // N0-3 · el santuario declara tabular-nums en su RAÍZ. font-variant-numeric
+  // hereda, así que toda cifra del árbol —incluidas las hojas de perspectiva y
+  // de diálogo, que cuelgan del mismo <main>— la lleva por construcción, hoy y
+  // cuando N1–N6 agreguen cifras nuevas. La comprobación en el DOM va aparte.
+  const n0Santuario = n0Region("SANTUARIO");
+  const n0SantuarioRoot = n0Santuario.slice(
+    n0Santuario.indexOf(".kipu-santuario {"),
+    n0Santuario.indexOf("[data-theme=\"light\"] .kipu-santuario"),
+  );
+  const n0ShellSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/SantuarioShell.tsx`,
+    "utf8",
+  );
+  assert(
+    "N0-3 · tabular-nums declarado en la raíz del santuario y todas sus cifras cuelgan de ella",
+    n0SantuarioRoot.includes("font-variant-numeric: tabular-nums;") &&
+      n0ShellSource.includes('<main\n      className="kipu-santuario"') &&
+      // las cuatro superficies con cifra viven DENTRO de ese <main>
+      ["kipu-shell-amount", "kipu-shell-cinta__amount", "kipu-shell-pill", "kipu-dialog-receipt-jump"].every(
+        (hook) =>
+          n0ShellSource.indexOf(hook) >
+          n0ShellSource.indexOf('className="kipu-santuario"'),
+      ),
+    JSON.stringify({ raiz: n0SantuarioRoot.includes("tabular-nums") }),
+  );
+
+  // N0-4 · cinco estados, cuatro formas, UN módulo. Y /dev/sistema los muestra
+  // los cinco para cada forma.
+  const n0StateComponents = [
+    "KipuLoading",
+    "KipuEmpty",
+    "KipuNoData",
+    "KipuOffline",
+    "KipuError",
+  ];
+  const n0StateSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/state/KipuState.tsx`,
+    "utf8",
+  );
+  const n0StateIndex = readFileSync(
+    `${process.cwd()}/src/app/app/components/state/index.ts`,
+    "utf8",
+  );
+  const n0ContractSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/state/state-contract.ts`,
+    "utf8",
+  );
+  const n0SistemaSource = readFileSync(
+    `${process.cwd()}/src/app/dev/sistema/page.tsx`,
+    "utf8",
+  );
+  assert(
+    "N0-4 · los cinco estados existen, salen de un solo módulo y /dev/sistema los muestra en las cuatro formas",
+    KIPU_STATE_KINDS.length === 5 &&
+      KIPU_STATE_SHAPES.length === 4 &&
+      new Set(KIPU_STATE_KINDS).size === 5 &&
+      new Set(KIPU_STATE_SHAPES).size === 4 &&
+      n0StateComponents.every((name) =>
+        n0StateSource.includes(`export function ${name}(`),
+      ) &&
+      n0StateComponents.every((name) => n0StateIndex.includes(`  ${name},`)) &&
+      // la lógica pura que el gate ejecuta jamás puede volverse server-only
+      !/^import\s+"server-only";/mu.test(n0ContractSource) &&
+      n0StateComponents.every((name) => n0SistemaSource.includes(name)) &&
+      // la cobertura se DERIVA del contrato: la página recorre las dos
+      // listas, así que no puede olvidarse de una forma ni de un estado
+      n0SistemaSource.includes("KIPU_STATE_SHAPES.map(") &&
+      n0SistemaSource.includes("KIPU_STATE_KINDS.map("),
+    JSON.stringify({
+      kinds: KIPU_STATE_KINDS,
+      shapes: KIPU_STATE_SHAPES,
+    }),
+  );
+
+  // N0-5 · vacío y sin dato NO pueden parecerse. Es la doctrina monetaria
+  // —«no pude leer» ≠ «no hay nada»— hecha estado: difieren en lo que afirman,
+  // en cómo se dibujan y en lo que ofrecen, y sólo el que LEYÓ puede pintar un
+  // cero. Además ningún par de estados colapsa en la misma afirmación.
+  const n0Claims = KIPU_STATE_KINDS.map((kind) => kipuStateContract(kind).claim);
+  const n0ZeroCapable = KIPU_STATE_KINDS.filter((kind) => stateMayRenderZero(kind));
+  const n0EmptyVsNoData = stateDifferences("vacio", "sin-dato");
+  assert(
+    "N0-5 · vacío y sin dato se separan por afirmación, silueta y salida; sólo el que leyó puede pintar un cero",
+    statesAreDistinguishable("vacio", "sin-dato") &&
+      n0EmptyVsNoData.includes("claim") &&
+      n0EmptyVsNoData.includes("silhouette") &&
+      n0EmptyVsNoData.includes("showsFigure") &&
+      n0EmptyVsNoData.includes("offersRetry") &&
+      n0EmptyVsNoData.includes("offersInvitation") &&
+      new Set(n0Claims).size === KIPU_STATE_KINDS.length &&
+      n0ZeroCapable.length === 1 &&
+      n0ZeroCapable[0] === "vacio" &&
+      kipuStateContract("sin-dato").showsFigure === false &&
+      KIPU_STATE_KINDS.every((kind: KipuStateKind) =>
+        kind === "vacio" ? true : !stateMayRenderZero(kind),
+      ),
+    JSON.stringify({ ejes: n0EmptyVsNoData, puedenPintarCero: n0ZeroCapable }),
+  );
+
+  // N0-6 · el metro no inventa un número. Una medición que no ocurrió se
+  // escribe `—`; un cero MEDIDO se escribe y se distingue. Y `buildShellPayload`
+  // nombra un tramo por cada await: si alguien agrega uno sin envolverlo, el
+  // conteo de awaits sin `metro.timed` deja de ser 1 y esto falla.
+  const n0PayloadSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/shell-payload.ts`,
+    "utf8",
+  );
+  const n0PayloadBody =
+    n0PayloadSource.match(
+      /export async function buildShellPayload[\s\S]*?\n\}\n\n\/\*\*/u,
+    )?.[0] ?? "";
+  const n0TimedSegments = [
+    ...n0PayloadBody.matchAll(/metro\.timed\(\s*"([a-z]+)"/gu),
+  ].map((match) => match[1]);
+  const n0UnwrappedAwaits = [
+    ...n0PayloadBody.matchAll(/\bawait\s+(?!metro\.timed\()(\S+)/gu),
+  ].map((match) => match[1]);
+  const n0Marks = [
+    { name: "contexto", ms: 12.34 },
+    { name: "total", ms: 987.6 },
+  ];
+  const n0Header = formatServerTiming(n0Marks);
+  const n0RoundTrip = parseServerTiming(n0Header);
+  assert(
+    "N0-6 · una medición que no ocurrió se escribe — y jamás 0; un tramo nombrado por cada await del santuario",
+    formatMetric(null) === KIPU_UNMEASURED &&
+      formatMetric(null) === "—" &&
+      formatMetric(undefined) === "—" &&
+      formatMetric(Number.NaN) === "—" &&
+      formatMetric(0) === "0" &&
+      formatMetric(0) !== KIPU_UNMEASURED &&
+      formatMetric(0, { unit: "ms" }) === "0 ms" &&
+      formatMetric(1234.56, { digits: 1 }) === "1234.6" &&
+      formatSegmentValue(null) === "—" &&
+      formatSegmentValue(0) === "0 ms" &&
+      formatMetroValue("CLS", null) === "—" &&
+      formatMetroValue("CLS", 0) === "0.000" &&
+      metroVerdict("LCP", null) === "sin-medir" &&
+      metroVerdict("LCP", 0) === "bueno" &&
+      metroVerdict("LCP", 3000) === "regular" &&
+      metroVerdict("LCP", 9000) === "malo" &&
+      metroRequested("1") &&
+      !metroRequested(undefined) &&
+      !metroRequested("0") &&
+      segmentMs(n0RoundTrip, "contexto") === 12.3 &&
+      segmentMs(n0RoundTrip, "no-existe") === null &&
+      n0Header === "contexto;dur=12.3, total;dur=987.6" &&
+      // cada tramo declarado se mide, y no hay un await suelto sin tramo
+      SHELL_TIMING_SEGMENTS.filter((name) => name !== "total").every((name) =>
+        n0TimedSegments.includes(name),
+      ) &&
+      n0TimedSegments.length === SHELL_TIMING_SEGMENTS.length - 1 &&
+      new Set(n0TimedSegments).size === n0TimedSegments.length &&
+      n0UnwrappedAwaits.length === 1 &&
+      n0UnwrappedAwaits[0] === "supabase" &&
+      n0PayloadBody.includes("serverTiming: metro.header()") &&
+      n0PayloadSource.includes("fogPayload(greetingName, thread, metro.header())"),
+    JSON.stringify({
+      tramos: n0TimedSegments,
+      awaitsSinTramo: n0UnwrappedAwaits,
+      cabecera: n0Header,
+    }),
   );
 
   return checks;

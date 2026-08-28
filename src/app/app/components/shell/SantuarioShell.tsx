@@ -10,6 +10,7 @@ import {
   type PointerEvent,
 } from "react";
 import { ChatView, type ChatViewHandle } from "../ChatView";
+import { MetroOverlay } from "../metro/MetroOverlay";
 import type { ChatDeliveryResult } from "../../transaction-actions";
 import {
   LiveOrb,
@@ -360,6 +361,7 @@ export function SantuarioShell({
       data-orb-paused={!liveSettled || dialogOpen || perspectiveOpen ? "true" : "false"}
     >
       <span className="kipu-shell-atmosphere" aria-hidden="true" />
+      <MetroOverlay serverTiming={payload.serverTiming} />
       <div className="kipu-shell-frame">
         <button
           type="button"

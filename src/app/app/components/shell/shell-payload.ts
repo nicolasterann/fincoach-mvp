@@ -20,6 +20,11 @@ import type { ThreadView } from "@/lib/chat-memory/thread-view-contract";
 import { readOpenOccurrences } from "@/lib/financial/recurring-occurrences-store";
 import { loadSnapshotSeriesRead } from "@/lib/trends/snapshot-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
+import {
+  formatServerTiming,
+  type ServerTimingMark,
+  type ShellTimingSegment,
+} from "@/lib/metro/metro-contract";
 import { describeMovement } from "../app-dashboard-helpers";
 import { buildShellPillLines } from "./shell-dialog-contract";
 import {
@@ -62,6 +67,10 @@ export interface ShellPayload {
   dawn: ShellDawn | null;
   thread: ThreadView;
   perspective: ShellPerspective | null;
+  /** N0 · el metro. La cabecera `Server-Timing` ya formateada: un tramo por
+   * `await` de este builder. Es MEDICIÓN, no dato financiero: nadie decide
+   * nada con ella y su ausencia se lee `—`, jamás `0`. */
+  serverTiming: string | null;
 }
 
 interface RecentMovementRow {
@@ -88,7 +97,37 @@ function clampLevel(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-function fogPayload(greetingName: string | null, thread: ThreadView): ShellPayload {
+// N0 · el metro del servidor. `timed` envuelve cada await SIN tocar el curso:
+// devuelve exactamente lo que devuelve el tramo y deja pasar cualquier throw
+// (el `finally` registra igual, así que un tramo que falla también se mide).
+// Las marcas viven en un array LOCAL de la invocación: no hay estado de
+// módulo, así que ninguna medición puede cruzarse entre peticiones.
+function shellTimer() {
+  const startedAt = performance.now();
+  const marks: ServerTimingMark[] = [];
+  return {
+    async timed<T>(name: ShellTimingSegment, run: () => Promise<T>): Promise<T> {
+      const from = performance.now();
+      try {
+        return await run();
+      } finally {
+        marks.push({ name, ms: performance.now() - from });
+      }
+    },
+    header(): string {
+      return formatServerTiming([
+        ...marks,
+        { name: "total", ms: performance.now() - startedAt },
+      ]);
+    },
+  };
+}
+
+function fogPayload(
+  greetingName: string | null,
+  thread: ThreadView,
+  serverTiming: string | null,
+): ShellPayload {
   const kinds: OrbKind[] = ["saldo", "reserva", "metas", "patrimonio", "deuda"];
   return {
     status: "niebla",
@@ -109,6 +148,7 @@ function fogPayload(greetingName: string | null, thread: ThreadView): ShellPaylo
     dawn: null,
     thread,
     perspective: null,
+    serverTiming,
   };
 }
 
@@ -124,46 +164,61 @@ function movementTime(iso: string, timezone?: string): string {
 }
 
 export async function buildShellPayload(userId: string): Promise<ShellPayload> {
-  const ctx = await buildUserFinancialContext(userId);
+  const metro = shellTimer();
+  const ctx = await metro.timed("contexto", () =>
+    buildUserFinancialContext(userId),
+  );
   if (!ctx.mainGoal || ctx.accounts.length === 0 || !ctx.dashboard) {
     redirect("/onboarding");
   }
 
   const greetingName = ctx.profile.fullName?.split(" ")[0] || null;
   const now = new Date();
-  const supabase = await createSupabaseServerClient();
-  const [{ data: prefs, error: prefsError }, pendingRead] = await Promise.all([
-    supabase
-      .from("user_financial_preferences")
-      .select("chat_cleared_at, emergency_reserve_target")
-      .eq("user_id", userId)
-      .maybeSingle(),
-    readOpenOccurrences(userId),
-  ]);
+  const supabase = await metro.timed("cliente", () =>
+    createSupabaseServerClient(),
+  );
+  const [{ data: prefs, error: prefsError }, pendingRead] = await metro.timed(
+    "preferencias",
+    () =>
+      Promise.all([
+        supabase
+          .from("user_financial_preferences")
+          .select("chat_cleared_at, emergency_reserve_target")
+          .eq("user_id", userId)
+          .maybeSingle(),
+        readOpenOccurrences(userId),
+      ]),
+  );
   const thread = prefsError
     ? { turns: [], complete: false, readFailed: true }
-    : await readThreadView({
-        client: supabase,
-        userId,
-        since: (prefs?.chat_cleared_at as string | null) ?? null,
-      });
+    : await metro.timed("hilo", () =>
+        readThreadView({
+          client: supabase,
+          userId,
+          since: (prefs?.chat_cleared_at as string | null) ?? null,
+        }),
+      );
   const snapshot = deriveAdvisorySnapshot(ctx);
   let briefing: CoachingBriefing;
   try {
-    briefing = await buildCoachingBriefing({
-      userId,
-      ctx,
-      snapshot,
-      surfaceNudges: false,
-    });
+    briefing = await metro.timed("briefing", () =>
+      buildCoachingBriefing({
+        userId,
+        ctx,
+        snapshot,
+        surfaceNudges: false,
+      }),
+    );
   } catch (error) {
     if (error instanceof KipuSaldoUnavailableError) {
-      return fogPayload(greetingName, thread);
+      return fogPayload(greetingName, thread, metro.header());
     }
     throw error;
   }
 
-  const rates = await loadCurrentFxRatesForDisplay(userId);
+  const rates = await metro.timed("cotizaciones", () =>
+    loadCurrentFxRatesForDisplay(userId),
+  );
   const display = makeDisplayFormatter(
     ctx.profile.baseCurrency,
     ctx.profile.displayCurrency,
@@ -197,10 +252,8 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
   // M6 — one bounded history read after the briefing has archived today's
   // snapshot. Its typed result keeps an outage distinct from a new user with
   // fewer than two recorded days.
-  const snapshotRead = await loadSnapshotSeriesRead(
-    userId,
-    18,
-    now.getTime(),
+  const snapshotRead = await metro.timed("historia", () =>
+    loadSnapshotSeriesRead(userId, 18, now.getTime()),
   );
   const primaryGoal = briefing.goalsIntel.portfolio.primary;
   const perspective = buildShellPerspective({
@@ -271,13 +324,17 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
   });
 
   const since = new Date(now.getTime() - 30 * 86_400_000).toISOString();
-  const { data: recentRows, error: movementError } = await supabase
-    .from("transactions")
-    .select("id, description, category, base_amount, base_currency, type, occurred_at, debt_account_id, goal_id")
-    .eq("user_id", userId)
-    .gte("occurred_at", since)
-    .order("occurred_at", { ascending: false })
-    .limit(1);
+  const { data: recentRows, error: movementError } = await metro.timed(
+    "movimiento",
+    async () =>
+      await supabase
+        .from("transactions")
+        .select("id, description, category, base_amount, base_currency, type, occurred_at, debt_account_id, goal_id")
+        .eq("user_id", userId)
+        .gte("occurred_at", since)
+        .order("occurred_at", { ascending: false })
+        .limit(1),
+  );
   if (movementError) throw movementError;
 
   const recent = ((recentRows ?? []) as RecentMovementRow[])[0] ?? null;
@@ -289,11 +346,13 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
     : null;
   const movementSign = movementView?.tone === "out" ? "−" : movementView?.tone === "in" ? "+" : "";
   const movementTurnId = recent
-    ? await findThreadTurnForTransaction({
-        client: supabase,
-        userId,
-        transactionId: recent.id,
-      })
+    ? await metro.timed("recibo", () =>
+        findThreadTurnForTransaction({
+          client: supabase,
+          userId,
+          transactionId: recent.id,
+        }),
+      )
     : null;
 
   const orbs: ShellOrb[] = [
@@ -420,6 +479,7 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
         : null,
     thread,
     perspective,
+    serverTiming: metro.header(),
   };
 }
 

@@ -189,6 +189,9 @@ const basePayload: ShellPayload = {
   dawn: null,
   thread: { turns: [], complete: true, readFailed: false },
   perspective: perspectiveFor("completo"),
+  // N0 — la maqueta NO midió ningún tramo de servidor, así que no inventa uno:
+  // con `?metro=1` el overlay muestra `—` en cada casilla del servidor.
+  serverTiming: null,
 };
 
 const dayOneInvites: Record<OrbKind, string> = {

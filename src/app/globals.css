@@ -28,7 +28,7 @@
   --kipu-shell-glass-highlight: rgba(255, 255, 255, 0.13);
   --kipu-shell-card: rgba(19, 29, 40, 0.66);
   --kipu-shell-cord: rgba(140, 175, 195, 0.24);
-  --kipu-shell-shadow: 0 18px 42px -20px rgba(0, 0, 0, 0.92);
+  --kipu-shell-shadow: var(--kipu-el-2);
 
   --layer-saldo: #4fead2;
   --layer-reserva: #87abff;
@@ -49,6 +49,46 @@
   --good: #35e39a;
   --watch: #ffc96b;
   --over: #ff7c6b;
+}
+
+/* ── Bloque N0: la regla ────────────────────────────────────────────────────
+   Una escala por dimensión, con nombre. Dentro de la región del santuario
+   ninguna transición o animación de RESPUESTA declara una duración literal:
+   si algo pide una quinta duración se discute, no se inventa aquí.
+   Las AMBIENTALES (respiración, deriva, flote) no responden a una acción: se
+   quedan fuera de la escala, conservan su valor y llevan su propio nombre. */
+:root {
+  --kipu-t-instant: 90ms;   /* un control responde al dedo */
+  --kipu-t-quick:  180ms;   /* algo aparece, desaparece o cambia de color */
+  --kipu-t-move:   320ms;   /* algo se desplaza: hojas, capas, paneles */
+  --kipu-t-settle: 620ms;   /* algo se acomoda: el líquido, una cifra que cambia */
+
+  --kipu-e-out:    cubic-bezier(0.22, 0.61, 0.24, 1);  /* entra y frena */
+  --kipu-e-in-out: cubic-bezier(0.50, 0.00, 0.20, 1);  /* se desplaza */
+  --kipu-e-settle: cubic-bezier(0.20, 0.90, 0.30, 1.06); /* se asienta con peso */
+
+  /* Ambientales: fuera de la escala, valor conservado, nombre propio. */
+  --kipu-t-breath-pulse: 2.8s;  /* el botón que graba */
+  --kipu-t-breath-halo:  6s;    /* el halo del orbe */
+  --kipu-t-breath-float: 23s;   /* el flote del orbe */
+  --kipu-t-breath-aura:  27s;   /* la deriva de la atmósfera */
+  --kipu-t-breath-skeleton: 1.6s; /* el barrido del esqueleto */
+
+  --kipu-fs-cifra:  clamp(34px, 7svh, 58px);  /* la cifra del orbe: es el héroe */
+  --kipu-fs-title:  clamp(19px, 3.4svh, 24px);
+  --kipu-fs-body:   15px;
+  --kipu-fs-label:  13px;
+  --kipu-fs-micro:  11px;   /* mayúsculas con tracking: procedencia, sellos */
+
+  --kipu-sp-1: 4px;  --kipu-sp-2: 8px;  --kipu-sp-3: 12px;
+  --kipu-sp-4: 16px; --kipu-sp-5: 24px; --kipu-sp-6: 36px;
+
+  --kipu-r-1: 10px; --kipu-r-2: 14px; --kipu-r-3: 20px;
+  --kipu-r-4: 28px; --kipu-r-full: 999px;
+
+  --kipu-el-0: none;                                  /* al ras */
+  --kipu-el-1: 0 2px 10px -4px rgba(0, 0, 0, 0.5);    /* tarjeta */
+  --kipu-el-2: 0 18px 42px -20px rgba(0, 0, 0, 0.92); /* hoja */
 }
 
 @theme inline {
@@ -98,7 +138,8 @@
   --kipu-shell-glass-highlight: rgba(255, 255, 255, 0.92);
   --kipu-shell-card: rgba(255, 255, 255, 0.78);
   --kipu-shell-cord: rgba(14, 45, 66, 0.18);
-  --kipu-shell-shadow: 0 16px 34px -18px rgba(16, 42, 60, 0.34);
+  --kipu-el-1: 0 2px 10px -4px rgba(16, 42, 60, 0.16);
+  --kipu-el-2: 0 16px 34px -18px rgba(16, 42, 60, 0.34);
 
   --layer-saldo: #0b8b78;
   --layer-reserva: #2a55cc;
@@ -223,6 +264,10 @@ body {
 }
 
 /* ── Bloque M1: santuario orbe ─────────────────────────────────────────── */
+/* N0 · INICIO REGION SANTUARIO — entre estos dos marcadores ninguna
+   transicion ni animacion de respuesta declara una duracion literal.
+   Las ambientales usan sus tokens --kipu-t-breath-*. El gate N0-2 corta
+   la hoja por estos marcadores, asi que no se mueven sin actualizarlo. */
 
 .kipu-santuario {
   --kipu-layer-accent: var(--layer-saldo);
@@ -237,7 +282,12 @@ body {
     linear-gradient(180deg, var(--kipu-shell-bg), var(--kipu-shell-bg-deep));
   color: var(--kipu-shell-ink-1);
   isolation: isolate;
-  transition: background-color 0.9s ease, color 0.45s ease;
+  /* N0 A3 — font-variant-numeric HEREDA: declararlo en la raiz del santuario
+     hace que TODA cifra de dinero del arbol (orbe, cinta, pill, hoja de
+     perspectiva y hoja de dialogo, que cuelgan de este mismo <main>) use
+     tabular-nums por construccion, tambien las que aun no existen. */
+  font-variant-numeric: tabular-nums;
+  transition: background-color var(--kipu-t-settle) var(--kipu-e-out), color var(--kipu-t-settle) var(--kipu-e-out);
 }
 
 [data-theme="light"] .kipu-santuario {
@@ -257,8 +307,8 @@ body {
   background:
     radial-gradient(44% 34% at 52% 31%, color-mix(in srgb, var(--kipu-layer-liquid) 26%, transparent), transparent 72%),
     radial-gradient(36% 30% at 28% 62%, color-mix(in srgb, var(--kipu-layer-accent) 15%, transparent), transparent 74%);
-  animation: kipu-shell-aura-drift 27s ease-in-out infinite;
-  transition: background 0.9s ease;
+  animation: kipu-shell-aura-drift var(--kipu-t-breath-aura) ease-in-out infinite;
+  transition: background var(--kipu-t-settle) var(--kipu-e-out);
 }
 
 [data-theme="light"] .kipu-shell-atmosphere { opacity: 0.42; mix-blend-mode: multiply; }
@@ -293,7 +343,7 @@ body {
   font-weight: 600;
   letter-spacing: 0.15em;
   text-transform: uppercase;
-  transition: color 0.25s ease;
+  transition: color var(--kipu-t-quick) var(--kipu-e-out);
 }
 
 .kipu-shell-handle:hover,
@@ -335,7 +385,7 @@ body {
   font-size: 11.5px;
   font-weight: 500;
   white-space: nowrap;
-  transition: color 0.3s ease, background-color 0.3s ease, border-color 0.3s ease;
+  transition: color var(--kipu-t-quick) var(--kipu-e-out), background-color var(--kipu-t-quick) var(--kipu-e-out), border-color var(--kipu-t-quick) var(--kipu-e-out);
 }
 
 .kipu-shell-chip[aria-selected="true"] {
@@ -350,7 +400,7 @@ body {
 
 .kipu-shell-cord { display: block; width: 120px; height: 14px; flex: none; margin: 8px auto 0; }
 .kipu-shell-cord__line { fill: none; stroke: var(--kipu-shell-cord); stroke-width: 1; }
-.kipu-shell-cord__knot { fill: var(--kipu-shell-cord); transition: fill 0.35s ease, r 0.35s ease; }
+.kipu-shell-cord__knot { fill: var(--kipu-shell-cord); transition: fill var(--kipu-t-quick) var(--kipu-e-out), r var(--kipu-t-quick) var(--kipu-e-out); }
 .kipu-shell-cord__knot[data-active="true"] { fill: var(--kipu-layer-accent); }
 
 .kipu-shell-track-wrap {
@@ -388,7 +438,7 @@ body {
   padding: 0 22px;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.18s ease;
+  transition: opacity var(--kipu-t-quick) var(--kipu-e-out);
 }
 
 .kipu-shell-track-wrap[data-live-visible="true"] .kipu-shell-live-layer { opacity: 1; }
@@ -441,8 +491,8 @@ body {
   width: min(70vw, 34svh, 300px);
   aspect-ratio: 1;
   flex: none;
-  animation: kipu-orb-float 23s ease-in-out infinite;
-  transition: opacity 0.18s ease;
+  animation: kipu-orb-float var(--kipu-t-breath-float) ease-in-out infinite;
+  transition: opacity var(--kipu-t-quick) var(--kipu-e-out);
 }
 
 .kipu-shell-orb[data-orb-kind="saldo"] { --kipu-orb-accent: var(--layer-saldo); --kipu-orb-liquid: var(--kipu-liquid-saldo); --kipu-orb-deep: var(--kipu-deep-saldo); }
@@ -458,7 +508,7 @@ body {
   border-radius: 50%;
   background: radial-gradient(circle, color-mix(in srgb, var(--kipu-orb-accent) 20%, transparent), color-mix(in srgb, var(--kipu-orb-accent) 5%, transparent) 46%, transparent 66%);
   filter: blur(20px);
-  animation: kipu-shell-halo-breathe 6s ease-in-out infinite;
+  animation: kipu-shell-halo-breathe var(--kipu-t-breath-halo) ease-in-out infinite;
 }
 
 .kipu-shell-orb__floor {
@@ -597,13 +647,13 @@ body {
   line-height: 1.45;
   text-align: left;
   backdrop-filter: blur(22px) saturate(165%);
-  transition: opacity 0.35s ease;
+  transition: opacity var(--kipu-t-quick) var(--kipu-e-out);
 }
 
 .kipu-shell-pill--empty { visibility: hidden; }
 .kipu-shell-pill strong { color: var(--kipu-shell-ink-1); font-weight: 600; }
 .kipu-shell-pill__dot { width: 5.5px; height: 5.5px; flex: none; border-radius: 50%; background: var(--kipu-layer-accent); box-shadow: 0 0 9px var(--kipu-layer-accent); }
-.kipu-shell-pill__text { min-width: 0; animation: kipu-shell-pill-copy 0.42s ease both; }
+.kipu-shell-pill__text { min-width: 0; animation: kipu-shell-pill-copy var(--kipu-t-move) var(--kipu-e-out) both; }
 
 .kipu-shell-actions { display: flex; width: 100%; flex: none; align-items: center; flex-direction: column; gap: 9px; padding: 0 15px; }
 
@@ -619,7 +669,7 @@ body {
   border-radius: 15px;
   padding: 11px 14px;
   background: var(--kipu-shell-card);
-  animation: kipu-shell-cinta-in 0.5s cubic-bezier(0.22, 0.61, 0.24, 1) both;
+  animation: kipu-shell-cinta-in var(--kipu-t-move) var(--kipu-e-out) both;
 }
 
 .kipu-shell-cinta--empty { visibility: hidden; }
@@ -677,7 +727,7 @@ body {
   height: 33px;
   place-items: center;
   border-radius: 50%;
-  transition: color 0.2s ease, background-color 0.2s ease, transform 0.15s ease;
+  transition: color var(--kipu-t-quick) var(--kipu-e-out), background-color var(--kipu-t-quick) var(--kipu-e-out), transform var(--kipu-t-instant) var(--kipu-e-out);
 }
 
 .kipu-shell-dock__target:hover .kipu-shell-dock__circle,
@@ -690,7 +740,7 @@ body {
 .kipu-shell-dock__circle--recording {
   background: color-mix(in srgb, var(--kipu-layer-accent) 20%, transparent);
   color: var(--kipu-layer-accent-text);
-  animation: kipu-voice-button-pulse 2.8s ease-in-out infinite;
+  animation: kipu-voice-button-pulse var(--kipu-t-breath-pulse) ease-in-out infinite;
 }
 
 .kipu-shell-voice-status {
@@ -771,7 +821,7 @@ body {
   color: var(--kipu-shell-ink-1);
   scrollbar-color: var(--kipu-shell-cord) transparent;
   scrollbar-width: thin;
-  animation: kipu-perspective-in 0.32s cubic-bezier(0.22, 0.61, 0.24, 1) both;
+  animation: kipu-perspective-in var(--kipu-t-move) var(--kipu-e-out) both;
 }
 
 .kipu-shell-sheet__head { position: sticky; top: -14px; z-index: 2; display: flex; min-height: 62px; align-items: center; justify-content: space-between; gap: 12px; margin: -14px -14px 0; padding: 14px 18px 8px; background: color-mix(in srgb, var(--kipu-shell-bg) 94%, transparent); backdrop-filter: blur(16px); touch-action: pan-x; }
@@ -957,14 +1007,14 @@ a.kipu-perspective-module__head:focus-visible { background: var(--kipu-shell-gla
   opacity: 0;
   pointer-events: none;
   backdrop-filter: blur(10px);
-  transition: opacity 0.28s ease, visibility 0.28s step-end;
+  transition: opacity var(--kipu-t-move) var(--kipu-e-out), visibility var(--kipu-t-move) step-end;
 }
 
 .kipu-dialog-backdrop[data-open="true"] {
   visibility: visible;
   opacity: 1;
   pointer-events: auto;
-  transition: opacity 0.28s ease;
+  transition: opacity var(--kipu-t-move) var(--kipu-e-out);
 }
 
 .kipu-dialog-sheet {
@@ -981,7 +1031,7 @@ a.kipu-perspective-module__head:focus-visible { background: var(--kipu-shell-gla
   color: var(--kipu-shell-ink-1);
   flex-direction: column;
   transform: translate3d(0, 104%, 0);
-  transition: transform 0.34s cubic-bezier(0.22, 0.61, 0.24, 1);
+  transition: transform var(--kipu-t-move) var(--kipu-e-out);
 }
 
 .kipu-dialog-backdrop[data-open="true"] .kipu-dialog-sheet {
@@ -1059,6 +1109,374 @@ a.kipu-perspective-module__head:focus-visible { background: var(--kipu-shell-gla
   from { transform: translateY(7px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
 }
+
+/* N0 · FIN REGION SANTUARIO */
+
+/* N0 · INICIO REGION ESTADOS — los cinco estados y sus cuatro formas. Misma
+   regla que el santuario: cero duraciones literales; lo ambiental lleva su
+   token con nombre. `vacio` y `sin-dato` NO pueden parecerse: distinta
+   silueta (llena vs interrumpida), distinta cifra (un cero MEDIDO vs `—`),
+   distinta marca y distinta salida (invitación vs reintentar). */
+
+.kipu-state {
+  --kipu-state-ink: var(--kipu-shell-ink-2);
+  --kipu-state-accent: var(--kipu-shell-ink-3);
+  --kipu-state-line: var(--kipu-shell-glass-line);
+  --kipu-state-orb-size: min(46vw, 22svh, 190px);
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: var(--kipu-sp-2);
+  padding: var(--kipu-sp-4);
+  color: var(--kipu-state-ink);
+  font-size: var(--kipu-fs-label);
+  line-height: 1.4;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.kipu-state[data-state-kind="vacio"] { --kipu-state-accent: var(--kipu-layer-accent, var(--layer-saldo)); }
+.kipu-state[data-state-kind="error"] { --kipu-state-accent: var(--over); }
+
+/* ── la silueta ─────────────────────────────────────────────────────────── */
+
+.kipu-state[data-state-silhouette="completa"],
+.kipu-state[data-state-silhouette="interrumpida"] {
+  border: 1px solid var(--kipu-state-line);
+  border-radius: var(--kipu-r-3);
+}
+
+.kipu-state[data-state-silhouette="completa"] {
+  background: var(--kipu-shell-card);
+  box-shadow: var(--kipu-el-1);
+}
+
+/* Interrumpida a propósito: el trazo discontinuo y el fondo al ras dicen
+   "aquí falta una lectura", nunca "aquí hay un cero". */
+.kipu-state[data-state-silhouette="interrumpida"] {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--kipu-state-accent) 34%, var(--kipu-state-line));
+  background: transparent;
+  box-shadow: var(--kipu-el-0);
+}
+
+/* ── las cuatro formas ──────────────────────────────────────────────────── */
+
+/* El orbe no encierra su texto: la forma vive en la marca, del tamaño del
+   orbe, y debajo van cifra, título y salida — el mismo ritmo del santuario. */
+.kipu-state[data-state-shape="orbe"] {
+  border: 0;
+  background: transparent;
+  box-shadow: var(--kipu-el-0);
+  gap: var(--kipu-sp-3);
+  padding: var(--kipu-sp-3);
+}
+
+.kipu-state[data-state-shape="orbe"] .kipu-state__mark {
+  width: var(--kipu-state-orb-size);
+  height: var(--kipu-state-orb-size);
+  border: 1px solid color-mix(in srgb, var(--kipu-state-accent) 34%, var(--kipu-state-line));
+  border-radius: 50%;
+}
+
+.kipu-state[data-state-shape="orbe"][data-state-silhouette="completa"] .kipu-state__mark {
+  background: color-mix(in srgb, var(--kipu-state-accent) 7%, var(--kipu-shell-glass));
+  box-shadow: inset 10px 10px 24px rgba(255, 255, 255, 0.05);
+}
+
+.kipu-state[data-state-shape="orbe"][data-state-silhouette="interrumpida"] .kipu-state__mark {
+  border-style: dashed;
+}
+
+.kipu-state[data-state-shape="orbe"] .kipu-state__mark svg { width: 34%; height: 34%; }
+
+.kipu-state[data-state-shape="tarjeta"] { min-height: 156px; }
+
+.kipu-state[data-state-shape="hoja"] {
+  min-height: 268px;
+  border-radius: var(--kipu-r-4) var(--kipu-r-4) var(--kipu-r-2) var(--kipu-r-2);
+  justify-content: flex-start;
+  padding-top: var(--kipu-sp-5);
+}
+
+.kipu-state[data-state-shape="linea"] {
+  min-height: 44px;
+  align-items: center;
+  justify-content: flex-start;
+  flex-direction: row;
+  gap: var(--kipu-sp-3);
+  border-radius: var(--kipu-r-2);
+  padding: var(--kipu-sp-2) var(--kipu-sp-3);
+  text-align: left;
+}
+
+/* Una línea es UNA línea: marca · frase · cifra · salida, sin envolver. El
+   cuerpo largo no cabe y no se apretuja — la frase honesta es el título, que
+   el nombre accesible repite entero. */
+.kipu-state[data-state-shape="linea"] { flex-wrap: nowrap; }
+.kipu-state[data-state-shape="linea"] .kipu-state__body { display: none; }
+.kipu-state[data-state-shape="orbe"] .kipu-state__body { max-width: 26ch; }
+.kipu-state[data-state-shape="linea"] .kipu-state__title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kipu-state[data-state-shape="linea"] .kipu-state__figure { order: 3; flex: none; font-size: var(--kipu-fs-body); }
+.kipu-state[data-state-shape="linea"] .kipu-state__invite {
+  order: 4;
+  max-width: 22ch;
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kipu-state[data-state-shape="linea"] .kipu-state__action { order: 5; min-height: 36px; padding: 0 var(--kipu-sp-3); }
+
+/* ── las piezas ─────────────────────────────────────────────────────────── */
+
+.kipu-state__mark {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  place-items: center;
+  color: var(--kipu-state-accent);
+}
+
+.kipu-state__mark svg { width: 100%; height: 100%; }
+
+.kipu-state__figure {
+  color: var(--kipu-shell-ink-3);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: var(--kipu-fs-title);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* Un cero MEDIDO se ve como una cifra, con el color de una cifra. El guion de
+   "no medí" nunca lo hace. */
+.kipu-state__figure[data-measured="true"] {
+  color: var(--kipu-shell-ink-1);
+}
+
+.kipu-state__title {
+  color: var(--kipu-shell-ink-1);
+  font-size: var(--kipu-fs-body);
+  font-weight: 620;
+  letter-spacing: -0.012em;
+}
+
+.kipu-state__body { max-width: 34ch; color: var(--kipu-state-ink); font-size: var(--kipu-fs-label); }
+
+.kipu-state__invite {
+  max-width: 34ch;
+  color: var(--kipu-state-accent);
+  font-size: var(--kipu-fs-label);
+  font-weight: 600;
+}
+
+.kipu-state__action {
+  min-height: 44px;
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--kipu-state-accent) 42%, transparent);
+  border-radius: var(--kipu-r-full);
+  padding: 0 var(--kipu-sp-4);
+  color: var(--kipu-state-accent);
+  font-size: var(--kipu-fs-label);
+  font-weight: 650;
+  transition: background-color var(--kipu-t-instant) var(--kipu-e-out), border-color var(--kipu-t-instant) var(--kipu-e-out);
+}
+
+.kipu-state__action:hover,
+.kipu-state__action:focus-visible { background: var(--kipu-shell-glass); }
+
+/* ── el esqueleto: la forma de lo que viene, no una barra genérica ──────── */
+
+.kipu-state[data-state-silhouette="esqueleto"] { gap: var(--kipu-sp-3); }
+
+.kipu-state__bone {
+  flex: none;
+  border-radius: var(--kipu-r-1);
+  background: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0.04) 40%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.04) 60%
+  );
+  background-size: 200% 100%;
+  animation: kipu-shimmer var(--kipu-t-breath-skeleton) linear infinite;
+}
+
+[data-theme="light"] .kipu-state__bone {
+  background: linear-gradient(
+    100deg,
+    rgba(0, 0, 0, 0.03) 40%,
+    rgba(0, 0, 0, 0.07) 50%,
+    rgba(0, 0, 0, 0.03) 60%
+  );
+  background-size: 200% 100%;
+}
+
+.kipu-state__bone--orb { width: var(--kipu-state-orb-size); height: var(--kipu-state-orb-size); border-radius: 50%; }
+.kipu-state__bone--cifra { width: 42%; min-width: 132px; height: var(--kipu-fs-cifra); border-radius: var(--kipu-r-2); }
+.kipu-state__bone--label { width: 34%; min-width: 88px; height: var(--kipu-fs-label); }
+.kipu-state__bone--title { width: 52%; min-width: 140px; height: var(--kipu-fs-title); border-radius: var(--kipu-r-2); }
+.kipu-state__bone--row { width: 100%; height: var(--kipu-fs-label); }
+.kipu-state__bone--block { width: 100%; height: 68px; border-radius: var(--kipu-r-3); }
+.kipu-state__bone--grip { width: 42px; height: 4px; border-radius: var(--kipu-r-full); }
+.kipu-state__bone--time { width: 38px; height: var(--kipu-fs-micro); }
+.kipu-state__bone--amount { width: 56px; height: var(--kipu-fs-micro); }
+
+.kipu-state__bone-line { display: flex; width: 100%; align-items: center; gap: var(--kipu-sp-3); }
+.kipu-state__bone-line .kipu-state__bone--row { flex: 1; }
+
+/* N0 · FIN REGION ESTADOS */
+
+/* N0 · INICIO REGION METRO — el overlay `?metro=1`. Nunca tapa un toque
+   (pointer-events: none) y nunca se ve sin el parámetro: el componente no
+   monta su panel. Misma regla de duraciones. */
+
+.kipu-metro {
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + var(--kipu-sp-1));
+  right: calc(env(safe-area-inset-right) + var(--kipu-sp-1));
+  left: calc(env(safe-area-inset-left) + var(--kipu-sp-1));
+  z-index: 90;
+  display: grid;
+  gap: var(--kipu-sp-1);
+  border: 1px solid var(--kipu-shell-glass-line);
+  border-radius: var(--kipu-r-1);
+  padding: var(--kipu-sp-2) var(--kipu-sp-3);
+  background: color-mix(in srgb, var(--kipu-shell-bg-deep) 92%, transparent);
+  box-shadow: var(--kipu-el-2);
+  color: var(--kipu-shell-ink-2);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: var(--kipu-fs-micro);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  pointer-events: none;
+  backdrop-filter: blur(18px);
+}
+
+.kipu-metro__vitals { display: flex; flex-wrap: wrap; gap: var(--kipu-sp-1) var(--kipu-sp-4); }
+.kipu-metro__cell { color: var(--kipu-shell-ink-3); }
+.kipu-metro__cell b { color: var(--kipu-shell-ink-1); font-weight: 650; }
+.kipu-metro__cell[data-verdict="bueno"] { color: var(--good); }
+.kipu-metro__cell[data-verdict="regular"] { color: var(--watch); }
+.kipu-metro__cell[data-verdict="malo"] { color: var(--over); }
+
+.kipu-metro__server,
+.kipu-metro__tail { display: flex; flex-wrap: wrap; gap: var(--kipu-sp-1) var(--kipu-sp-3); }
+.kipu-metro__server b { color: var(--kipu-shell-ink-1); font-weight: 650; }
+.kipu-metro__tail { color: var(--kipu-shell-ink-3); }
+
+/* N0 · FIN REGION METRO */
+
+/* N0 · INICIO REGION SISTEMA — /dev/sistema, la superficie de aprobación.
+   Se viste con los mismos tokens que aprueba: si la escala estuviera rota,
+   esta página sería la primera en verse mal. */
+
+.kipu-sistema {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: var(--kipu-sp-6) var(--kipu-sp-4) var(--kipu-sp-6);
+  background: var(--kipu-shell-bg);
+  color: var(--kipu-shell-ink-1);
+  font-size: var(--kipu-fs-body);
+  font-variant-numeric: tabular-nums;
+}
+
+.kipu-sistema-head { display: grid; gap: var(--kipu-sp-2); }
+.kipu-sistema-head h1 { font-size: var(--kipu-fs-title); font-weight: 680; letter-spacing: -0.03em; }
+.kipu-sistema-lede { max-width: 66ch; color: var(--kipu-shell-ink-2); font-size: var(--kipu-fs-label); line-height: 1.6; }
+.kipu-sistema-link { color: var(--layer-saldo); font-weight: 650; }
+.kipu-sistema code { font-family: var(--font-geist-mono), ui-monospace, monospace; }
+
+.kipu-sistema-section { margin-top: var(--kipu-sp-6); display: grid; gap: var(--kipu-sp-4); }
+.kipu-sistema-nav { display: flex; flex-wrap: wrap; gap: var(--kipu-sp-2); }
+.kipu-sistema-nav a { display: inline-flex; min-height: 34px; align-items: center; border: 1px solid var(--kipu-shell-glass-line); border-radius: var(--kipu-r-full); padding: 0 var(--kipu-sp-3); color: var(--kipu-shell-ink-2); font-size: var(--kipu-fs-micro); font-weight: 650; }
+.kipu-sistema-nav a[aria-current="page"] { border-color: color-mix(in srgb, var(--layer-saldo) 45%, transparent); color: var(--layer-saldo); }
+.kipu-sistema-section > h2 { font-size: var(--kipu-fs-body); font-weight: 700; letter-spacing: -0.01em; }
+.kipu-sistema-section[data-theme="light"] { border-radius: var(--kipu-r-4); padding: var(--kipu-sp-5); background: var(--kipu-shell-bg); color: var(--kipu-shell-ink-1); }
+.kipu-sistema-note { max-width: 72ch; color: var(--kipu-shell-ink-2); font-size: var(--kipu-fs-label); line-height: 1.6; }
+.kipu-sistema-kicker { color: var(--kipu-shell-ink-3); font-size: var(--kipu-fs-micro); font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+
+.kipu-sistema-card {
+  border: 1px solid var(--kipu-shell-glass-line);
+  border-radius: var(--kipu-r-3);
+  padding: var(--kipu-sp-4);
+  background: var(--kipu-shell-card);
+  box-shadow: var(--kipu-el-1);
+  display: grid;
+  gap: var(--kipu-sp-3);
+}
+
+.kipu-sistema-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: var(--kipu-sp-3); }
+.kipu-sistema-tokens { display: grid; gap: var(--kipu-sp-1); font-family: var(--font-geist-mono), ui-monospace, monospace; font-size: var(--kipu-fs-micro); }
+.kipu-sistema-tokens > div { display: flex; justify-content: space-between; gap: var(--kipu-sp-3); }
+.kipu-sistema-tokens dt { color: var(--kipu-shell-ink-2); }
+.kipu-sistema-tokens dd { color: var(--kipu-shell-ink-1); text-align: right; }
+
+.kipu-sistema-motion { display: grid; gap: var(--kipu-sp-2); }
+.kipu-sistema-motion__row { display: flex; align-items: center; gap: var(--kipu-sp-3); }
+.kipu-sistema-motion__row small { display: block; color: var(--kipu-shell-ink-2); font-size: var(--kipu-fs-micro); }
+.kipu-sistema-motion__row b { font-family: var(--font-geist-mono), ui-monospace, monospace; font-size: var(--kipu-fs-micro); }
+.kipu-sistema-motion__bar {
+  width: 56px;
+  height: 10px;
+  flex: none;
+  border-radius: var(--kipu-r-full);
+  background: var(--layer-saldo);
+  transition-property: transform;
+  transition-timing-function: var(--kipu-e-out);
+}
+.kipu-sistema-motion__row:hover .kipu-sistema-motion__bar { transform: translateX(160px); }
+
+.kipu-sistema-type[data-size="cifra"] { font-size: var(--kipu-fs-cifra); font-weight: 620; letter-spacing: -0.038em; line-height: 1; }
+.kipu-sistema-type[data-size="title"] { font-size: var(--kipu-fs-title); font-weight: 650; letter-spacing: -0.025em; }
+.kipu-sistema-type[data-size="body"] { color: var(--kipu-shell-ink-2); font-size: var(--kipu-fs-body); }
+.kipu-sistema-type[data-size="label"] { color: var(--kipu-shell-ink-2); font-size: var(--kipu-fs-label); }
+.kipu-sistema-type[data-size="micro"] { color: var(--kipu-shell-ink-3); font-size: var(--kipu-fs-micro); font-weight: 700; letter-spacing: 0.14em; }
+
+.kipu-sistema-scale { display: flex; align-items: flex-end; gap: var(--kipu-sp-3); }
+.kipu-sistema-scale > span { display: block; flex: none; border-radius: var(--kipu-r-1); background: var(--layer-reserva); }
+
+.kipu-sistema-radii { display: flex; flex-wrap: wrap; gap: var(--kipu-sp-3); }
+.kipu-sistema-radii > span,
+.kipu-sistema-elevation > span {
+  display: grid;
+  width: 76px;
+  height: 56px;
+  place-items: center;
+  border: 1px solid var(--kipu-shell-glass-line);
+  background: var(--kipu-shell-card);
+  color: var(--kipu-shell-ink-2);
+  font-size: var(--kipu-fs-micro);
+}
+.kipu-sistema-elevation { display: flex; flex-wrap: wrap; gap: var(--kipu-sp-5); }
+.kipu-sistema-elevation > span { border-radius: var(--kipu-r-3); }
+
+.kipu-sistema-duel { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--kipu-sp-5); align-items: start; }
+.kipu-sistema-duel > div { display: grid; gap: var(--kipu-sp-2); justify-items: center; }
+
+.kipu-sistema-matrix { display: grid; gap: var(--kipu-sp-5); }
+.kipu-sistema-matrix__band { display: grid; gap: var(--kipu-sp-3); }
+.kipu-sistema-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--kipu-sp-4); align-items: start; }
+/* Una linea ocupa el ancho, como la cinta del santuario: apretarla en una
+   columna de 180px la volveria una mentira sobre su forma real. */
+.kipu-sistema-matrix__band[data-band="linea"] .kipu-sistema-row { grid-template-columns: 1fr; gap: var(--kipu-sp-3); }
+.kipu-sistema-matrix__band[data-band="hoja"] .kipu-sistema-row { grid-template-columns: repeat(auto-fit, minmax(238px, 1fr)); }
+.kipu-sistema-slot { display: grid; gap: var(--kipu-sp-2); justify-items: center; }
+.kipu-sistema-slot[data-slot-shape="linea"] { justify-items: stretch; }
+.kipu-sistema-slot[data-slot-shape="orbe"] { --kipu-state-orb-size: 132px; }
+.kipu-sistema-slot__name { color: var(--kipu-shell-ink-3); font-size: var(--kipu-fs-micro); font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+
+/* N0 · FIN REGION SISTEMA */
 
 /* ── Kipu signature motion ──────────────────────────────────────────────── */
 
@@ -1484,6 +1902,7 @@ textarea:focus-visible {
   .kipu-shell-pill__text,
   .kipu-shell-dock__circle--recording,
   .kipu-shell-sheet,
+  .kipu-state__bone,
   .animate-bounce {
     animation: none !important;
   }
