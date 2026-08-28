@@ -96,3 +96,59 @@ se puede sustituir desde aquí.
 **M8 no aceptado por una sola orden.** Ciérrala, entrega Ronda 2 con la salida
 de la mutación renombrada muriendo por su nombre, y vuelvo a ejecutar. Todo lo
 demás ya está verificado y no hay que tocarlo.
+
+---
+
+# M8_AUDIT — Ronda 2 · VEREDICTO: **VERDE**
+
+- **Fecha:** 2026-08-25 · **Árbol auditado:** `stage-m-front` @ `b31ae7d`
+- **Entrada:** `M8_REPORT.md` Ronda 2 (O1 respondida).
+- **Método:** los dos runners + lint + build + E2E + **mi mutación exacta de la
+  Ronda 1, repetida**.
+
+## O1 · CERRADA, y mejor de lo que pedí
+
+La política de ruteo del SW es ahora una **función pura**,
+`decideRequestPolicy({hasServerAction, method, mode, pathname})`, que devuelve
+objetos congelados con un campo explícito **`storesResponse`**. El handler
+`fetch` **consume esa decisión** en vez de repetir la lógica, así que el
+contrato no es decorativo.
+
+Y el gate hace las dos cosas que hacían falta:
+
+1. **Ejecuta la política** con peticiones sintéticas: `/app`, `/app/saldo` y
+   `/api/x` ⇒ `network-only` con respaldo a la página sin conexión; una
+   petición con cabecera de server action ⇒ `network-only` **sin** respaldo;
+   `/pwa/icon/192` y `/offline.html` ⇒ `cache-first`; una navegación
+   cualquiera ⇒ red con respaldo. Y la invariante dura:
+   **todas** las políticas con `storesResponse === false`.
+2. **Ejecuta el handler real** con un `fetch` sintético y observa lo que
+   ocurre de verdad.
+
+**La prueba decisiva:** repetí mi mutación de la Ronda 1 —la escritura de
+caché con la variable renombrada (`c.put(...)`) sobre las rutas de dinero— y
+esta vez **muere**: `849/850` nombrando **M8-2**, con un fallo que lista los
+writes que detectó (`cacheWrites: ["/app","/app/saldo","/api/x","/action"]`).
+Detalle que vale la pena: en ese fallo `policyPass` seguía en `true` y
+`workerExecutionPass` en `false` — es decir, la capa de ejecución atrapó
+exactamente lo que un contrato solo no puede atrapar: **que el código haga
+algo distinto de lo que su política declara**. Revertido ⇒ **850/850** y árbol
+limpio.
+
+Además, **mi mutación quedó como cobertura permanente**: es la entrada `M8-2`
+del harness, que corre las cuatro muriendo por su nombre y restaura a 850/850.
+
+## No-regresión
+
+`lint` **0 errores** · `build` **exit 0** · captura **850/850** por los dos
+runners · **E2E 11/11 con residuo cero**. Todo lo verificado en la Ronda 1
+—íconos PNG reales con maskable, `theme_color` por tema, esqueleto del
+santuario, landing con el orbe sin WebGL, tokens en las tres superficies
+huérfanas— sigue en pie.
+
+## Estado
+
+**M8 ACEPTADO.** `stage-m-front` acumula **M1–M8**. Queda **M9**: borrar el
+shell viejo y su flag, resolver los redirects y `/app/cashflow`, el barrido
+final de vocabulario, actualizar `PRODUCT_SPEC` y `TEST_SCRIPTS` (la
+navegación de cuatro pestañas dejó de ser verdad) y cerrar el bloque.

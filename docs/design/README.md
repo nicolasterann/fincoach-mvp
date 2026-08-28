@@ -114,6 +114,13 @@ en otro chat) sin contaminar su árbol ni su contexto.
   JAMÁS cachea dinero** (sin conexión = página honesta, nunca una cifra vieja).
   Mata el esqueleto que todavía dibuja el dashboard retirado y el anillo del
   landing. Criterios Y1–Y16.
+- [stages/M9_SPEC — Cierre del Bloque M](stages/M9_SPEC.md) · 2026-08-25 ·
+  Barrido final por contexto, borrado sólo de lo probadamente huérfano,
+  documentos de autoridad puestos al día (el quipu pasa de héroe a historia) y
+  la batería completa con red team de los estados honestos. **El cierre es en
+  dos actos:** el borrado del shell viejo y su flag NO ocurre aquí — queda tras
+  la pasada del founder, con auditoría pre-borrado como evidencia, igual que
+  hizo M0. Criterios Z1–Z16.
 - [M_DESIGN_003 — Auditoría de pre-implementación](M_DESIGN_003_AUDITORIA_PREIMPLEMENTACION_2026-08-24.md)
   · 2026-08-24 (M0 cerrado, Bloque M activo) · Veredicto GO sobre la propuesta,
   medición del front actual, 7 correcciones factuales de los docs contra el
