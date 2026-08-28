@@ -26658,6 +26658,19 @@ assert(
   // once the pre-delete gate has gone green.
   const m9PageSource = readFileSync(`${process.cwd()}/src/app/app/page.tsx`, "utf8");
   const m9LayoutSource = readFileSync(`${process.cwd()}/src/app/app/layout.tsx`, "utf8");
+  const m9EnvSource = readFileSync(`${process.cwd()}/.env.example`, "utf8");
+  const m9SaldoComponentSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/SaldoKipu.tsx`,
+    "utf8",
+  );
+  const m9RemovedPaths = [
+    "src/lib/shell-mode.ts",
+    "src/app/app/components/AppNav.tsx",
+    "src/app/app/components/DisplayCurrencyToggle.tsx",
+    "src/app/app/components/UpcomingCommitmentsCard.tsx",
+    "src/app/app/components/DashboardCards.tsx",
+    "src/app/dev/ui-preview/page.tsx",
+  ];
   assert(
     "M9-1 · el Acto 2 elimina la convivencia y conserva alcanzables santuario, detalles y loading",
     m9PageSource.includes("return <SantuarioShell payload={payload} />;") &&
@@ -26670,8 +26683,16 @@ assert(
       m8AppContentSource.includes('data-app-content={sanctuary ? "sanctuary" : "detail"}') &&
       m8AppContentSource.includes('const sanctuary = pathname === "/app";') &&
       [...m7PageSources.values()].every((source) => source.includes("<DetailSurface")) &&
-      m6DoorRoutes.every((route) => m6SurfaceSource.includes(route)),
-    "single living home / authenticated layout / detail wrapper + returns / sanctuary loading + nine doors",
+      m6DoorRoutes.every((route) => m6SurfaceSource.includes(route)) &&
+      m9RemovedPaths.every((path) => !existsSync(`${process.cwd()}/${path}`)) &&
+      !m9EnvSource.includes("KIPU_SHELL") &&
+      !m8StatesSource.includes("LegacyDashboardSkeleton") &&
+      m9SaldoComponentSource.includes("export function QuipuCord") &&
+      (m9SaldoComponentSource.match(/^export function /gmu) ?? []).length === 1 &&
+      !/SaldoKipuHero|HoyCard|ReservaCard|MetaPrincipalCard|ProximoPagoCard|AccionCard|pickAccion/u.test(
+        m9SaldoComponentSource,
+      ),
+    "single living home / complete legacy absence / authenticated layout / detail wrapper + returns / sanctuary loading + nine doors / QuipuCord alive",
   );
 
   const m9CashflowSource = readFileSync(
@@ -26692,14 +26713,6 @@ assert(
       },
     ]),
   );
-  const m9SaldoCardSource = readFileSync(
-    `${process.cwd()}/src/app/app/components/SaldoKipu.tsx`,
-    "utf8",
-  );
-  const m9UpcomingSource = readFileSync(
-    `${process.cwd()}/src/app/app/components/UpcomingCommitmentsCard.tsx`,
-    "utf8",
-  );
   assert(
     "M9-2 · sólo salen huérfanos probados; cinco redirects sobreviven y cashflow ya no lee dinero",
     !existsSync(`${process.cwd()}/src/app/app/components/GoalPlanCard.tsx`) &&
@@ -26716,11 +26729,9 @@ assert(
       !/buildCoachingBriefing|buildUserFinancialContext|createSupabaseServerClient/u.test(
         m9CashflowSource,
       ) &&
-      !m9SaldoCardSource.includes("/app/cashflow") &&
-      !m9UpcomingSource.includes("/app/cashflow") &&
-      m9SaldoCardSource.includes('href="/app/mes"') &&
-      m9UpcomingSource.includes('href="/app/mes"'),
-    "huérfanos ausentes / redirects puros / puertas directas a Tu mes",
+      !m9SaldoComponentSource.includes("/app/cashflow") &&
+      m6SurfaceSource.includes("/app/mes"),
+    "huérfanos ausentes / redirects puros / puertas vivas a Tu mes",
   );
 
   const m9ProductSource = readFileSync(`${process.cwd()}/docs/PRODUCT_SPEC.md`, "utf8");

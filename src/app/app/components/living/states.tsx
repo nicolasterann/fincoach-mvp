@@ -108,33 +108,3 @@ export function DashboardSkeleton() {
     </div>
   );
 }
-
-// The feature flag still has a legacy branch during Bloque M. Its loading
-// state stays paired with that branch until M9 removes the old shell.
-export function LegacyDashboardSkeleton() {
-  return (
-    <div className="mx-auto w-full max-w-2xl pb-28 lg:max-w-none lg:pb-12" role="status" aria-label="Cargando">
-      <div className="flex items-center justify-between">
-        <div className="space-y-2">
-          <SkeletonBlock className="h-3 w-24" />
-          <SkeletonBlock className="h-6 w-48" />
-        </div>
-        <SkeletonBlock className="h-11 w-32 rounded-2xl" />
-      </div>
-      <div className="mt-5 flex items-center gap-6 rounded-3xl border border-line/5 bg-zinc-900 p-6">
-        <SkeletonCircle size={168} />
-        <div className="flex-1 space-y-3">
-          <SkeletonBlock className="h-4 w-32" />
-          <SkeletonBlock className="h-3 w-full" />
-          <SkeletonBlock className="h-3 w-2/3" />
-        </div>
-      </div>
-      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-        {[0, 1, 2, 3, 4, 5].map((i) => (
-          <SkeletonBlock key={i} className="h-32 w-full rounded-3xl" />
-        ))}
-      </div>
-      <span className="sr-only">Cargando…</span>
-    </div>
-  );
-}
