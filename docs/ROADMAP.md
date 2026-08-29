@@ -1969,6 +1969,7 @@ reversible.
 | **N1 · Que abra** | Orbe + cifra en <~1,5 s; el hilo de chat sale del inicio; un dato decorativo caído nunca tumba la pantalla; sesión renovada en el borde (frontera de seguridad — requiere permiso) |
 | **N2 · Un solo orbe** | El orbe nunca se sustituye a la vista; cada capa tiene un denominador honesto; el vacío se ve deliberado (gota + menisco) |
 | **N3 · El orbe** | *(insertada el 2026-08-29)* Los cinco orbes en un solo lienzo que ES el carrusel: se ven las vecinas y el paso es continuo. Agua con profundidad y movimiento propio, luz coherente entre las cinco materias, gesto con inercia y rotación, giroscopio si el permiso lo permite. Techo primero: iPhone |
+| **N3B · El vidrio y el agua** | *(segundo acto de N3, 2026-08-29)* N3 gano lo estructural y el founder la puntuo 4/10: el material fallo. Cambio de tecnica autorizado — 3D real con entorno que se refleje, y el agua como simulacion de alturas y no como ruido. Y **todo pasa a tener tope**: Reserva contra su meta de respaldo y Patrimonio contra `wealth_target`, que revierte D-N2. Sin migraciones: los campos ya existen |
 | **N4 · Conversación: superficie** | La hoja se expande, sigue al teclado y sólo cierra cuando lo pides; área segura en toda superficie de chat |
 | **N5 · Conversación: contenido** | Negritas de verdad, fotos visibles, notas de voz legibles, campo multilínea |
 | **N6 · Las pantallas** | "Cómo vas" es una pantalla, no una ventana dentro de otra; una gramática única de página; pasada de densidad |
