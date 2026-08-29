@@ -17,17 +17,38 @@ import {
   METRO_METRICS,
   SHELL_TIMING_GROUPS,
   SHELL_TIMING_MILESTONES,
+  describeLcpElement,
   formatMetroValue,
   formatSegmentValue,
   metroRequested,
   metroVerdict,
   parseServerTiming,
   segmentMs,
+  type LcpElementFacts,
   type MetroMetricName,
   type ShellTimingMilestone,
 } from "@/lib/metro/metro-contract";
 
 type Readings = Partial<Record<MetroMetricName, number>>;
+
+/**
+ * N2 §4 · La única parte IMPURA de esto: sacar del DOM los hechos del elemento
+ * que ganó el LCP. La entrada `largest-contentful-paint` trae `element`, que es
+ * `null` cuando el nodo ya no está en el documento — ahí se devuelve `null` y el
+ * panel escribe `—`. `getAttribute("class")` y no `.className` a propósito: en
+ * un SVG `className` es un `SVGAnimatedString`, no una cadena.
+ */
+function lcpFactsFrom(entries: unknown): LcpElementFacts | null {
+  const list = Array.isArray(entries) ? entries : [];
+  const last = list[list.length - 1] as { element?: unknown } | undefined;
+  const element = last?.element as Element | null | undefined;
+  if (!element || typeof (element as Element).tagName !== "string") return null;
+  return {
+    tagName: element.tagName,
+    id: element.id ?? null,
+    classNames: (element.getAttribute("class") ?? "").split(/\s+/),
+  };
+}
 
 // N1 · el servidor ya no entrega en una sola tanda: entrega el orbe, después la
 // píldora con la cinta, y al final la perspectiva. Cada tanda trae su propia
@@ -79,6 +100,7 @@ function MetroPanel({
   perspective: MetroTimingSource;
 }) {
   const [readings, setReadings] = useState<Readings>({});
+  const [lcpElement, setLcpElement] = useState<LcpElementFacts | null>(null);
   const [laterTiming, setLaterTiming] = useState<string | null>(null);
   const [perspectiveTiming, setPerspectiveTiming] = useState<string | null>(null);
 
@@ -112,13 +134,19 @@ function MetroPanel({
   // La referencia no puede cambiar entre renders o Next reenvía métricas ya
   // reportadas; por eso el callback es estable y el estado se actualiza en
   // función del anterior.
-  const record = useCallback((metric: { name: string; value: number }) => {
-    if (!(METRO_METRICS as readonly string[]).includes(metric.name)) return;
-    setReadings((previous) => ({
-      ...previous,
-      [metric.name as MetroMetricName]: metric.value,
-    }));
-  }, []);
+  const record = useCallback(
+    (metric: { name: string; value: number; entries?: unknown }) => {
+      if (!(METRO_METRICS as readonly string[]).includes(metric.name)) return;
+      setReadings((previous) => ({
+        ...previous,
+        [metric.name as MetroMetricName]: metric.value,
+      }));
+      // N2 §4 · el LCP dice CUÁNTO y ahora también QUÉ. Sin esto, optimizar el
+      // orbe es adivinar cuál de las dos hipótesis del §4 es la verdadera.
+      if (metric.name === "LCP") setLcpElement(lcpFactsFrom(metric.entries));
+    },
+    [],
+  );
   useReportWebVitals(record);
 
   const byMilestone: Record<ShellTimingMilestone, string | null> = {
@@ -136,6 +164,10 @@ function MetroPanel({
           </span>
         ))}
       </div>
+      <p className="kipu-metro__lcp">
+        <b>elemento LCP</b>
+        <span>{describeLcpElement(lcpElement)}</span>
+      </p>
       {SHELL_TIMING_MILESTONES.map((milestone) => (
         <MetroBatch
           key={milestone}

@@ -26,6 +26,17 @@ import {
   type ShellTimingMilestone,
   type ShellTimingTramo,
 } from "@/lib/metro/metro-contract";
+import {
+  briefedRead,
+  debtCycleCardsFrom,
+  debtCycleLevel,
+  goalsLevel,
+  goalsPlannedFrom,
+  metasRead,
+  patrimonioRead,
+  reserveLevel,
+  reserveTargetFrom,
+} from "./shell-orb-contract";
 import { describeMovement } from "../app-dashboard-helpers";
 import { buildShellPillLines } from "./shell-dialog-contract";
 import {
@@ -44,6 +55,12 @@ export interface ShellOrb {
   level: number | null;
   levelNote: string | null;
   emptyInvite: string | null;
+  /** N2 ronda 2 · El veredicto de LECTURA del motor para esta capa. `false` es
+   * «no sé», y sólo entonces el orbe se dibuja interrumpido. Sin esto, el orbe
+   * tenía que adivinar qué significaba un monto ausente — y en el día uno
+   * adivinaba mal: dibujaba «no pude leer» junto a un texto que invitaba a
+   * crear la primera meta. */
+  readOk: boolean;
 }
 
 export interface ShellDawn {
@@ -168,31 +185,48 @@ function shellTimer() {
 interface PrefsRead {
   prefs: { emergency_reserve_target?: unknown } | null;
   prefsError: boolean;
-  pendingRead: OpenOccurrencesRead;
 }
 
-async function readPrefsAndPending(
+/**
+ * N2 §5.5 · Esta lectura ENTRA al camino crítico del orbe, porque de aquí sale
+ * el denominador de Reserva. Por eso dejó de ir en el mismo `Promise.all` que
+ * las ocurrencias abiertas: el orbe espera la fila de preferencias (una lectura
+ * de una sola fila por `user_id`) y NO espera nada más.
+ *
+ * Sigue sin agregar una consulta: son las dos mismas de antes, sólo que ya no
+ * se esperan juntas.
+ */
+async function readPrefs(
   metro: ShellTimer,
   clientPromise: Promise<ShellClient>,
   userId: string,
 ): Promise<PrefsRead> {
   try {
     const supabase = await clientPromise;
-    const [{ data: prefs, error: prefsError }, pendingRead] = await metro.timed(
+    const { data: prefs, error: prefsError } = await metro.timed(
       "preferencias",
-      () =>
-        Promise.all([
-          supabase
-            .from("user_financial_preferences")
-            .select("emergency_reserve_target")
-            .eq("user_id", userId)
-            .maybeSingle(),
-          readOpenOccurrences(userId),
-        ]),
+      async () =>
+        await supabase
+          .from("user_financial_preferences")
+          .select("emergency_reserve_target")
+          .eq("user_id", userId)
+          .maybeSingle(),
     );
-    return { prefs, prefsError: Boolean(prefsError), pendingRead };
+    return { prefs, prefsError: Boolean(prefsError) };
   } catch {
-    return { prefs: null, prefsError: true, pendingRead: { ok: false, complete: false } };
+    return { prefs: null, prefsError: true };
+  }
+}
+
+/** Sólo alimenta la píldora: se queda FUERA del camino crítico del orbe. */
+async function readPending(
+  metro: ShellTimer,
+  userId: string,
+): Promise<OpenOccurrencesRead> {
+  try {
+    return await metro.timed("pendientes", () => readOpenOccurrences(userId));
+  } catch {
+    return { ok: false, complete: false };
   }
 }
 
@@ -258,6 +292,9 @@ function fogPayload(
       level: null,
       levelNote: null,
       emptyInvite: null,
+      // Niebla = el motor no pudo afirmar el saldo. Las cinco capas se dibujan
+      // interrumpidas porque eso es exactamente lo que pasó.
+      readOk: false,
     })),
     runwayLine: null,
     greetingName,
@@ -306,7 +343,8 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
     // el `redirect` de abajo corta el camino, esta promesa ya está atendida y no
     // queda un rechazo suelto.
     .catch(() => []);
-  const prefsPromise = readPrefsAndPending(metro, clientPromise, userId);
+  const prefsPromise = readPrefs(metro, clientPromise, userId);
+  const pendingPromise = readPending(metro, userId);
   const movementPromise = readLastMovement(metro, clientPromise, userId, now);
 
   const ctx = await metro.timed("contexto", () =>
@@ -358,12 +396,22 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
     monthlyProtected.savings > 0 ||
     monthlyProtected.investment > 0 ||
     briefing.goalsIntel.investment != null;
-  const metasAmount = metasLayers.length
-    ? metasLayers.reduce((sum, layer) => sum + (layer.amount ?? 0), 0)
-    : hasMetasEntity
-      ? 0
-      : null;
-  const patrimonioAmount = briefing.goalsIntel.netWorth?.totalNetWorth ?? null;
+  // N2 ronda 2 (O1) · La lectura y el monto salen JUNTOS del contrato puro, con
+  // el mismo veredicto que abajo elige entre invitar y disculparse. Antes el
+  // monto era `null` para dos cosas opuestas y el orbe elegía la peor.
+  const metas = metasRead({
+    reservedTotal: metasLayers.length
+      ? metasLayers.reduce((sum, layer) => sum + (layer.amount ?? 0), 0)
+      : null,
+    hasEntity: hasMetasEntity,
+    assetsAvailable: ctx.assetsAvailable,
+  });
+  const metasAmount = metas.amount;
+  const patrimonio = patrimonioRead({
+    netWorth: briefing.goalsIntel.netWorth?.totalNetWorth,
+    wealthAvailable: briefing.goalsIntel.wealthAvailable,
+  });
+  const patrimonioAmount = patrimonio.amount;
   const debtAmount = briefing.debtHealth.totalDebt;
 
   // M6 — one bounded history read after the briefing has archived today's
@@ -421,10 +469,13 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
         reserve: {
           readOk: !prefsError,
           amount: saldo.reserva,
-          target:
-            prefsError || prefs?.emergency_reserve_target == null
-              ? null
-              : Number(prefs.emergency_reserve_target),
+          // N2 ronda 2 (O2) · La misma derivación vivía DOS veces —aquí y en el
+          // orbe— y sólo una pasaba por el contrato. Ahora hay un único dueño de
+          // «cuál es la meta de respaldo», y el gate lo ejecuta.
+          target: reserveTargetFrom({
+            prefsError,
+            raw: prefs?.emergency_reserve_target,
+          }),
         },
         debt: { amount: debtAmount },
         wealth: {
@@ -456,6 +507,34 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
     serverTiming: null,
   }));
 
+  // ── N2 §5.3 · Un denominador honesto por capa ─────────────────────────────
+  // Los tres YA ESTÁN en memoria: nada de esto agrega una consulta. Reserva sale
+  // de la fila de preferencias (tramo `preferencias`, ahora en el grupo del
+  // orbe), Metas del briefing y Deuda del contexto.
+  const { prefs, prefsError } = await prefsPromise;
+  const reserveTarget = reserveTargetFrom({
+    prefsError,
+    raw: prefs?.emergency_reserve_target,
+  });
+  const reserva = reserveLevel({ amount: saldo.reserva, target: reserveTarget });
+
+  // El numerador de Metas suma las capas `metas` Y `ahorro_inversion`, así que
+  // el denominador tiene que sumar las tres partidas protegidas del mes. Usar
+  // sólo `.goals` daría niveles por encima del 100 %.
+  const metasNivel = goalsLevel({
+    pending: metasAmount,
+    planned: goalsPlannedFrom(monthlyProtected),
+  });
+
+  // OJO — `briefing.debtHealth.cards` NO trae la cobertura del corte. El camino
+  // es `ctx.debtAccounts`, que sí. Y las cifras se comparan en la moneda NATIVA
+  // de cada tarjeta: `fullPaymentDue` viene reexpresado a base por el builder de
+  // contexto, que preserva el nativo en `fullPaymentDueOriginal`.
+  const deuda = debtCycleLevel(debtCycleCardsFrom(ctx.debtAccounts));
+  // Las tres capas cuyo veredicto es «llegar hasta aquí»: si el briefing no
+  // pudiera afirmar el saldo, esto no se estaría ejecutando.
+  const briefed = briefedRead(0);
+
   const orbs: ShellOrb[] = [
     {
       kind: "saldo",
@@ -464,6 +543,7 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
       subtitle: subtitles.saldo,
       level: saldo.cap > 0 ? clampLevel(saldo.saldo / saldo.cap) : null,
       levelNote: null,
+      readOk: briefed.ok,
       emptyInvite:
         saldo.saldo <= 0.005
           ? `Vacío hasta mañana — vuelven ${display(saldo.fillDaily)} al amanecer.`
@@ -474,8 +554,9 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
       amountLabel: display(saldo.reserva),
       amountRaw: displayRaw(saldo.reserva),
       subtitle: subtitles.reserva,
-      level: null,
-      levelNote: null,
+      level: reserva.level,
+      levelNote: reserva.note,
+      readOk: briefed.ok,
       emptyInvite:
         saldo.reserva <= 0.005
           ? "Tu respaldo se construye solo, mes a mes. Pregúntame cómo."
@@ -486,14 +567,17 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
       amountLabel: metasAmount == null ? null : display(metasAmount),
       amountRaw: metasAmount == null ? null : displayRaw(metasAmount),
       subtitle: subtitles.metas,
-      level: null,
-      levelNote: null,
-      emptyInvite:
-        metasAmount == null
-          ? ctx.assetsAvailable
-            ? "¿Armamos tu primera meta? Cuéntame qué sueñas."
-            : "No puedo confirmar tus metas e inversiones ahora."
-          : metasAmount <= 0.005
+      level: metasNivel.level,
+      levelNote: metasNivel.note,
+      readOk: metas.ok,
+      // Las tres frases son las de siempre; lo que cambió es de qué dependen.
+      // Antes ramificaban sobre `metasAmount == null`, que significaba dos cosas
+      // opuestas a la vez.
+      emptyInvite: !metas.ok
+        ? "No puedo confirmar tus metas e inversiones ahora."
+        : !hasMetasEntity && metasLayers.length === 0
+          ? "¿Armamos tu primera meta? Cuéntame qué sueñas."
+          : (metasAmount ?? 0) <= 0.005
             ? "No queda aporte reservado este mes."
             : null,
     },
@@ -504,11 +588,11 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
       subtitle: subtitles.patrimonio,
       level: null,
       levelNote: null,
-      emptyInvite:
-        patrimonioAmount == null
-          ? briefing.goalsIntel.wealthAvailable
-            ? "Aún no hay un patrimonio para mostrar. Cuéntame qué tienes y qué debes."
-            : "No puedo leer tu patrimonio ahora. Intenta de nuevo."
+      readOk: patrimonio.ok,
+      emptyInvite: !patrimonio.ok
+        ? "No puedo leer tu patrimonio ahora. Intenta de nuevo."
+        : briefing.goalsIntel.netWorth == null
+          ? "Aún no hay un patrimonio para mostrar. Cuéntame qué tienes y qué debes."
           : null,
     },
     {
@@ -516,8 +600,9 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
       amountLabel: display(debtAmount),
       amountRaw: displayRaw(debtAmount),
       subtitle: subtitles.deuda,
-      level: null,
-      levelNote: null,
+      level: deuda.level,
+      levelNote: deuda.note,
+      readOk: briefed.ok,
       emptyInvite:
         briefing.debtHealth.hasAnyDebt
           ? null
@@ -527,8 +612,8 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
 
   // N1 · La segunda tanda: la píldora y la cinta. Se promete; el orbe ya se fue.
   const laterPromise: Promise<ShellLater> = (async () => {
-    const [{ pendingRead }, movementRead] = await Promise.all([
-      prefsPromise,
+    const [pendingRead, movementRead] = await Promise.all([
+      pendingPromise,
       movementPromise,
     ]);
     const nextCommitment = saldo.nextPayment

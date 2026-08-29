@@ -73,6 +73,8 @@
   --kipu-t-breath-float: 23s;   /* el flote del orbe */
   --kipu-t-breath-aura:  27s;   /* la deriva de la atmósfera */
   --kipu-t-breath-skeleton: 1.6s; /* el barrido del esqueleto */
+  --kipu-t-breath-drop: 4.4s;   /* la gota del orbe vacío */
+  --kipu-t-breath-core: 19s;    /* el núcleo suspendido */
 
   --kipu-fs-cifra:  clamp(34px, 7svh, 58px);  /* la cifra del orbe: es el héroe */
   --kipu-fs-title:  clamp(19px, 3.4svh, 24px);
@@ -559,6 +561,96 @@ body {
   background: color-mix(in srgb, var(--kipu-orb-accent) 70%, white);
   box-shadow: 0 0 9px var(--kipu-orb-accent);
   content: "";
+}
+
+/* ── N2 · Las materias del orbe ────────────────────────────────────────────
+   La doctrina que sale de esta etapa: **si el motor no puede afirmar un nivel,
+   se cambia la materia — no se apaga el orbe.** Hasta N1 un orbe sin nivel era
+   una bola de vidrio hueca, y eso comunicaba «no tienes nada» o «está roto».
+   Cuál se dibuja lo decide `orbFill`, que es puro y que el gate ejecuta. */
+
+/* `gota` · leí y da cero. Una gota y su menisco en el fondo dicen «vacío a
+   propósito». Es la idea del founder, adoptada. */
+/* La capa ocupa el vidrio ENTERO a propósito: así los porcentajes de la lámina
+   y de la gota se miden contra el ORBE y no contra una tira de 5 px. */
+.kipu-shell-orb__drop { position: absolute; inset: 0; }
+
+/* El menisco: una lámina mínima en el fondo con su línea de superficie. */
+.kipu-shell-orb__drop::before {
+  position: absolute;
+  right: -2%;
+  bottom: -1px;
+  left: -2%;
+  height: 6%;
+  border-top: 2px solid color-mix(in srgb, var(--kipu-orb-accent) 70%, white);
+  background: linear-gradient(180deg, var(--kipu-orb-liquid), var(--kipu-orb-deep));
+  box-shadow: 0 -3px 12px color-mix(in srgb, var(--kipu-orb-accent) 45%, transparent);
+  content: "";
+  opacity: 0.78;
+}
+
+/* La gota: cae hacia el menisco y se queda ahí. Ambiental —no responde a una
+   acción—, así que lleva su token con nombre y no una duración suelta. */
+.kipu-shell-orb__drop::after {
+  position: absolute;
+  bottom: 12%;
+  left: 50%;
+  width: 11%;
+  aspect-ratio: 1;
+  border-radius: 50% 50% 50% 50% / 64% 64% 36% 36%;
+  background:
+    radial-gradient(circle at 38% 30%, rgba(255, 255, 255, 0.7), transparent 46%),
+    color-mix(in srgb, var(--kipu-orb-accent) 82%, white);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--kipu-orb-accent) 65%, transparent);
+  content: "";
+  transform: translateX(-50%);
+  animation: kipu-orb-drop var(--kipu-t-breath-drop) ease-in-out infinite;
+}
+
+/* `nucleo` · hay materia y no hay techo honesto. Patrimonio SIEMPRE (el
+   patrimonio total no tiene techo, así que un nivel sería una mentira), y
+   cualquier capa mientras le falte su denominador. Es su señal de vida: un
+   núcleo facetado suspendido que respira, no un nivel. Espeja el material 3
+   del shader, para que el relevo al orbe WebGL no cambie de materia. */
+.kipu-shell-orb__core {
+  position: absolute;
+  inset: 32%;
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      from 210deg,
+      color-mix(in srgb, var(--kipu-orb-liquid) 92%, transparent),
+      color-mix(in srgb, var(--kipu-orb-deep) 92%, transparent) 22%,
+      color-mix(in srgb, var(--kipu-orb-liquid) 92%, transparent) 44%,
+      color-mix(in srgb, var(--kipu-orb-deep) 92%, transparent) 68%,
+      color-mix(in srgb, var(--kipu-orb-liquid) 92%, transparent)
+    );
+  box-shadow:
+    0 0 26px color-mix(in srgb, var(--kipu-orb-accent) 44%, transparent),
+    inset 0 0 18px color-mix(in srgb, var(--kipu-orb-deep) 60%, transparent);
+  animation: kipu-orb-core var(--kipu-t-breath-core) ease-in-out infinite;
+}
+
+/* `sin-dato` · NO se pudo leer. La silueta se interrumpe a propósito para que
+   no se pueda confundir con `gota`: es la frontera de N0 —«no pude leer» ≠ «no
+   hay nada»— dibujada en el orbe. */
+.kipu-shell-orb[data-orb-fill="sin-dato"] .kipu-shell-orb__glass {
+  border-style: dashed;
+  background: none;
+  box-shadow: none;
+}
+
+.kipu-shell-orb[data-orb-fill="sin-dato"] .kipu-shell-orb__halo,
+.kipu-shell-orb[data-orb-fill="sin-dato"] .kipu-shell-orb__floor { opacity: 0.18; }
+
+@keyframes kipu-orb-drop {
+  0%, 100% { transform: translateX(-50%) translateY(0) scale(1); opacity: 0.95; }
+  50% { transform: translateX(-50%) translateY(-38%) scale(0.9); opacity: 0.6; }
+}
+
+@keyframes kipu-orb-core {
+  0%, 100% { transform: rotate(0deg) scale(1); }
+  50% { transform: rotate(6deg) scale(1.035); }
 }
 
 .kipu-shell-orb--fog { filter: grayscale(0.9) blur(3px); opacity: 0.45; }
@@ -1381,7 +1473,11 @@ a.kipu-perspective-module__head:focus-visible { background: var(--kipu-shell-gla
 .kipu-metro__cell[data-verdict="malo"] { color: var(--over); }
 
 .kipu-metro__server,
+.kipu-metro__lcp,
 .kipu-metro__tail { display: flex; flex-wrap: wrap; gap: var(--kipu-sp-1) var(--kipu-sp-3); }
+/* N2 §4 · el LCP dice CUÁNTO y QUÉ. Sin poder identificar el elemento: `—`. */
+.kipu-metro__lcp b { color: var(--kipu-shell-ink-1); font-weight: 650; }
+.kipu-metro__lcp span { color: var(--layer-saldo); }
 .kipu-metro__server b { color: var(--kipu-shell-ink-1); font-weight: 650; }
 .kipu-metro__tail { color: var(--kipu-shell-ink-3); }
 
@@ -1484,6 +1580,10 @@ a.kipu-perspective-module__head:focus-visible { background: var(--kipu-shell-gla
 .kipu-sistema-slot { display: grid; gap: var(--kipu-sp-2); justify-items: center; }
 .kipu-sistema-slot[data-slot-shape="linea"] { justify-items: stretch; }
 .kipu-sistema-slot[data-slot-shape="orbe"] { --kipu-state-orb-size: 132px; }
+/* N2 · el orbe real dentro de la matriz de materias, acotado para que cinco
+   capas entren de un vistazo. */
+.kipu-sistema-orb { display: block; width: 132px; }
+.kipu-sistema-orb .kipu-shell-orb { width: 132px; }
 .kipu-sistema-slot__name { color: var(--kipu-shell-ink-3); font-size: var(--kipu-fs-micro); font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
 
 /* N0 · FIN REGION SISTEMA */
@@ -1911,6 +2011,8 @@ textarea:focus-visible {
   .kipu-shell-cinta,
   .kipu-shell-pill__text,
   .kipu-shell-dock__circle--recording,
+  .kipu-shell-orb__drop::after,
+  .kipu-shell-orb__core,
   .kipu-shell-sheet,
   .kipu-state__bone,
   .animate-bounce {

@@ -7,7 +7,8 @@ import {
   useRef,
   useState,
 } from "react";
-import type { OrbKind, ShellDawn } from "./shell-payload";
+import type { ShellDawn } from "./shell-payload";
+import type { OrbKind, OrbMatter } from "./shell-orb-contract";
 import {
   advanceVoiceEnvelope,
   voiceTarget,
@@ -66,11 +67,20 @@ interface LiveOrbProps {
   dawn: ShellDawn | null;
   runway: boolean;
   active: boolean;
+  /** N2 · La MATERIA que corresponde: `cristal` cuando el motor no puede
+   * afirmar un techo (Patrimonio siempre; cualquier capa sin denominador).
+   * Espeja lo que dibuja el orbe de CSS, para que el relevo no cambie de
+   * materia a la vista. */
+  matter?: OrbMatter;
   forcedTier?: OrbQualityTier;
   forcedState?: LiveOrbState;
   showPerf?: boolean;
   onStateChange?: (state: LiveOrbState) => void;
-  onTierChange?: (tier: OrbQualityTier) => void;
+  /** N2 §5.1 · Se dispara UNA vez, cuando este orbe ya pintó su primer cuadro.
+   * El relevo del orbe de CSS al vivo se hace con esto y no con el tier: entre
+   * «hay tier» y «hay imagen» había un canvas en blanco, que era la tercera
+   * forma que el founder fotografió. */
+  onReady?: () => void;
 }
 
 type LocalSignal =
@@ -81,6 +91,7 @@ type LocalSignal =
 
 interface RenderInputs {
   kind: OrbKind;
+  matter: OrbMatter;
   level: number;
   dawn: ShellDawn | null;
   state: LiveOrbState;
@@ -194,11 +205,12 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     dawn,
     runway,
     active,
+    matter = "liquido",
     forcedTier,
     forcedState,
     showPerf = false,
     onStateChange,
-    onTierChange,
+    onReady,
   },
   ref,
 ) {
@@ -299,6 +311,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
   const visualKind = signal?.type === "crossing" ? signal.to : kind;
   const renderInputs = useRef<RenderInputs>({
     kind: visualKind,
+    matter,
     level: level == null ? 0 : clampLevel(level),
     dawn,
     state,
@@ -307,6 +320,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
   });
   renderInputs.current = {
     kind: visualKind,
+    matter,
     level: level == null ? 0 : clampLevel(level),
     dawn,
     state,
@@ -314,13 +328,15 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     active,
   };
 
+  // El aviso del primer cuadro se guarda en una ref: el bucle de dibujo vive
+  // dentro de un efecto que NO se re-arma en cada render, así que no puede
+  // capturar la prop directamente sin quedarse con una versión vieja.
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+
   useEffect(() => {
     onStateChange?.(state);
   }, [onStateChange, state]);
-
-  useEffect(() => {
-    onTierChange?.(tier);
-  }, [onTierChange, tier]);
 
   useEffect(() => {
     wakeRef.current();
@@ -382,9 +398,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     const startAt = performance.now();
     const frameSamples: number[] = [];
     let qualityWindow: number[] = [];
-    let slowWindows = 0;
-    let fastSince: number | null = null;
-    let upgraded = false;
+    let announcedReady = false;
     let framesThisSecond = 0;
     let fpsWindowAt = performance.now();
     let fps: number | null = null;
@@ -476,43 +490,24 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     resize();
     publishTelemetry(performance.now(), true);
 
-    const dropToTier = (nextTier: OrbQualityTier, now: number) => {
-      currentTier = nextTier;
-      setTier(nextTier);
-      slowWindows = 0;
-      qualityWindow = [];
-      if (nextTier === 0 && renderer) {
-        renderer.dispose();
-        renderer = null;
-        releaseContextCount();
-      }
-      publishTelemetry(now, true);
-    };
-
-    const evaluateQuality = (now: number) => {
-      if (forcedTier != null || qualityWindow.length < 60) return;
-      const median = percentile(qualityWindow, 0.5);
-      qualityWindow = [];
-      if (median > 20) {
-        slowWindows += 1;
-        fastSince = null;
-        if (slowWindows >= 2 && currentTier > 0) {
-          dropToTier((currentTier - 1) as OrbQualityTier, now);
-        }
-        return;
-      }
-      slowWindows = 0;
-      if (median < 13) {
-        fastSince ??= now;
-        if (!upgraded && now - fastSince >= 30_000 && currentTier > 0 && currentTier < 3) {
-          currentTier = (currentTier + 1) as OrbQualityTier;
-          upgraded = true;
-          setTier(currentTier);
-          publishTelemetry(now, true);
-        }
-      } else {
-        fastSince = null;
-      }
+    // N2 §5.2 · LA ESCALERA DE CALIDAD SE FUE.
+    //
+    // Hasta N1 la calidad subía sola a los 30 s y podía bajar sola tras dos
+    // ventanas lentas. Cada movimiento era otra sustitución delante del
+    // usuario, y es la mitad de lo que el founder fotografió: «cambia una y
+    // otra vez». La intención de M2 era buena —degradar en teléfonos lentos—
+    // pero el efecto es el peor posible: el producto cambiando de opinión sobre
+    // cómo se ve.
+    //
+    // Ahora es UNA decisión por dispositivo, tomada en `initialTier()` antes
+    // del primer cuadro, y no se vuelve a mover. Un orbe modesto y estable se
+    // ve mejor que uno bueno que parpadea. La ventana de calidad se sigue
+    // MIDIENDO —el panel `?perf=1` la muestra— pero ya no manda sobre nada.
+    //
+    // La única salida de tier que queda es `webglcontextlost`, y no es una
+    // decisión de calidad: es que el lienzo se murió y no hay nada que dibujar.
+    const trimQualityWindow = () => {
+      if (qualityWindow.length > 120) qualityWindow = qualityWindow.slice(-120);
     };
 
     const draw = (now: number) => {
@@ -537,7 +532,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
         if (frameSamples.length > 120) frameSamples.shift();
         if (!idle) qualityWindow.push(frameDelta);
       }
-      evaluateQuality(now);
+      trimQualityWindow();
       if (!renderer || currentTier === 0) {
         loopWasPaused = true;
         publishTelemetry(now, true);
@@ -621,13 +616,24 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
         level: clampLevel(animatedLevel),
         energy,
         day: theme === "light" ? 1 : 0,
-        material: MATERIAL_BY_KIND[input.kind],
+        // N2 · el material 3 del shader ES el núcleo de cristal. Una capa sin
+        // denominador lo toma prestado: si el motor no puede afirmar un nivel,
+        // se cambia la materia — no se apaga el orbe.
+        material:
+          input.matter === "cristal"
+            ? MATERIAL_BY_KIND.patrimonio
+            : MATERIAL_BY_KIND[input.kind],
         voice: animatedVoice,
         liquid,
         deep,
         accent,
         tier: currentTier,
       });
+
+      if (!announcedReady) {
+        announcedReady = true;
+        onReadyRef.current?.();
+      }
 
       framesThisSecond += 1;
       if (now - fpsWindowAt >= 1_000) {

@@ -44,6 +44,20 @@ import { appendChatMessageWithStatusUsing } from "@/lib/chat-memory/chat-message
 import { buildChatResponse } from "@/lib/ai/chat-response-mapper";
 import { cintaState } from "@/app/app/components/shell/shell-dialog-contract";
 import {
+  ORB_KINDS,
+  debtCycleCardsFrom,
+  debtCycleLevel,
+  goalsLevel,
+  goalsPlannedFrom,
+  metasRead,
+  orbAcceptsLevel,
+  orbFill,
+  orbMatter,
+  patrimonioRead,
+  reserveLevel,
+  reserveTargetFrom,
+} from "@/app/app/components/shell/shell-orb-contract";
+import {
   KIPU_STATE_KINDS,
   KIPU_STATE_SHAPES,
   KIPU_UNMEASURED,
@@ -59,6 +73,7 @@ import {
   SHELL_TIMING_MILESTONES,
   SHELL_TIMING_SEGMENTS,
   SHELL_TIMING_TRAMOS,
+  describeLcpElement,
   formatMetroValue,
   formatSegmentValue,
   formatServerTiming,
@@ -27765,6 +27780,7 @@ assert(
     "clientPromise", // ya medido como tramo `cliente`
     "ratesPromise", // ya medido como tramo `cotizaciones`
     "prefsPromise", // ya medido como tramo `preferencias`
+    "pendingPromise", // ya medido como tramo `pendientes`
     "Promise.all([", // consume prefsPromise + movementPromise, ya medidos
     "supabase", // la consulta interna DEL tramo `movimiento`
     "run()", // el propio `timed`
@@ -27788,6 +27804,7 @@ assert(
     "clientPromise",
     "ratesPromise",
     "prefsPromise",
+    "pendingPromise",
     "movementPromise",
   ]);
   // Emparejador de paréntesis/corchetes: el gate necesita saber qué está DENTRO
@@ -27927,6 +27944,10 @@ assert(
     `${process.cwd()}/src/app/app/components/ChatView.tsx`,
     "utf8",
   );
+  const n1MetroOverlay = readFileSync(
+    `${process.cwd()}/src/app/app/components/metro/MetroOverlay.tsx`,
+    "utf8",
+  );
   // El guard de privacidad del hilo, con su efecto dentro: si no se puede leer
   // `chat_cleared_at`, se devuelve «no pude leer» — nunca el hilo entero, que
   // mostraría mensajes que el usuario mandó ocultar. Tolerante al formato,
@@ -28021,14 +28042,23 @@ assert(
   // N1-4 · El orbe no espera a nadie. El camino crítico es exactamente el grupo
   // `orbe`; todo lo demás sale como PROMESA y su hueco tiene la forma de N0.
   const n1Deferred = ["later", "perspective"];
+  const n1GroupedTramos = SHELL_TIMING_MILESTONES.flatMap(
+    (milestone) => [...SHELL_TIMING_GROUPS[milestone]] as string[],
+  );
   assert(
     "N1-4 · lo que no es el orbe se promete; los huecos son los estados de N0, no barras improvisadas",
     n1Deferred.every((name) =>
       new RegExp(`${name}: Promise<`, "u").test(n0PayloadSource),
     ) &&
-      SHELL_TIMING_GROUPS.orbe.length === 4 &&
-      (SHELL_TIMING_GROUPS.orbe as readonly string[]).every((name) =>
-        (SHELL_TIMING_TRAMOS as readonly string[]).includes(name),
+      // N2 · RE-ANCLADO. La cuenta `=== 4` era incidental: N2 metió
+      // `preferencias` en el grupo del orbe (§5.5) y sacó `pendientes` a su
+      // propio tramo. La promesa que importaba —«los tramos están repartidos y
+      // ninguno se pierde»— se sujeta ahora derivándola de la constante: los
+      // tres grupos PARTICIONAN los tramos, sin huérfanos ni repetidos.
+      n1GroupedTramos.length === SHELL_TIMING_TRAMOS.length &&
+      new Set(n1GroupedTramos).size === SHELL_TIMING_TRAMOS.length &&
+      (SHELL_TIMING_TRAMOS as readonly string[]).every((name) =>
+        n1GroupedTramos.includes(name),
       ) &&
       // el hueco de la píldora es KipuLoading en forma línea, con el tamaño
       // exacto del sitio que va a ocupar
@@ -28042,6 +28072,7 @@ assert(
       n1ChatView.includes('<KipuLoading shape="hoja"'),
     JSON.stringify({
       grupoOrbe: SHELL_TIMING_GROUPS.orbe,
+      tramosAgrupados: n1GroupedTramos,
       fronteras: (n0ShellSource.match(/<Suspense/gu) ?? []).length,
     }),
   );
@@ -28098,6 +28129,338 @@ assert(
       Array.isArray(n1Vercel.crons) &&
       n1Vercel.crons.length === 5,
     JSON.stringify({ regions: n1Vercel.regions }),
+  );
+
+  // ── Bloque N2 · Un solo orbe ──────────────────────────────────────────────
+  // Cinco aserciones. Lo visual —que la gota se VEA deliberada, que el relevo no
+  // se note, que el núcleo respire— se rinde en el reporte y en el teléfono del
+  // founder: este gate no compone cuadros.
+
+  const n2OrbContract = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/shell-orb-contract.ts`,
+    "utf8",
+  );
+  const n2StaticOrb = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/StaticOrb.tsx`,
+    "utf8",
+  );
+  const n2LiveOrb = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/LiveOrb.tsx`,
+    "utf8",
+  );
+
+  // N2-1 · El metro dice QUÉ elemento fue el LCP, y sigue sin inventar nada.
+  // Sin esto, optimizar el orbe es adivinar cuál de las dos hipótesis del §4 es
+  // la verdadera. La regla de N0 no se toca: lo que no se puede identificar se
+  // escribe `—`.
+  assert(
+    "N2-1 · el LCP dice qué elemento fue; lo que no se puede identificar se escribe —, jamás un nombre inventado",
+    describeLcpElement(null) === KIPU_UNMEASURED &&
+      describeLcpElement(undefined) === "—" &&
+      describeLcpElement({ tagName: null, id: null, classNames: [] }) === "—" &&
+      describeLcpElement({ tagName: "CANVAS", id: null, classNames: [] }) === "canvas" &&
+      describeLcpElement({
+        tagName: "CANVAS",
+        id: null,
+        classNames: ["absolute", "kipu-live-orb__canvas"],
+      }) === "canvas.kipu-live-orb__canvas" &&
+      describeLcpElement({
+        tagName: "SPAN",
+        id: null,
+        classNames: ["kipu-shell-amount"],
+      }) === "span.kipu-shell-amount" &&
+      // un id gana sobre la clase: es más específico
+      describeLcpElement({ tagName: "DIV", id: "hero", classNames: ["kipu-x"] }) ===
+        "div#hero" &&
+      n1MetroOverlay.includes("describeLcpElement") &&
+      // se lee del ARRAY de entradas de la métrica, no de una adivinanza
+      n1MetroOverlay.includes('metric.name === "LCP"') &&
+      n1MetroOverlay.includes('getAttribute("class")'),
+    JSON.stringify({
+      canvas: describeLcpElement({
+        tagName: "CANVAS",
+        id: null,
+        classNames: ["kipu-live-orb__canvas"],
+      }),
+      sinElemento: describeLcpElement(null),
+    }),
+  );
+
+  // N2-2 · La lógica de nivel y materia es PURA y este gate la EJECUTA — no lee
+  // su fuente. Es el patrón de `state-contract.ts` y de `cintaState`.
+  // El bloque `const orbs: ShellOrb[] = [ … ];` del payload, acotado por corchetes
+  // para poder exigir cómo declara su lectura cada capa. `fogPayload` queda
+  // FUERA a propósito: ahí `readOk: false` es la verdad — la niebla ES una
+  // lectura caída.
+  const n2OrbsAt = n0PayloadRender.indexOf("const orbs: ShellOrb[] = [");
+  const n2OrbsBlock =
+    n2OrbsAt >= 0
+      ? n0PayloadRender.slice(
+          n2OrbsAt,
+          // el `[` que abre el ARRAY, no el de `ShellOrb[]` dos caracteres antes
+          n0CloseAt(n0PayloadRender, n0PayloadRender.indexOf("= [", n2OrbsAt) + 2, "[", "]"),
+        )
+      : "";
+  const n2OrbReadValues = [
+    ...n2OrbsBlock.matchAll(/readOk:\s*([^,\n]+)/gu),
+  ].map((match) => match[1].trim());
+  const n2OrbReadNames = n2OrbReadValues.map((value) => value.split(".")[0] ?? "");
+  // Los nombres tienen que venir de una lectura DEL CONTRATO, no de un objeto
+  // fabricado a mano en la superficie.
+  const n2ContractReadNames = new Set(
+    [
+      ...n0PayloadRender.matchAll(
+        /const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:briefedRead|metasRead|patrimonioRead)\(/gu,
+      ),
+    ].map((match) => match[1]),
+  );
+
+  const n2Reserva = reserveLevel({ amount: 1200, target: 2400 });
+  const n2Metas = goalsLevel({ pending: 260, planned: 420 });
+  const n2Deuda = debtCycleLevel([
+    { currency: "USD", statementTotalDue: 1000, remainingNative: 620, statementCovered: false },
+  ]);
+  assert(
+    "N2-2 · los tres denominadores se ejecutan y cada nivel trae su frase con el denominador declarado",
+    !/^import\s+"server-only";/mu.test(n2OrbContract) &&
+      n2Reserva.level === 0.5 &&
+      n2Reserva.note === "50% de tu meta" &&
+      Math.round((n2Metas.level ?? 0) * 1000) === 619 &&
+      n2Metas.note === "queda 62% del aporte del mes" &&
+      n2Deuda.level === 0.38 &&
+      n2Deuda.note === "Ciclo cubierto 38%" &&
+      // pasarse de la meta se DICE (120%), pero el agua no desborda
+      reserveLevel({ amount: 2880, target: 2400 }).level === 1 &&
+      reserveLevel({ amount: 2880, target: 2400 }).note === "120% de tu meta" &&
+      // sin denominador NO hay nivel, y tampoco hay frase que lo finja
+      reserveLevel({ amount: 1200, target: null }).level === null &&
+      reserveLevel({ amount: 1200, target: null }).note === null &&
+      goalsLevel({ pending: 260, planned: 0 }).level === null &&
+      // el corte cubierto lo afirma el motor, no una resta
+      debtCycleLevel([
+        { currency: "USD", statementTotalDue: 1000, remainingNative: 0, statementCovered: true },
+      ]).level === 1 &&
+      debtCycleLevel([]).level === null &&
+      // y CADA frase declara su denominador: un porcentaje suelto es un defecto
+      [n2Reserva.note, n2Metas.note, n2Deuda.note].every(
+        (note) => note != null && /%/u.test(note) && note.replace(/[\d%\s]/gu, "").length > 6,
+      ),
+    JSON.stringify({ reserva: n2Reserva, metas: n2Metas, deuda: n2Deuda }),
+  );
+
+  // N2-3 · Sumar cortes de monedas distintas sin una tasa INVENTA dinero. Es la
+  // doctrina que costó diez migraciones en el Bloque J, aplicada al nivel: si el
+  // motor no puede afirmar el ratio, no hay nivel — y entonces cambia la materia.
+  assert(
+    "N2-3 · monedas mezcladas no producen un nivel inventado; sin nivel, cambia la materia",
+    debtCycleLevel([
+      { currency: "USD", statementTotalDue: 1000, remainingNative: 500, statementCovered: false },
+      { currency: "ARS", statementTotalDue: 900000, remainingNative: 0, statementCovered: true },
+    ]).level === null &&
+      debtCycleLevel([
+        { currency: null, statementTotalDue: 1000, remainingNative: 500, statementCovered: false },
+      ]).level === null &&
+      // dos tarjetas en la MISMA moneda sí se suman
+      debtCycleLevel([
+        { currency: "USD", statementTotalDue: 600, remainingNative: 0, statementCovered: true },
+        { currency: "usd", statementTotalDue: 400, remainingNative: 400, statementCovered: false },
+      ]).level === 0.6 &&
+      orbMatter("patrimonio") === "cristal" &&
+      ORB_KINDS.filter((kind) => orbMatter(kind) === "cristal").length === 1 &&
+      orbAcceptsLevel("patrimonio") === false &&
+      orbFill({ kind: "reserva", amount: 1200, level: null, readOk: true }) === "nucleo",
+    JSON.stringify({
+      mezcladas: debtCycleLevel([
+        { currency: "USD", statementTotalDue: 1000, remainingNative: 500, statementCovered: false },
+        { currency: "ARS", statementTotalDue: 900000, remainingNative: 0, statementCovered: true },
+      ]),
+      mismaMoneda: debtCycleLevel([
+        { currency: "USD", statementTotalDue: 600, remainingNative: 0, statementCovered: true },
+        { currency: "usd", statementTotalDue: 400, remainingNative: 400, statementCovered: false },
+      ]),
+    }),
+  );
+
+  // N2-4 · El vacío con gota, y la frontera que no se relaja: un cero MEDIDO y
+  // una lectura CAÍDA no pueden dibujarse igual. Es la doctrina de N0 llevada al
+  // orbe. ← objetivo de la mutación C14.
+  assert(
+    "N2-4 · un orbe en cero dibuja su gota, y jamás se parece a uno que no se pudo leer",
+    orbFill({ kind: "saldo", amount: 0, level: 0, readOk: true }) === "gota" &&
+      orbFill({ kind: "reserva", amount: 0.004, level: null, readOk: true }) === "gota" &&
+      orbFill({ kind: "deuda", amount: 0, level: 1, readOk: true }) === "gota" &&
+      orbFill({ kind: "saldo", amount: 82.4, level: 0.64, readOk: true }) === "nivel" &&
+      // N2 ronda 2 (O1) · LAS DOS RAMAS DE LA AFIRMACIÓN. Un monto ausente NO
+      // decide nada por su cuenta: lo decide el veredicto de lectura. Es el
+      // defecto que se veía en el día uno — dos capas dibujaban «no pude leer»
+      // mientras su texto invitaba a crear la primera meta.
+      orbFill({ kind: "metas", amount: null, level: null, readOk: true }) === "gota" &&
+      orbFill({ kind: "metas", amount: null, level: null, readOk: false }) === "sin-dato" &&
+      orbFill({ kind: "patrimonio", amount: null, level: null, readOk: true }) === "gota" &&
+      orbFill({ kind: "patrimonio", amount: null, level: null, readOk: false }) === "sin-dato" &&
+      // ni siquiera un monto con nivel puede tapar una lectura caída
+      orbFill({ kind: "saldo", amount: 82.4, level: 0.64, readOk: false }) === "sin-dato" &&
+      orbFill({ kind: "metas", amount: Number.NaN, level: null, readOk: true }) === "gota" &&
+      // el cero LEÍDO y la lectura CAÍDA son estados distintos, en las cinco capas
+      ORB_KINDS.every(
+        (kind) =>
+          orbFill({ kind, amount: 0, level: null, readOk: true }) !==
+          orbFill({ kind, amount: 0, level: null, readOk: false }),
+      ) &&
+      // …y la afirmación la produce el contrato con la MISMA señal con la que el
+      // payload elige entre invitar y disculparse
+      metasRead({ reservedTotal: null, hasEntity: false, assetsAvailable: true })
+        .ok === true &&
+      metasRead({ reservedTotal: null, hasEntity: false, assetsAvailable: true })
+        .amount === 0 &&
+      metasRead({ reservedTotal: null, hasEntity: false, assetsAvailable: false })
+        .ok === false &&
+      metasRead({ reservedTotal: 260, hasEntity: true, assetsAvailable: true })
+        .amount === 260 &&
+      patrimonioRead({ netWorth: null, wealthAvailable: true }).ok === true &&
+      patrimonioRead({ netWorth: null, wealthAvailable: true }).amount === 0 &&
+      patrimonioRead({ netWorth: 3480, wealthAvailable: false }).ok === false &&
+      patrimonioRead({ netWorth: 3480, wealthAvailable: false }).amount === null &&
+      // …y NINGUNA capa declara su lectura con un literal. El cable entre el
+      // veredicto y el campo era la familia de `AUD-N1-D`: la función pura
+      // sujeta, el argumento no. Lo encontré mutando `readOk: metas.ok` a
+      // `readOk: false` — pasaba 872/872. Ahora las cinco salen de una lectura
+      // del contrato y un booleano escrito a mano rompe esto por nombre.
+      n2OrbReadValues.length === 5 &&
+      n2OrbReadValues.every((value) => /^[A-Za-z_$][\w$]*\.ok$/u.test(value)) &&
+      n2OrbReadNames.every((name) => n2ContractReadNames.has(name)) &&
+      // y el componente dibuja cada uno con su pieza, sin improvisar
+      n2StaticOrb.includes("orbFill({ kind, amount, level, readOk })") &&
+      n2StaticOrb.includes('fill === "gota" && <span className="kipu-shell-orb__drop" />') &&
+      n2StaticOrb.includes('fill === "nucleo" && <span className="kipu-shell-orb__core" />') &&
+      n2StaticOrb.includes('data-orb-fill={fill}') &&
+      n0Css.includes(".kipu-shell-orb__drop {") &&
+      n0Css.includes(".kipu-shell-orb__core {") &&
+      n0Css.includes('.kipu-shell-orb[data-orb-fill="sin-dato"] .kipu-shell-orb__glass'),
+    JSON.stringify({
+      leyoYNoHay: orbFill({ kind: "metas", amount: null, level: null, readOk: true }),
+      noPudoLeer: orbFill({ kind: "metas", amount: null, level: null, readOk: false }),
+      lecturasDeclaradas: n2OrbReadValues,
+      metasDiaUno: metasRead({ reservedTotal: null, hasEntity: false, assetsAvailable: true }),
+      metasSinLectura: metasRead({ reservedTotal: null, hasEntity: false, assetsAvailable: false }),
+      dibujaGota: n2StaticOrb.includes("kipu-shell-orb__drop"),
+    }),
+  );
+
+  // N2-5 · El orbe no se puede sustituir por un gesto ni por la calidad medida.
+  // La regla vieja era
+  //   `liveSettled && !dialogOpen && liveTier > 0 && liveState !== "fog"`
+  // y cada término apagaba el orbe bueno para enseñar el barato.
+  const n2ShowLive = n0ShellSource.match(/const showLiveCanvas = ([^;]+);/u)?.[1] ?? "";
+  assert(
+    "N2-5 · el orbe vivo se enseña por EXISTENCIA, no por gesto; y la calidad se decide una vez",
+    n2ShowLive === "liveReady" &&
+      // ningún gesto ni la calidad pueden volver a entrar en esa decisión
+      !/liveSettled|dialogOpen|liveTier/u.test(n2ShowLive) &&
+      // el relevo espera al PRIMER CUADRO, no a que haya tier: entre una cosa y
+      // la otra había un canvas en blanco, que era la tercera forma fotografiada
+      n2LiveOrb.includes("onReadyRef.current?.()") &&
+      n0ShellSource.includes("onReady={markLiveReady}") &&
+      // y `liveReady` es un latch: no existe ningún camino que lo apague.
+      // Se cuenta sobre el CÓDIGO, no sobre el texto: el comentario que explica
+      // el latch nombra `setLiveReady(true)` y contaría como una llamada. Es la
+      // tercera vez en este bloque que un comentario dispara un pin — N1 lo pagó
+      // dos veces (`throw movementError`, `supabase-admin`).
+      (n1Code(n0ShellSource).match(/setLiveReady\(/gu) ?? []).length === 1 &&
+      n1Code(n0ShellSource).includes("setLiveReady(true)") &&
+      !n1Code(n0ShellSource).includes("setLiveReady(false)") &&
+      // la escalera de calidad se fue: ni sube ni baja delante del usuario
+      !n1Code(n2LiveOrb).includes("evaluateQuality") &&
+      !n1Code(n2LiveOrb).includes("dropToTier") &&
+      // la única salida de tier que queda NO es una decisión de calidad
+      n2LiveOrb.includes("webglcontextlost") &&
+      // pausar la animación sigue siendo legítimo, y el último cuadro sobrevive
+      n0ShellSource.includes("active={liveSettled && !dialogOpen && !perspectiveOpen}") &&
+      readFileSync(
+        `${process.cwd()}/src/app/app/components/shell/orb-shader.ts`,
+        "utf8",
+      ).includes("preserveDrawingBuffer: true"),
+    JSON.stringify({
+      showLiveCanvas: n2ShowLive,
+      escaleraViva:
+        n1Code(n2LiveOrb).includes("evaluateQuality") ||
+        n1Code(n2LiveOrb).includes("dropToTier"),
+    }),
+  );
+
+  // N2-6 · N2 ronda 2 (O2) · Un denominador de DINERO no se puede cablear a mano.
+  //
+  // La familia de `AUD-N1-D`: la función pura estaba sujeta, **los argumentos que
+  // se le pasan no**. `reserveTarget = 1000` o `statementCovered: true` escritos
+  // a mano pasaban el gate — y el segundo fabrica cobertura de deuda, que es la
+  // clase exacta de defecto que el Bloque J pagó con diez migraciones.
+  //
+  // El arreglo es el patrón de `cintaState`, un eslabón más arriba: la DERIVACIÓN
+  // también vive en el contrato puro, el gate la ejecuta, y en la superficie no
+  // queda dónde escribir un literal sin que la llamada desaparezca.
+  const n2DebtCards = debtCycleCardsFrom([
+    {
+      type: "credit_card",
+      currency: "USD",
+      statementTotalDue: 1000,
+      fullPaymentDue: 620,
+      statementCovered: false,
+    },
+    // el nativo GANA sobre el reexpresado a base: comparar los dos mezclaría
+    // monedas dentro de la misma tarjeta
+    {
+      type: "credit_card",
+      currency: "ARS",
+      statementTotalDue: 90000,
+      fullPaymentDue: 62,
+      fullPaymentDueOriginal: 45000,
+      statementCovered: false,
+    },
+    // un préstamo no tiene corte y no entra
+    { type: "loan", currency: "USD", statementTotalDue: 5000, fullPaymentDue: 5000 },
+  ]);
+  assert(
+    "N2-6 · la derivación de los tres denominadores es pura y ejecutable; ninguno se puede cablear a mano",
+    // ── el objetivo de respaldo: dos ausencias distintas, ningún relleno ──
+    reserveTargetFrom({ prefsError: false, raw: 2400 }) === 2400 &&
+      reserveTargetFrom({ prefsError: false, raw: "2400" }) === 2400 &&
+      reserveTargetFrom({ prefsError: true, raw: 2400 }) === null &&
+      reserveTargetFrom({ prefsError: false, raw: null }) === null &&
+      reserveTargetFrom({ prefsError: false, raw: 0 }) === null &&
+      reserveTargetFrom({ prefsError: false, raw: "no es un número" }) === null &&
+      // ── el aporte del mes: las TRES partidas, no sólo `.goals` ──
+      goalsPlannedFrom({ goals: 300, savings: 80, investment: 40 }) === 420 &&
+      goalsPlannedFrom({ goals: 0, savings: 0, investment: 0 }) === 0 &&
+      // ── las tarjetas del ciclo: sólo tarjetas, y en moneda nativa ──
+      n2DebtCards.length === 2 &&
+      n2DebtCards[0]?.remainingNative === 620 &&
+      n2DebtCards[1]?.remainingNative === 45000 &&
+      n2DebtCards.every((card) => card.statementCovered === false) &&
+      // y encadenado da el nivel que corresponde: dos monedas ⇒ sin nivel
+      debtCycleLevel(n2DebtCards).level === null &&
+      // ── y la superficie DERIVA, no calcula ──
+      n0PayloadRender.includes("reserveTargetFrom({") &&
+      n0PayloadRender.includes("goalsPlannedFrom(monthlyProtected)") &&
+      n0PayloadRender.includes("debtCycleCardsFrom(ctx.debtAccounts)") &&
+      n0PayloadRender.includes("metasRead({") &&
+      n0PayloadRender.includes("patrimonioRead({") &&
+      // nada de esto puede volver a escribirse a mano en el payload
+      !/statementCovered\s*:/u.test(n0PayloadRender) &&
+      !/statementTotalDue\s*:/u.test(n0PayloadRender) &&
+      // el objetivo de respaldo tiene UN solo dueño: nadie lo vuelve a derivar a
+      // mano (la perspectiva lo hacía por su cuenta hasta esta ronda)
+      !/Number\(prefs/u.test(n0PayloadRender) &&
+      (n0PayloadRender.match(/reserveTargetFrom\(\{/gu) ?? []).length === 2 &&
+      !/monthlyProtected\.(goals|savings|investment)\s*\+/u.test(n0PayloadRender),
+    JSON.stringify({
+      objetivo: {
+        leido: reserveTargetFrom({ prefsError: false, raw: 2400 }),
+        sinLeer: reserveTargetFrom({ prefsError: true, raw: 2400 }),
+        sinDeclarar: reserveTargetFrom({ prefsError: false, raw: null }),
+      },
+      aporte: goalsPlannedFrom({ goals: 300, savings: 80, investment: 40 }),
+      tarjetas: n2DebtCards,
+    }),
   );
 
   return checks;

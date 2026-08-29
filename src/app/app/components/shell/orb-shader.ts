@@ -344,6 +344,13 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
     antialias: false,
     depth: false,
     powerPreference: "low-power",
+    // N2 §5.1 · Sin esto, el navegador PUEDE limpiar el lienzo después de
+    // componer, y un lienzo pausado se queda en blanco. Hasta N1 daba igual
+    // porque pausar coincidía con esconder el orbe vivo; ahora el orbe vivo se
+    // queda puesto mientras se desliza o mientras el chat está abierto, así que
+    // el último cuadro TIENE que sobrevivir. Pausar la animación es legítimo;
+    // quedarse sin imagen sería otra sustitución con otro nombre.
+    preserveDrawingBuffer: true,
   });
   if (!gl) return null;
 

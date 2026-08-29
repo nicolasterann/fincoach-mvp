@@ -14,6 +14,13 @@ import {
   type KipuStateShape,
 } from "@/app/app/components/state";
 import { MetroOverlay } from "@/app/app/components/metro/MetroOverlay";
+import { StaticOrb } from "@/app/app/components/shell/StaticOrb";
+import {
+  ORB_KINDS,
+  orbFill,
+  orbMatter,
+  type OrbKind,
+} from "@/app/app/components/shell/shell-orb-contract";
 
 // Bloque N0 — la superficie de aprobación del acabado. Aquí se mira la REGLA,
 // no un dato: los tokens con su valor real leído de la hoja, y los cinco
@@ -27,9 +34,56 @@ const SECTIONS = [
   "escala",
   "duelo",
   "estados",
+  "materias",
   "claro",
 ] as const;
 type Section = (typeof SECTIONS)[number];
+
+/** N2 · Los cuatro casos que puede dibujar el vidrio, sobre las cinco capas.
+ * Patrimonio nunca acepta un nivel: su columna prueba que la materia manda. */
+const ORB_MATTER_CASES: {
+  title: string;
+  body: string;
+  amount: number | null;
+  readOk: boolean;
+  levelFor: (kind: OrbKind) => number | null;
+}[] = [
+  {
+    title: "nivel",
+    body: "hay denominador: agua hasta su altura",
+    amount: 1200,
+    readOk: true,
+    levelFor: (kind) => (kind === "patrimonio" ? null : 0.62),
+  },
+  {
+    title: "gota",
+    body: "leí y da cero: vacío a propósito",
+    amount: 0,
+    readOk: true,
+    levelFor: () => 0,
+  },
+  {
+    title: "gota (leí y no hay nada)",
+    body: "monto ausente CON lectura buena: sigue siendo un cero leído",
+    amount: null,
+    readOk: true,
+    levelFor: () => null,
+  },
+  {
+    title: "nucleo",
+    body: "hay materia, no hay techo honesto",
+    amount: 3480,
+    readOk: true,
+    levelFor: () => null,
+  },
+  {
+    title: "sin-dato",
+    body: "NO se pudo leer: silueta interrumpida",
+    amount: null,
+    readOk: false,
+    levelFor: () => null,
+  },
+];
 
 const SHAPE_LABEL: Record<KipuStateShape, string> = {
   orbe: "Orbe",
@@ -297,6 +351,56 @@ export default async function SistemaPage({
             del tamaño del orbe, no una barra redondeada.
           </p>
           <StateMatrix />
+        </section>
+      )}
+
+      {show("materias") && (
+        <section className="kipu-sistema-section">
+          <h2>Las materias del orbe</h2>
+          <p className="kipu-sistema-note">
+            La doctrina que sale de N2: <b>si el motor no puede afirmar un nivel,
+            se cambia la materia — no se apaga el orbe.</b> Hasta N1 un orbe sin
+            denominador era una bola de vidrio hueca, y eso comunicaba «no tienes
+            nada» o «está roto». Cuál se dibuja lo decide <code>orbFill</code>,
+            que es puro y que el gate ejecuta.
+          </p>
+          <div className="kipu-sistema-matrix">
+            {ORB_MATTER_CASES.map((row) => (
+              <div key={row.title} className="kipu-sistema-matrix__band">
+                <p className="kipu-sistema-kicker">
+                  {row.title} — {row.body}
+                </p>
+                <div className="kipu-sistema-row">
+                  {ORB_KINDS.map((kind: OrbKind) => (
+                    <div
+                      key={kind}
+                      className="kipu-sistema-slot"
+                      data-slot-shape="orbe"
+                    >
+                      <p className="kipu-sistema-slot__name">
+                        {kind} ·{" "}
+                        {orbFill({
+                          kind,
+                          amount: row.amount,
+                          level: row.levelFor(kind),
+                          readOk: row.readOk,
+                        })}
+                        {orbMatter(kind) === "cristal" ? " · cristal" : ""}
+                      </p>
+                      <span className="kipu-sistema-orb">
+                        <StaticOrb
+                          kind={kind}
+                          level={row.levelFor(kind)}
+                          amount={row.amount}
+                          readOk={row.readOk}
+                        />
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
         </section>
       )}
 

@@ -28,6 +28,7 @@ export const SHELL_TIMING_TRAMOS = [
   "briefing",
   "cotizaciones",
   "preferencias",
+  "pendientes",
   "movimiento",
   "recibo",
   "historia",
@@ -51,9 +52,27 @@ export type ShellTimingMilestone = (typeof SHELL_TIMING_MILESTONES)[number];
 export type ShellTimingSegment = (typeof SHELL_TIMING_SEGMENTS)[number];
 
 /** Qué tramos viajan con cada tanda. El orden es el de aparición en pantalla. */
+/**
+ * N2 §5.5 · `preferencias` ENTRA al camino crítico del orbe, y `pendientes`
+ * (las ocurrencias abiertas, que sólo alimentan la píldora) sale a su propio
+ * tramo para no entrar con él.
+ *
+ * El motivo: el denominador de Reserva es `emergency_reserve_target`, que vive
+ * en esa fila. O el nivel llega CON el orbe, o el líquido sube después de
+ * pintar — y «cambios después de pintar» es exactamente de lo que el founder
+ * viene quejándose. Se eligió que llegue con el orbe.
+ *
+ * El costo medido es ≈ 0 y es estructural, no estadístico: `preferencias`
+ * arranca antes del `await contexto`, así que para cuando `briefing` resuelve
+ * ya lleva corriendo todo ese tiempo en paralelo. En las cuatro corridas de N1
+ * terminó en 1054–1069 ms contra un hito `orbe` de 1526–1744 ms. Lo único que
+ * podría costar algo sería que esa lectura tardara MÁS que `contexto` +
+ * `briefing` juntos; por eso se partió el tramo: la lectura de ocurrencias, que
+ * el orbe no necesita, se quedó fuera.
+ */
 export const SHELL_TIMING_GROUPS = {
-  orbe: ["contexto", "cliente", "briefing", "cotizaciones"],
-  pill: ["preferencias", "movimiento", "recibo"],
+  orbe: ["contexto", "cliente", "briefing", "cotizaciones", "preferencias"],
+  pill: ["pendientes", "movimiento", "recibo"],
   perspectiva: ["historia"],
 } as const satisfies Record<ShellTimingMilestone, readonly ShellTimingTramo[]>;
 
@@ -151,6 +170,43 @@ export function formatMetroValue(
     digits: limits.digits,
     ...(limits.unit ? { unit: limits.unit } : {}),
   });
+}
+
+// ── 3. QUÉ fue el elemento más grande ───────────────────────────────────────
+//
+// N2 §4 · Antes de tocar el orbe hay que saber qué estamos optimizando. La
+// medición de N1 dejó ~2,2 s de trabajo de CLIENTE dentro de un LCP de ~4 s, y
+// dos hipótesis incompatibles: o el elemento más grande es el canvas del orbe
+// vivo —y entonces la sustitución tardía de la Causa C ES el problema de
+// rendimiento—, o es la cifra/el marco, y eso es bajar e hidratar JS, que N2 no
+// arregla. La entrada `largest-contentful-paint` trae `element`; esto le pone
+// nombre.
+//
+// Regla de N0 intacta: **un elemento que no se puede identificar se dice `—`,
+// no se adivina.** La entrada trae `element: null` cuando el nodo ya no está en
+// el documento, y eso es «no lo sé», no «no hubo».
+
+export interface LcpElementFacts {
+  tagName: string | null;
+  id: string | null;
+  classNames: readonly string[];
+}
+
+export function describeLcpElement(
+  facts: LcpElementFacts | null | undefined,
+): string {
+  if (!facts) return KIPU_UNMEASURED;
+  const tag = (facts.tagName ?? "").trim().toLowerCase();
+  if (!tag) return KIPU_UNMEASURED;
+  const id = (facts.id ?? "").trim();
+  if (id) return `${tag}#${id}`;
+  const classes = facts.classNames
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+  // Se prefiere una clase del proyecto: `kipu-live-orb__canvas` responde la
+  // pregunta del §4; `absolute` o `flex` no responden nada.
+  const chosen = classes.find((name) => name.startsWith("kipu-")) ?? classes[0];
+  return chosen ? `${tag}.${chosen}` : tag;
 }
 
 /** El texto de un tramo del servidor. Mismo trato: sin medir ⇒ `—`. */

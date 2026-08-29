@@ -29,7 +29,9 @@ type Scenario =
   | "escrito"
   | "cruce-de-capa"
   | "patrimonio-negativo"
-  | "movimiento-ilegible";
+  | "movimiento-ilegible"
+  | "sin-denominador"
+  | "lectura-caida";
 
 type PerspectiveFixture =
   | "completo"
@@ -62,6 +64,8 @@ const SCENARIO_LABELS: Record<Scenario, string> = {
   "cruce-de-capa": "Cruce de capa",
   "patrimonio-negativo": "Patrimonio negativo",
   "movimiento-ilegible": "Movimiento ilegible",
+  "sin-denominador": "Sin denominador",
+  "lectura-caida": "Lectura caída (Metas y Patrimonio)",
 };
 
 const STATE_ALIASES: Record<string, Scenario> = {
@@ -84,12 +88,19 @@ const FORCED_LIVE_STATE: Partial<Record<Scenario, LiveOrbState>> = {
   "cruce-de-capa": "crossing",
 };
 
+// N2 · Las CIFRAS no se tocan (C10): son las mismas cinco que fijó M2 y que
+// verificaron N0 y N1. Lo que cambia es que ahora Reserva, Metas y Deuda tienen
+// nivel, con el denominador que les corresponde. Los valores salen de correr
+// las funciones puras del contrato con números realistas:
+//   reserveLevel({ amount: 1200, target: 2400 })            → 0.5   · "50% de tu meta"
+//   goalsLevel({ pending: 260, planned: 420 })              → 0.619 · "queda 62% del aporte del mes"
+//   debtCycleLevel([{ 1000 total, 620 restante, USD }])     → 0.38  · "Ciclo cubierto 38%"
 const normalOrbs: ShellOrb[] = [
-  { kind: "saldo", amountLabel: "82.40$", amountRaw: 82.4, subtitle: "Disponible hoy", level: 0.64, levelNote: null, emptyInvite: null },
-  { kind: "reserva", amountLabel: "1,200$", amountRaw: 1200, subtitle: "Tu respaldo", level: null, levelNote: null, emptyInvite: null },
-  { kind: "metas", amountLabel: "260$", amountRaw: 260, subtitle: "Por aportar este mes", level: null, levelNote: null, emptyInvite: null },
-  { kind: "patrimonio", amountLabel: "3,480$", amountRaw: 3480, subtitle: "Patrimonio total", level: null, levelNote: null, emptyInvite: null },
-  { kind: "deuda", amountLabel: "760$", amountRaw: 760, subtitle: "Te falta pagar", level: null, levelNote: null, emptyInvite: null },
+  { kind: "saldo", amountLabel: "82.40$", amountRaw: 82.4, subtitle: "Disponible hoy", level: 0.64, levelNote: null, emptyInvite: null, readOk: true },
+  { kind: "reserva", amountLabel: "1,200$", amountRaw: 1200, subtitle: "Tu respaldo", level: 0.5, levelNote: "50% de tu meta", emptyInvite: null, readOk: true },
+  { kind: "metas", amountLabel: "260$", amountRaw: 260, subtitle: "Por aportar este mes", level: 0.6190476190476191, levelNote: "queda 62% del aporte del mes", emptyInvite: null, readOk: true },
+  { kind: "patrimonio", amountLabel: "3,480$", amountRaw: 3480, subtitle: "Patrimonio total", level: null, levelNote: null, emptyInvite: null, readOk: true },
+  { kind: "deuda", amountLabel: "760$", amountRaw: 760, subtitle: "Te falta pagar", level: 0.38, levelNote: "Ciclo cubierto 38%", emptyInvite: null, readOk: true },
 ];
 
 const snapshot = (
@@ -288,11 +299,57 @@ function payloadFor(
     return {
       ...shellBase,
       status: "niebla",
-      orbs: normalOrbs.map((orb) => ({ ...orb, amountLabel: null, amountRaw: null, level: null })),
+      // La niebla es una lectura CAÍDA: las cinco capas se dibujan interrumpidas.
+      orbs: normalOrbs.map((orb) => ({
+        ...orb,
+        amountLabel: null,
+        amountRaw: null,
+        level: null,
+        readOk: false,
+      })),
       later: delayed(emptyLater, slowMs),
       perspective: delayed(
         { perspective: null, readFailed: false, serverTiming: null },
         slowMs * 2,
+      ),
+    };
+  }
+
+  // N2 · La doctrina en pantalla: sin denominador NO se apaga el orbe, cambia la
+  // materia. Reserva sin meta de respaldo y Metas sin aporte del mes pasan a
+  // núcleo suspendido — que es lo que dibujaba Patrimonio desde M2.
+  // N2 ronda 2 · La contracara del día uno: aquí Metas y Patrimonio SÍ se
+  // cayeron, así que el anillo interrumpido es lo correcto. Las dos pantallas
+  // juntas son la prueba de que la materia sigue a la afirmación.
+  if (scenario === "lectura-caida") {
+    return {
+      ...shellBase,
+      orbs: normalOrbs.map((orb) =>
+        orb.kind === "metas" || orb.kind === "patrimonio"
+          ? {
+              ...orb,
+              amountLabel: null,
+              amountRaw: null,
+              level: null,
+              levelNote: null,
+              readOk: false,
+              emptyInvite:
+                orb.kind === "metas"
+                  ? "No puedo confirmar tus metas e inversiones ahora."
+                  : "No puedo leer tu patrimonio ahora. Intenta de nuevo.",
+            }
+          : orb,
+      ),
+    };
+  }
+
+  if (scenario === "sin-denominador") {
+    return {
+      ...shellBase,
+      orbs: normalOrbs.map((orb) =>
+        orb.kind === "reserva" || orb.kind === "metas" || orb.kind === "deuda"
+          ? { ...orb, level: null, levelNote: null }
+          : orb,
       ),
     };
   }
@@ -310,13 +367,19 @@ function payloadFor(
   if (scenario === "dia-1") {
     return {
       ...shellBase,
+      // N2 ronda 2 · El día uno es una lectura EXITOSA con todo en cero. Antes
+      // esta maqueta cableaba `amountLabel: null` para Metas y Patrimonio, y por
+      // eso el orbe dibujaba «no pude leer» junto a un texto que invitaba a
+      // empezar. Ahora refleja lo que el payload produce de verdad:
+      // `metasRead`/`patrimonioRead` con su veredicto en `true` devuelven 0.
       orbs: normalOrbs.map((orb) => ({
         ...orb,
-        amountLabel: orb.kind === "metas" || orb.kind === "patrimonio" ? null : "0$",
-        amountRaw: orb.kind === "metas" || orb.kind === "patrimonio" ? null : 0,
+        amountLabel: "0$",
+        amountRaw: 0,
         level: orb.kind === "saldo" ? 0 : null,
         levelNote: null,
         emptyInvite: dayOneInvites[orb.kind],
+        readOk: true,
       })),
       later: delayed(emptyLater, slowMs),
     };

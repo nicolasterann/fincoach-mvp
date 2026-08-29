@@ -35,6 +35,7 @@ import type {
 import { PerspectiveSheet } from "./PerspectiveSheet";
 import { cintaState } from "./shell-dialog-contract";
 import { StaticOrb } from "./StaticOrb";
+import { orbMatter } from "./shell-orb-contract";
 import type { OrbVoiceState } from "./voice-capture-contract";
 import { useVoiceCapture } from "./useVoiceCapture";
 
@@ -99,15 +100,24 @@ function orbAriaLabel(orb: ShellOrb): string {
   }
   const amount = spokenMoney(orb.amountRaw, orb.amountLabel);
   if (orb.level == null) return `${meta.ariaPrefix}: ${amount}. ${orb.subtitle}.`;
+  // N2 · un porcentaje SIN denominador declarado es un defecto (doctrina M6).
+  // La frase del nivel la trae el motor en `levelNote`, con su denominador
+  // dentro; «nivel al X por ciento» —lo que se decía antes— no declaraba nada.
   const pct = Math.round(orb.level * 100);
-  const level = orb.kind === "saldo" ? `tanque al ${pct} por ciento` : orb.kind === "deuda" ? `ciclo cubierto ${pct} por ciento` : `nivel al ${pct} por ciento`;
+  const level =
+    orb.levelNote ??
+    (orb.kind === "saldo" ? `tanque al ${pct} por ciento` : `nivel al ${pct} por ciento`);
   return `${meta.ariaPrefix}: ${amount}, ${level}.`;
 }
 
 function orbSubtitle(orb: ShellOrb): string {
+  // Deuda conserva la forma que M2 diseñó y que hasta N2 nunca tuvo datos.
   if (orb.kind === "deuda" && orb.levelNote && orb.amountLabel) {
     return `${orb.levelNote} · te faltan ${orb.amountLabel}`;
   }
+  // N2 · la frase del nivel viaja al lado de lo que la cifra significa, así que
+  // el porcentaje nunca aparece sin decir de qué es porcentaje.
+  if (orb.levelNote) return `${orb.subtitle} · ${orb.levelNote}`;
   return orb.subtitle;
 }
 
@@ -327,7 +337,11 @@ export function SantuarioShell({
   const settleTimer = useRef<number | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [liveSettled, setLiveSettled] = useState(true);
-  const [liveTier, setLiveTier] = useState<OrbQualityTier>(0);
+  // N2 §5.1 · UNA sola vez. `liveReady` se enciende cuando el orbe vivo ya
+  // pintó su primer cuadro y NO se vuelve a apagar: ni al deslizar, ni al abrir
+  // la hoja, ni si la calidad medida cambia. Ese relevo único es el que
+  // sustituye a los cuatro relevos que el founder fotografió.
+  const [liveReady, setLiveReady] = useState(false);
   const [liveState, setLiveState] = useState<LiveOrbState>("available");
   const [perspectiveOpen, setPerspectiveOpen] = useState(
     preview?.initialPerspectiveOpen ?? false,
@@ -380,6 +394,13 @@ export function SantuarioShell({
     revealConversation: () => revealDialog(false),
     setAura: (state, level) => liveOrbRef.current?.setVoice(state, level),
   });
+
+  // Se enciende una vez y se queda. Escrito como función y no como
+  // `setLiveReady(true)` suelto para que el latch sea explícito: no hay ningún
+  // camino en este archivo que lo devuelva a `false`.
+  function markLiveReady() {
+    setLiveReady(true);
+  }
 
   const syncActiveFromTrack = (track: HTMLDivElement) => {
     if (track.clientWidth === 0) return;
@@ -542,7 +563,18 @@ export function SantuarioShell({
     preview?.forcedState === "written" ||
     preview?.forcedState === "crossing";
   const forcedRenderState = imperativePreview ? undefined : preview?.forcedState;
-  const showLiveCanvas = liveSettled && !dialogOpen && liveTier > 0 && liveState !== "fog";
+  // N2 §5.1 · MURIÓ LA REGLA DE SUSTITUCIÓN.
+  //
+  // Decía `liveSettled && !dialogOpen && liveTier > 0 && liveState !== "fog"`.
+  // Cada término apagaba el orbe bueno y enseñaba el barato: deslizar, abrir el
+  // chat, la calidad medida, la niebla. Con una transición de opacidad de por
+  // medio — la tercera forma que el founder vio en sus capturas 11, 12 y 13.
+  //
+  // Queda una sola condición, y es de EXISTENCIA, no de gesto: se enseña el
+  // orbe vivo cuando el orbe vivo YA PINTÓ. Deslizar sigue pausando su
+  // animación (`active`, más abajo), que es legítimo; lo que ya no puede hacer
+  // es cambiar de objeto.
+  const showLiveCanvas = liveReady;
   const forcedVoiceMessage = preview?.forcedVoice
     ? `Aura ${preview.forcedVoice} · vista QA`
     : null;
@@ -635,7 +667,7 @@ export function SantuarioShell({
 
         {payload.status === "niebla" ? (
           <section className="kipu-shell-fog" aria-live="polite">
-            <StaticOrb kind="saldo" level={null} fog />
+            <StaticOrb kind="saldo" level={null} amount={null} readOk={false} fog />
             <p className="kipu-shell-fog__message">No puedo leer tu saldo ahora</p>
             <button type="button" className="kipu-shell-retry" onClick={() => window.location.reload()}>
               Reintentar
@@ -656,8 +688,9 @@ export function SantuarioShell({
                 forcedTier={preview?.forcedTier}
                 forcedState={forcedRenderState}
                 showPerf={preview?.showPerf}
+                matter={orbMatter(activeKind)}
                 onStateChange={setLiveState}
-                onTierChange={setLiveTier}
+                onReady={markLiveReady}
               />
               <span className="kipu-shell-live-spacer kipu-shell-live-spacer--readout" />
               <span className="kipu-shell-live-spacer kipu-shell-live-spacer--pill" />
@@ -675,7 +708,7 @@ export function SantuarioShell({
                     aria-labelledby={`kipu-tab-${orb.kind}`}
                   >
                     <Link href={ORB_META[orb.kind].href} className="kipu-shell-orb-link" aria-label={orbAriaLabel(orb)}>
-                      <StaticOrb kind={orb.kind} level={orb.level} />
+                      <StaticOrb kind={orb.kind} level={orb.level} amount={orb.amountRaw} readOk={orb.readOk} />
                       <span className="kipu-shell-readout">
                         <span className={`kipu-shell-amount${orb.amountLabel == null ? " kipu-shell-amount--invite" : ""}`}>
                           {orb.amountLabel ?? orb.emptyInvite ?? "Dato no disponible"}
