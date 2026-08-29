@@ -86,6 +86,24 @@ todos. Las vecinas asoman a los costados. **No hay cambio de capa: hay
 movimiento.** Y la clase entera de defectos que costó N2 —sustitución, relevo,
 lag de una capa— deja de existir porque **ya no hay nada que sustituir**.
 
+### 4.1 Las vecinas — regla del founder (D-N3.2, resuelta)
+
+> **Durante el gesto se ven, exactamente como son. Al soltar, dejan de verse.**
+
+Dos mitades y las dos importan:
+
+- **Mientras te movés, las vecinas se ven SIN CAMBIOS.** No hay versión barata,
+  ni simplificada, ni apagada para la que no es la activa. Se ven como se verían
+  si fueran la activa. Es lo que hace que el movimiento se lea como
+  desplazamiento y no como transición entre dos estados.
+- **En reposo, sólo está la activa.** Cuando soltás y la nueva capa se asienta,
+  las vecinas ya no están.
+
+**Y la salida de las vecinas es parte del mismo movimiento**, no un apagón
+aparte: se van yéndose mientras el gesto termina. Si desaparecen de golpe al
+asentarse, es una sustitución con otro nombre — justo la clase que N2 pagó y
+que esta forma existe para eliminar.
+
 Consecuencias que el implementador debe resolver y declarar:
 
 - **El gesto deja de ser scroll nativo del navegador**, o deja de ser el que
@@ -118,6 +136,29 @@ fondo, espesor que se nota, y un menisco que se curva contra la pared. Que se
 mueva **siempre**, no sólo al tocar. Partículas suspendidas o motas de luz
 derivando adentro, lentas.
 
+#### El tope del vaso (D-N3.1, resuelta) — y su regla dura
+
+El founder lo diagnosticó exacto: hoy, lleno y vacío se confunden porque **un
+orbe al 100 % no muestra agua: muestra un orbe de color, sin superficie**. Su
+solución es la de un vaso real:
+
+> *«Un vaso lleno realmente no está lleno hasta el tope, sino un poco menos.»*
+
+Entonces el **lleno visual deja aire arriba**: el 100 % dibuja el agua con una
+franja libre en la parte superior, **de modo que el menisco siempre se vea**. Un
+orbe lleno se lee lleno porque **se le ve el límite del agua**, no porque esté
+pintado entero.
+
+> **Y la regla que no se relaja: esto es una MAPEO DE DIBUJO, no un cambio de
+> dato.** El número sigue diciendo la verdad del motor —«Ciclo cubierto 100 %»
+> sigue siendo 100 %—; lo único que cambia es a qué altura del vidrio se dibuja
+> ese 100 %. **Nadie acota el valor, se acota el trazo.** Si alguien recorta el
+> nivel *antes* de que llegue a la cifra o a la frase, es un defecto de N3.
+
+Corolario: el vacío también tiene que seguir distinguiéndose. La gota y el
+menisco de N2 son el piso de esa escala; el aire de arriba es el techo.
+Entre los dos tiene que haber **recorrido visible** para los valores del medio.
+
 ### 5.3 La luz
 Reflejo especular con una fuente coherente, sombra propia, y un halo que sea
 **dispersión de esa luz** y no un `box-shadow`. Las capturas del founder muestran
@@ -141,10 +182,25 @@ una app de Apple»*. Pero:
 > hay forma de leerlos sin eso, y **no existe hoy ningún código de este proyecto
 > que lo toque**: es territorio nuevo.
 
-Entonces: el giroscopio es una **mejora que se pide, no una base sobre la que
-construir**. El agua tiene que verse igual de viva sin él. Y el permiso no se
-pide de arranque: se pide cuando tenga sentido, una vez, y un `denied` no puede
-dejar la pantalla peor de lo que estaba.
+**Decisión del founder (D-N3.3, resuelta):** el permiso **se pide al iniciar la
+app por primera vez**, una sola vez, y después queda resuelto.
+
+Y la parte que importa más, en sus palabras: *«el realismo del agua no debe
+depender de él. O sea el giroscopio solo sería un feature más que no afecta la
+experiencia entera.»*
+
+Entonces:
+
+- **El agua se construye para verse igual de viva sin giroscopio.** Es la línea
+  base, no el degradado. Si el agua sólo se siente bien cuando el teléfono se
+  inclina, la etapa está mal construida.
+- El giroscopio **suma** una inclinación que sigue al mundo real. Nada más.
+- **`denied` no puede empeorar nada** y no se vuelve a preguntar: quedó
+  resuelto, como pidió el founder.
+- Pedirlo «al iniciar por primera vez» tiene su trampa: iOS **sólo lo concede
+  desde un gesto del usuario**, así que no puede colgarse de un `useEffect` de
+  arranque. Tiene que ir enganchado al primer toque real — y el reporte debe
+  decir a cuál.
 
 ---
 
@@ -169,16 +225,27 @@ Dos cosas que hay que medir y no suponer, y que la etapa debe reportar:
 
 ---
 
-## 7. Decisiones que necesito del founder (D-N3)
+## 7. Decisiones del founder (D-N3) — **tres resueltas, una con default**
 
-**No las decide el implementador.** Se llevan al founder con una imagen al lado.
+Resueltas el 2026-08-29. Están integradas donde corresponde; acá quedan juntas
+para que el implementador no tenga que buscarlas.
 
-| # | Decisión | Por qué hace falta |
+| # | Decisión | Resolución |
 |---|---|---|
-| **D-N3.1** | **¿El nivel de agua sigue siendo el lenguaje principal?** Con los datos reales del founder, Reserva no tiene denominador, Metas va al 97 %, Deuda al 100 % y Saldo en 0: **todas se ven llenas o vacías.** La función anda y aun así no comunica | Si el caso típico no se distingue, el nivel es mal vehículo y la materia tiene que decir otra cosa |
-| **D-N3.2** | **¿Qué se ve de las vecinas?** ¿Asoman a los costados como en OPAL, con su color, o se insinúan sin revelarse? | Define el layout entero |
-| **D-N3.3** | **¿Cuándo se pide el giroscopio?** | Un permiso mal pedido se deniega para siempre |
-| **D-N3.4** | **¿Cuánta batería vale esto?** ¿El orbe se calma solo cuando no lo mirás, o vive siempre? | Es un intercambio real y es del founder |
+| **D-N3.1** | El nivel de agua | ✅ **Sigue siendo el lenguaje**, con el tope del vaso: el lleno deja aire arriba para que **el menisco siempre se vea**. Mapeo de dibujo, jamás del dato (§5.2) |
+| **D-N3.2** | Las vecinas | ✅ **Durante el gesto se ven sin cambios; en reposo, no.** Y se van como parte del mismo movimiento (§4.1) |
+| **D-N3.3** | El giroscopio | ✅ **Se pide al primer inicio**, una vez, enganchado a un gesto real. **El agua no depende de él** (§5.5) |
+| **D-N3.4** | La batería | ⚠️ **Sin respuesta del founder. Default declarado abajo** |
+
+**Default de D-N3.4, que el founder puede revisar cuando vea el costo:** el orbe
+**vive mientras se lo mira** —es el héroe del producto y la directriz es el
+techo— y **se calma solo cuando no está a la vista**: pestaña oculta, fuera del
+viewport, chat abierto encima o app en segundo plano. Nunca por «tier», que es
+la escalera que N2 retiró y no vuelve.
+
+Es un default, no una decisión: **la etapa tiene que medir térmica y batería en
+el iPhone del founder (E10) y traerle el número**, para que la decida con datos
+en vez de con una intuición mía.
 
 ---
 
@@ -189,11 +256,12 @@ Dos cosas que hay que medir y no suponer, y que la etapa debe reportar:
 | **E1** | **Ningún número cambió de valor.** Las cinco cifras y la paridad posición/slide/chip/capa/acento/nudo/cifra siguen cerrando |
 | **E2** | **La doctrina de N2 sigue ejecutable y verde.** `orbFill`, `orbMustRedraw` y los tres denominadores siguen sujetos; `vacío` ≠ `sin dato` en la forma nueva, con las dos capturas |
 | **E3** | **Un solo objeto.** No existen dos representaciones vivas del mismo orbe. El de CSS es primer cuadro o no existe |
-| **E4** | **Continuidad:** al pasar de capa se ven las vecinas y no hay sustitución. Capturas o video del founder |
+| **E4** | **Continuidad:** durante el gesto las vecinas se ven **sin versión degradada**, y en reposo no se ven. Su salida es parte del mismo movimiento, no un apagón. Video del founder |
+| **E4b** | **El tope del vaso:** un orbe al 100 % **muestra su menisco** con aire arriba, y se distingue a simple vista de uno al 60 % y de uno vacío. Las tres capturas. Y el gate prueba que **el valor no se acotó**: la cifra y la frase siguen diciendo lo que dice el motor |
 | **E5** | **Las cinco materias son del mismo mundo:** misma física, misma exposición, distinto pigmento. Las cinco lado a lado en `/dev/sistema` |
 | **E6** | **El agua se mueve siempre** y responde al gesto con peso |
 | **E7** | **El gesto:** arrastre con inercia, rotación por toque, y el orbe nunca se queda mostrando una capa que no es la activa (`N2-7` sigue verde o se re-ancla más fuerte) |
-| **E8** | **El giroscopio, si entra:** permiso pedido desde un gesto, una sola vez, con `denied` degradando sin empeorar nada |
+| **E8** | **El giroscopio:** permiso pedido **al primer inicio**, desde un gesto real (el reporte dice cuál), una sola vez, y `denied` no empeora nada ni vuelve a preguntar. **Y se demuestra que el agua se ve igual de viva con el permiso denegado** — es la línea base, no el degradado |
 | **E9** | **El hito `orbe` no empeoró** contra la línea base de N1/N2 (frío 1526–1744 ms · caliente 620–672 ms) |
 | **E10** | **fps y térmica medidos en el iPhone del founder**, no supuestos: fps al abrir, a los 30 s y a los 3 min |
 | **E11** | `lint` 0 errores · `build` exit 0 · captura **873 + nuevas**, ninguna removida ni relajada |
