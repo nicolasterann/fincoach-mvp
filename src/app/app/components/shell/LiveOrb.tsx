@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 import type { ShellDawn } from "./shell-payload";
-import type { OrbKind, OrbMatter } from "./shell-orb-contract";
+import { orbMustRedraw, type OrbKind, type OrbMatter } from "./shell-orb-contract";
 import {
   advanceVoiceEnvelope,
   voiceTarget,
@@ -397,6 +397,8 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     let lastInteractionAt = performance.now();
     const startAt = performance.now();
     const frameSamples: number[] = [];
+    // La capa que el lienzo está mostrando de verdad, no la que quisiéramos.
+    let drawnKind: OrbKind | null = null;
     let qualityWindow: number[] = [];
     let announcedReady = false;
     let framesThisSecond = 0;
@@ -437,6 +439,24 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     };
 
     const shouldPause = () => getPauseReason() != null;
+
+    // N2-fix · Una PAUSA puede congelar el orbe, pero jamás mostrando una capa
+    // que ya no es la activa. Al deslizar, el orbe se pausa (`inactive`) y el
+    // lienzo conserva su último cuadro —eso lo hace `preserveDrawingBuffer`,
+    // que N2 agregó para que pausar no dejara el canvas en blanco—. El efecto
+    // secundario, fotografiado por el founder: Patrimonio con el orbe naranja
+    // de Deuda, y Deuda con el núcleo azul de Patrimonio. El orbe iba UNA CAPA
+    // ATRÁS. Así que una capa rancia gana un cuadro aunque estemos pausados.
+    //
+    // Sólo vale para `inactive`: sin tier, sin lienzo, oculto o fuera de
+    // pantalla NO se puede (o no se debe) dibujar, y ahí no hay nada visible
+    // que corregir.
+    const owesStaleLayerFrame = () =>
+      orbMustRedraw({
+        pauseReason: getPauseReason(),
+        drawnKind,
+        activeKind: renderInputs.current.kind,
+      });
 
     const publishTelemetry = (now: number, force = false) => {
       if (!force && now - telemetryAt < 500) return;
@@ -513,7 +533,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     const draw = (now: number) => {
       frameRequest = 0;
       if (buffer == null) resize();
-      if (shouldPause()) {
+      if (shouldPause() && !owesStaleLayerFrame()) {
         loopWasPaused = true;
         publishTelemetry(now, true);
         return;
@@ -527,6 +547,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
       }
       const frameDelta = lastDrawAt > 0 ? now - lastDrawAt : null;
       lastDrawAt = now;
+      drawnKind = renderInputs.current.kind;
       if (frameDelta != null) {
         frameSamples.push(frameDelta);
         if (frameSamples.length > 120) frameSamples.shift();
@@ -649,7 +670,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
       const now = performance.now();
       lastInteractionAt = now;
       if (buffer == null) resize();
-      if (!frameRequest && !shouldPause()) {
+      if (!frameRequest && (!shouldPause() || owesStaleLayerFrame())) {
         if (loopWasPaused) {
           loopWasPaused = false;
           lastDrawAt = 0;

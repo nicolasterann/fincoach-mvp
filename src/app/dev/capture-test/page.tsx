@@ -52,6 +52,7 @@ import {
   metasRead,
   orbAcceptsLevel,
   orbFill,
+  orbMustRedraw,
   orbMatter,
   patrimonioRead,
   reserveLevel,
@@ -28460,6 +28461,52 @@ assert(
       },
       aporte: goalsPlannedFrom({ goals: 300, savings: 80, investment: 40 }),
       tarjetas: n2DebtCards,
+    }),
+  );
+
+  // N2-7 · Un orbe PAUSADO nunca muestra la capa equivocada.
+  //
+  // Pausar por gesto es legítimo; mostrar la capa anterior mientras la cifra,
+  // los chips y el acento ya son los de la nueva, no. El founder lo fotografió
+  // en producción: Patrimonio con el orbe naranja de Deuda, y Deuda con el
+  // núcleo azul de Patrimonio — el orbe iba UNA CAPA ATRÁS. La causa fue
+  // `preserveDrawingBuffer` (N2 lo agregó para que pausar no dejara el lienzo
+  // en blanco), que de paso deja congelado el último cuadro dibujado.
+  //
+  // La decisión vive en el contrato PURO y esto la EJECUTA, con el patrón que
+  // el bloque ya usa (`state-contract`, `cintaState`, `orbFill`).
+  const n2LiveOrbSource = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/LiveOrb.tsx`,
+    "utf8",
+  );
+  const n2OrbCode = n1Code(n2LiveOrbSource);
+  assert(
+    "N2-7 · un orbe pausado jamás muestra una capa que ya no es la activa",
+    // ── la conducta, ejecutada ──
+    orbMustRedraw({ pauseReason: "inactive", drawnKind: "deuda", activeKind: "patrimonio" }) === true &&
+    // ya está mostrando la capa buena: no se le debe nada
+    orbMustRedraw({ pauseReason: "inactive", drawnKind: "saldo", activeKind: "saldo" }) === false &&
+    // no está pausado: el bucle dibuja solo
+    orbMustRedraw({ pauseReason: null, drawnKind: "deuda", activeKind: "patrimonio" }) === false &&
+    // pausas donde NO se puede o no se debe dibujar: nada que corregir a la vista
+    orbMustRedraw({ pauseReason: "hidden", drawnKind: "deuda", activeKind: "patrimonio" }) === false &&
+    orbMustRedraw({ pauseReason: "offscreen", drawnKind: "deuda", activeKind: "patrimonio" }) === false &&
+    orbMustRedraw({ pauseReason: "tier-0", drawnKind: "deuda", activeKind: "patrimonio" }) === false &&
+    // el primer cuadro: el lienzo no muestra nada todavía
+    orbMustRedraw({ pauseReason: "inactive", drawnKind: null, activeKind: "saldo" }) === true &&
+    // ── y el orbe la CONSUME en vez de decidir por su cuenta ──
+    n2OrbCode.includes("orbMustRedraw({") &&
+    // la puerta de la pausa la consulta
+    /shouldPause\(\)\s*&&\s*!owesStaleLayerFrame\(\)/u.test(n2OrbCode) &&
+    // y el despertar tambien, o una capa rancia se quedaria dormida
+    /!shouldPause\(\)\s*\|\|\s*owesStaleLayerFrame\(\)/u.test(n2OrbCode) &&
+    // la capa dibujada se registra donde el cuadro OCURRE, no donde se pide
+    /lastDrawAt = now;\s*drawnKind = renderInputs\.current\.kind;/u.test(n2OrbCode),
+    JSON.stringify({
+      rancioPausadoPorGesto: orbMustRedraw({ pauseReason: "inactive", drawnKind: "deuda", activeKind: "patrimonio" }),
+      alDia: orbMustRedraw({ pauseReason: "inactive", drawnKind: "saldo", activeKind: "saldo" }),
+      oculto: orbMustRedraw({ pauseReason: "hidden", drawnKind: "deuda", activeKind: "patrimonio" }),
+      consume: n2OrbCode.includes("orbMustRedraw({"),
     }),
   );
 

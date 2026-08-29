@@ -339,3 +339,30 @@ export function debtCycleLevel(
   const ratio = covered / total;
   return { level: clamp01(ratio), note: `Ciclo cubierto ${percent(ratio)}%` };
 }
+
+// ── Un orbe pausado nunca muestra la capa equivocada ────────────────────────
+// Pausar el orbe por un gesto es legítimo (ahorra cuadros mientras deslizás).
+// Mostrar la capa ANTERIOR mientras la cifra, los chips y el acento ya son los
+// de la nueva, no: el orbe estaría afirmando que estás mirando otra cosa.
+//
+// El founder lo fotografió: Patrimonio con el orbe naranja de Deuda, y Deuda
+// con el núcleo azul de Patrimonio. La causa fue `preserveDrawingBuffer`, que
+// N2 agregó para que pausar no dejara el lienzo en blanco — y que de paso deja
+// congelado el último cuadro, que es el de la capa que acabás de dejar.
+export function orbMustRedraw(input: {
+  /** Por qué está pausado el bucle, o `null` si está corriendo. */
+  pauseReason: string | null;
+  /** La capa que el lienzo está mostrando DE VERDAD. */
+  drawnKind: OrbKind | null;
+  /** La capa activa ahora. */
+  activeKind: OrbKind;
+}): boolean {
+  // Nada rancio que corregir.
+  if (input.drawnKind === input.activeKind) return false;
+  // Si no está pausado, el bucle ya va a dibujar solo: no se le debe nada.
+  if (input.pauseReason == null) return false;
+  // Sólo la pausa POR GESTO se salda. Sin tier, sin lienzo, oculto o fuera de
+  // pantalla no se puede (o no se debe) dibujar — y ahí no hay nada visible
+  // que corregir.
+  return input.pauseReason === "inactive";
+}
