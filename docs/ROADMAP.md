@@ -1968,14 +1968,22 @@ reversible.
 | **N0 · La regla y el metro** | Ninguna pantalla inventa un valor propio; una sola escala y una sola física de movimiento; cinco estados con forma; medición real desde el teléfono del founder |
 | **N1 · Que abra** | Orbe + cifra en <~1,5 s; el hilo de chat sale del inicio; un dato decorativo caído nunca tumba la pantalla; sesión renovada en el borde (frontera de seguridad — requiere permiso) |
 | **N2 · Un solo orbe** | El orbe nunca se sustituye a la vista; cada capa tiene un denominador honesto; el vacío se ve deliberado (gota + menisco) |
-| **N3 · Conversación: superficie** | La hoja se expande, sigue al teclado y sólo cierra cuando lo pides; área segura en toda superficie de chat |
-| **N4 · Conversación: contenido** | Negritas de verdad, fotos visibles, notas de voz legibles, campo multilínea |
-| **N5 · Las pantallas** | "Cómo vas" es una pantalla, no una ventana dentro de otra; una gramática única de página; pasada de densidad |
-| **N6 · La entrada** | Entrar, fallar y empezar: cada paso una acción clara; esqueleto con la forma de lo que viene |
-| **N7 · La pasada humana** | Caminata lenta en dispositivo real + prueba de pasillo con 5 personas nuevas |
+| **N3 · El orbe** | *(insertada el 2026-08-29)* Los cinco orbes en un solo lienzo que ES el carrusel: se ven las vecinas y el paso es continuo. Agua con profundidad y movimiento propio, luz coherente entre las cinco materias, gesto con inercia y rotación, giroscopio si el permiso lo permite. Techo primero: iPhone |
+| **N4 · Conversación: superficie** | La hoja se expande, sigue al teclado y sólo cierra cuando lo pides; área segura en toda superficie de chat |
+| **N5 · Conversación: contenido** | Negritas de verdad, fotos visibles, notas de voz legibles, campo multilínea |
+| **N6 · Las pantallas** | "Cómo vas" es una pantalla, no una ventana dentro de otra; una gramática única de página; pasada de densidad |
+| **N7 · La entrada** | Entrar, fallar y empezar: cada paso una acción clara; esqueleto con la forma de lo que viene |
+| **N8 · La pasada humana** | Caminata lenta en dispositivo real + prueba de pasillo con 5 personas nuevas |
 
-**Decisiones abiertas (D-N1…D-N6)** en el §6 del plan. La única bloqueante es
-D-N1: permiso para tocar la renovación de sesión.
+**Decisiones abiertas (D-N1…D-N6)** en el §6 del plan. La única bloqueante era
+D-N1 (permiso para tocar la renovación de sesión), ya autorizada y cerrada en N1.
+
+**Decisión del founder del 2026-08-29, que revierte una de M2:** el objetivo es
+**el techo, no el mínimo común**. Se construye para que se vea lo mejor posible
+en el iPhone del founder; adaptar a gama baja o media es un problema posterior y
+explícitamente no una restricción de diseño. *«Trabajamos desde lo más alto
+posible y de ahí más adelante vemos cómo lo adaptamos, pero no al revés.»*
+De ahí sale N3, insertada tras probar N2 en producción y puntuar los orbes 3/10.
 
 **Restricción heredada:** no reintroducir la grilla de métricas, los scores
 retirados por el Bloque D, ni el vocabulario retirado del Bloque M.
