@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 // build no prueba nada: prueba que el código no compila, no que alguien estaba
 // mirando.
 
-const TOTAL = 879;
+const TOTAL = 883;
 const runner = ["scripts/qa/run-capture-gate.mjs"];
 
 const CONTRACT = "src/app/app/components/shell/shell-orb-contract.ts";
@@ -21,13 +21,141 @@ const LIVE = "src/app/app/components/shell/LiveOrb.tsx";
 const SHELL = "src/app/app/components/shell/SantuarioShell.tsx";
 const TILT = "src/app/app/components/shell/useDeviceTilt.ts";
 const CSS = "src/app/globals.css";
+const SIM = "src/app/app/components/shell/orb-water-sim.ts";
+const SPECIMEN = "src/app/app/components/shell/OrbSpecimen.tsx";
+const PAYLOAD = "src/app/app/components/shell/shell-payload.ts";
+const SAVE_ACTIONS = "src/app/onboarding/save-actions.ts";
 
 const mutations = [
+  // ── N3B · el vidrio y el agua ────────────────────────────────────────────
+  //
+  // La vara sube en esta etapa por un motivo concreto: el defecto que el founder
+  // vio —«se ve demasiado lleno»— sobrevivió a TODO el gate de N3. Pasaba porque
+  // los pines miraban la constante del trazo, y lo que el ojo lee no es el trazo
+  // sino la ALTURA VISIBLE, que sale de proyectar una elipse. Estas mutaciones
+  // reponen ese defecto exacto y exigen que ahora sí muera con nombre.
+  {
+    name: "N3-1",
+    result: "vuelve el CHARCO de N3: el piso del vaso al 7 % dibuja un cuarto de vaso",
+    file: CONTRACT,
+    from: "export const ORB_WATERLINE_FLOOR = 0.02;",
+    to: "export const ORB_WATERLINE_FLOOR = 0.07;",
+  },
+  {
+    name: "N3-1",
+    result: "la proyección miente: el alto visible deja de seguir a la cámara",
+    file: CONTRACT,
+    from: "export const ORB_CAM_PITCH = -0.3;",
+    to: "export const ORB_CAM_PITCH = 0;",
+  },
+  {
+    name: "N3B-1",
+    result: "el agua pierde la amortiguación: oscila para siempre y nunca se aquieta",
+    file: SIM,
+    from: "export const SLOSH_ZETA = 0.15;",
+    to: "export const SLOSH_ZETA = 0;",
+  },
+  {
+    name: "N3B-1",
+    result: "el agua deja de tener masa: llega al ángulo sin pasarse, como una aguja",
+    file: SIM,
+    from: "export const SLOSH_ZETA = 0.15;",
+    to: "export const SLOSH_ZETA = 1.4;",
+  },
+  {
+    name: "N3B-1",
+    result: "la ola vuelve a correr con el reloj: un agua quieta deja de ser un espejo",
+    file: SIM,
+    from: "  return Math.min(1, swirl * 0.42 + piston * 0.30);",
+    to: "  return Math.min(1, 0.5 + swirl * 0.42 + piston * 0.30);",
+  },
+  {
+    name: "N3B-1",
+    result:
+      "CABLE · el giroscopio vuelve a entrar CRUDO al shader, que es el defecto que N3 tenía escrito en una línea",
+    file: LIVE,
+    from: "          tiltX: water.tiltX,",
+    to: "          tiltX: gyro.x,",
+  },
+  {
+    name: "N3B-1",
+    result: "CABLE · el shader recibe la ola y NO la usa: la amplitud vuelve a ser fija",
+    file: SHADER,
+    from: "  return WAVE_AMP * (0.17 + uWave*2.9 + uEnergy*1.5);",
+    to: "  return WAVE_AMP * (1.0 + uEnergy*1.5);",
+  },
+  {
+    name: "N3B-2",
+    result: "la GOTA vuelve a perderse: un cero leído se dibuja con la materia de su capa",
+    file: CONTRACT,
+    from: "  if (input.fill === \"gota\") return ORB_MATERIAL_GOTA;",
+    to: "  if (input.fill === \"gota\") return ORB_MATERIAL[input.kind];",
+  },
+  {
+    name: "N3B-2",
+    result: "CABLE · la probeta vuelve a traer su propia copia de la tabla de materias",
+    file: SPECIMEN,
+    from: "          material: orbMaterialCode({ kind, matter, fill }),",
+    to: "          material: matter === \"cristal\" ? 3 : 0,",
+  },
+  {
+    name: "N3B-3",
+    result: "se quita el tope del radio: vuelven a pisarse con el radio que pide el santuario",
+    file: CONTRACT,
+    from: "  const radius = Math.min(geometry.radius, orbMaxRadius(geometry.trackWidth));",
+    to: "  const radius = geometry.radius;",
+  },
+  {
+    name: "N3B-3",
+    result: "sin perspectiva: las vecinas vuelven al mismo plano y se intersecan",
+    file: CONTRACT,
+    from: "      depth: smoothstep(0, ORB_TRAVEL, Math.abs(offset)),",
+    to: "      depth: 0,",
+  },
+  {
+    name: "N3B-3",
+    result: "CABLE · la colocación calcula la profundidad y el lienzo no la manda",
+    file: LIVE,
+    from: "          depth: slot.depth,",
+    to: "          depth: 0,",
+  },
+  {
+    name: "N3B-4",
+    result:
+      "Kipu INVENTA un techo de patrimonio cuando el usuario no lo declaró — la doctrina que no se relaja",
+    file: CONTRACT,
+    from: `export function wealthTargetFrom(input: {
+  prefsError: boolean;
+  raw: unknown;
+}): number | null {
+  if (input.prefsError) return null;
+  if (input.raw == null) return null;`,
+    to: `export function wealthTargetFrom(input: {
+  prefsError: boolean;
+  raw: unknown;
+}): number | null {
+  if (input.prefsError) return null;
+  if (input.raw == null) return 100_000;`,
+  },
+  {
+    name: "N3B-4",
+    result: "CABLE · el nivel de Patrimonio se calcula y el orbe lo tira: nada se ve en pantalla",
+    file: PAYLOAD,
+    from: "      level: patrimonioNivel.level,",
+    to: "      level: null,",
+  },
+  {
+    name: "N3B-4",
+    result: "CABLE · el onboarding deja de guardar el techo que el usuario acaba de escribir",
+    file: SAVE_ACTIONS,
+    from: "    prefsPatch.emergency_reserve_target = draft.profile.emergencyReserveTarget;",
+    to: "    void draft.profile.emergencyReserveTarget;",
+  },
   {
     name: "N3-1",
     result: "el lleno vuelve a tocar el borde: sin aire arriba, el menisco desaparece",
     file: CONTRACT,
-    from: "export const ORB_WATERLINE_CEILING = 0.84;",
+    from: "export const ORB_WATERLINE_CEILING = 0.70;",
     to: "export const ORB_WATERLINE_CEILING = 1;",
   },
   {

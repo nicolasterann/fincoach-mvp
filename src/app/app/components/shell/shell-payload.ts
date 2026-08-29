@@ -33,9 +33,12 @@ import {
   goalsLevel,
   goalsPlannedFrom,
   metasRead,
+  orbTargetReached,
   patrimonioRead,
   reserveLevel,
   reserveTargetFrom,
+  wealthLevel,
+  wealthTargetFrom,
 } from "./shell-orb-contract";
 import { describeMovement } from "../app-dashboard-helpers";
 import { buildShellPillLines } from "./shell-dialog-contract";
@@ -183,7 +186,11 @@ function shellTimer() {
 // funciones jamás rechazan y jamás devuelven un cero para tapar un hueco.
 
 interface PrefsRead {
-  prefs: { emergency_reserve_target?: unknown } | null;
+  prefs: {
+    emergency_reserve_target?: unknown;
+    /** N3B · el techo de Patrimonio, declarado por el usuario. Misma fila. */
+    wealth_target?: unknown;
+  } | null;
   prefsError: boolean;
 }
 
@@ -208,7 +215,10 @@ async function readPrefs(
       async () =>
         await supabase
           .from("user_financial_preferences")
-          .select("emergency_reserve_target")
+          // N3B · Patrimonio gana techo con la MISMA lectura: dos columnas de
+          // la fila que ya se estaba trayendo. Cero consultas nuevas, cero
+          // migraciones — las dos columnas existen desde antes de este bloque.
+          .select("emergency_reserve_target, wealth_target")
           .eq("user_id", userId)
           .maybeSingle(),
     );
@@ -518,6 +528,17 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
   });
   const reserva = reserveLevel({ amount: saldo.reserva, target: reserveTarget });
 
+  // N3B · El techo de Patrimonio (revierte D-N2). Sin techo declarado no hay
+  // nivel y la materia cambia sola a cristal: Kipu NO inventa un techo.
+  const wealthTarget = wealthTargetFrom({
+    prefsError,
+    raw: prefs?.wealth_target,
+  });
+  const patrimonioNivel = wealthLevel({
+    amount: patrimonioAmount,
+    target: wealthTarget,
+  });
+
   // El numerador de Metas suma las capas `metas` Y `ahorro_inversion`, así que
   // el denominador tiene que sumar las tres partidas protegidas del mes. Usar
   // sólo `.goals` daría niveles por encima del 100 %.
@@ -560,7 +581,14 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
       emptyInvite:
         saldo.reserva <= 0.005
           ? "Tu respaldo se construye solo, mes a mes. Pregúntame cómo."
-          : null,
+          : // N3B · La misma regla que Patrimonio, y por el mismo motivo: sin
+            // techo declarado el orbe no inventa uno, lo pregunta; y al llegar
+            // ofrece el siguiente, que es lo que pidió el founder.
+            reserveTarget == null
+            ? "¿Cuánto quieres tener de respaldo? Dímelo y te muestro cuánto llevas."
+            : orbTargetReached({ amount: saldo.reserva, target: reserveTarget })
+              ? "Llegaste a tu meta de respaldo. ¿Subimos la vara?"
+              : null,
     },
     {
       kind: "metas",
@@ -586,14 +614,21 @@ export async function buildShellPayload(userId: string): Promise<ShellPayload> {
       amountLabel: patrimonioAmount == null ? null : display(patrimonioAmount),
       amountRaw: patrimonioAmount == null ? null : displayRaw(patrimonioAmount),
       subtitle: subtitles.patrimonio,
-      level: null,
-      levelNote: null,
+      level: patrimonioNivel.level,
+      levelNote: patrimonioNivel.note,
       readOk: patrimonio.ok,
       emptyInvite: !patrimonio.ok
         ? "No puedo leer tu patrimonio ahora. Intenta de nuevo."
         : briefing.goalsIntel.netWorth == null
           ? "Aún no hay un patrimonio para mostrar. Cuéntame qué tienes y qué debes."
-          : null,
+          : // Sin techo declarado el orbe no inventa uno: lo PREGUNTA. Es la
+            // otra mitad de la decisión del founder — antes te dejaba con un
+            // cristal que no se entendía.
+            wealthTarget == null
+            ? "¿A cuánto quieres llegar? Dime tu meta de patrimonio y te muestro cuánto llevas."
+            : orbTargetReached({ amount: patrimonioAmount, target: wealthTarget })
+              ? "Llegaste a tu meta de patrimonio. ¿Ponemos una nueva?"
+              : null,
     },
     {
       kind: "deuda",

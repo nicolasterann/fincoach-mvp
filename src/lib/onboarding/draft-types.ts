@@ -69,6 +69,19 @@ export interface OnboardingDraftProfile {
   monthlySavings?: number;
   monthlyInvestment?: number;
   essentialMonthlyEstimate?: number;
+  /**
+   * N3B · LOS DOS TECHOS QUE EL USUARIO DECLARA — decisión del founder:
+   * «tenemos que usar las metas para que reservas y patrimonio tengan tope, lo
+   * podemos preguntar siempre en el onboarding».
+   *
+   * Sin ellos el orbe de Reserva y el de Patrimonio no pueden mostrar un nivel
+   * y cambian de materia, que es correcto pero deja al usuario mirando un
+   * cristal que no se entiende. Kipu no los inventa: los pregunta. Las dos
+   * columnas (`emergency_reserve_target`, `wealth_target`) ya existían; lo que
+   * faltaba era preguntarlas.
+   */
+  emergencyReserveTarget?: number;
+  wealthTarget?: number;
 }
 
 // ── Accounts ────────────────────────────────────────────────────────────────

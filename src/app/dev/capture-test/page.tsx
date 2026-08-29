@@ -56,6 +56,11 @@ import {
   ORB_TRAVEL,
   ORB_WATERLINE_CEILING,
   ORB_WATERLINE_FLOOR,
+  ORB_CAM_DISTANCE,
+  ORB_CAM_FOCAL,
+  ORB_CAM_PITCH,
+  ORB_CAM_SPREAD,
+  orbWaterApex,
   orbActiveIndex,
   orbFieldPlacements,
   orbFill,
@@ -63,10 +68,24 @@ import {
   orbWaterline,
   orbMustRedraw,
   orbMatter,
+  ORB_MATERIAL,
+  ORB_MATERIAL_GOTA,
+  orbMaterialCode,
+  orbMaxRadius,
+  orbTargetReached,
   patrimonioRead,
   reserveLevel,
   reserveTargetFrom,
+  wealthLevel,
+  wealthTargetFrom,
 } from "@/app/app/components/shell/shell-orb-contract";
+import {
+  advanceOrbWater,
+  BOB_LIMIT,
+  createOrbWaterState,
+  orbWaveEnergy,
+  TILT_LIMIT,
+} from "@/app/app/components/shell/orb-water-sim";
 import {
   KIPU_STATE_KINDS,
   KIPU_STATE_SHAPES,
@@ -28284,9 +28303,22 @@ assert(
         { currency: "USD", statementTotalDue: 600, remainingNative: 0, statementCovered: true },
         { currency: "usd", statementTotalDue: 400, remainingNative: 400, statementCovered: false },
       ]).level === 0.6 &&
-      orbMatter("patrimonio") === "cristal" &&
-      ORB_KINDS.filter((kind) => orbMatter(kind) === "cristal").length === 1 &&
-      orbAcceptsLevel("patrimonio") === false &&
+      // ── N3B · RE-ANCLADO MÁS FUERTE (F2), y declarado ──────────────────
+      // N2 pinchaba `orbMatter("patrimonio") === "cristal"`: el cristal era una
+      // NATURALEZA de una capa. El founder revirtió D-N2 —«tenemos que usar las
+      // metas para que reservas y patrimonio tengan tope»— así que el cristal
+      // pasa a ser un ESTADO, y el pin pasa a exigir lo que de verdad importa:
+      // que ninguna capa lo tenga por ser quien es, y que lo produzca SIEMPRE
+      // la falta de techo, en cualquiera de las cinco. Es más fuerte porque
+      // antes cubría una capa y ahora cubre las cinco.
+      ORB_KINDS.every((kind) => orbMatter(kind) === "liquido") &&
+      ORB_KINDS.every((kind) => orbAcceptsLevel(kind)) &&
+      ORB_KINDS.every(
+        (kind) => orbFill({ kind, amount: 1200, level: null, readOk: true }) === "nucleo",
+      ) &&
+      ORB_KINDS.every(
+        (kind) => orbFill({ kind, amount: 1200, level: 0.4, readOk: true }) === "nivel",
+      ) &&
       orbFill({ kind: "reserva", amount: 1200, level: null, readOk: true }) === "nucleo",
     JSON.stringify({
       mezcladas: debtCycleLevel([
@@ -28553,6 +28585,20 @@ assert(
     `${process.cwd()}/src/app/app/components/shell/useDeviceTilt.ts`,
     "utf8",
   );
+  // N3B · las tres superficies nuevas que este bloque tiene que pinchar por
+  // CABLE y no sólo por conducta.
+  const n3Specimen = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/OrbSpecimen.tsx`,
+    "utf8",
+  );
+  const n3bOnboarding = readFileSync(
+    `${process.cwd()}/src/app/onboarding/onboarding-wizard.tsx`,
+    "utf8",
+  );
+  const n3bSaveActions = readFileSync(
+    `${process.cwd()}/src/app/onboarding/save-actions.ts`,
+    "utf8",
+  );
   const n3ShaderCode = n1Code(n3Shader);
   const n3LiveCode = n1Code(n3LiveOrb);
   const n3TiltCode = n1Code(n3Tilt);
@@ -28574,6 +28620,51 @@ assert(
       ORB_WATERLINE_FLOOR > 0 &&
       // aire de sobra arriba para que el menisco del 100 % SIEMPRE se vea
       1 - ORB_WATERLINE_CEILING >= 0.1 &&
+      // ── N3B · RE-ANCLADO MÁS FUERTE (F2): se pincha LO QUE SE VE ─────────
+      //
+      // El pin viejo miraba el TRAZO, y el trazo no es lo que el ojo lee. El
+      // founder dijo «en el saldo que se supone que está acabado se ve
+      // demasiado lleno» y tenía razón con números: con el trazo del 7 % la
+      // superficie aterrizaba al 26 % de la altura, medido en píxeles sobre el
+      // renderer real. La causa es geometría —la cámara mira el agua desde
+      // arriba, así que la superficie es una elipse y su borde lejano queda
+      // ALTO—, y por eso un pin sobre la constante no podía verla.
+      //
+      // `orbWaterApex` es esa proyección, y el shader dibuja exactamente la
+      // misma cuenta. Ahora el gate exige el resultado visible.
+      orbWaterApex(orbWaterline(0)) <= 0.16 &&
+      // 0.80 y no 0.86: la proyección es una COTA INFERIOR (no incluye el
+      // menisco ni la ola) y medí que el renderer real queda +6,5 puntos por
+      // encima al 100 %. Con el tope viejo, «queda aire arriba» habría sido
+      // verdad del cálculo y falso del dibujo — que es la clase exacta de
+      // agujero por el que se coló el charco.
+      orbWaterApex(orbWaterline(1)) <= 0.8 &&
+      orbWaterApex(orbWaterline(1)) - orbWaterApex(orbWaterline(0)) >= 0.6 &&
+      // vacío, medio y lleno tienen que SEPARARSE a simple vista
+      orbWaterApex(orbWaterline(0.6)) - orbWaterApex(orbWaterline(0)) >= 0.35 &&
+      orbWaterApex(orbWaterline(1)) - orbWaterApex(orbWaterline(0.6)) >= 0.15 &&
+      // ── Y LA CÁMARA DE LA CUENTA ES LA CÁMARA DEL DIBUJO ────────────────
+      //
+      // Sin esto el pin de arriba no vale nada, y lo descubrí mutando: poner
+      // `ORB_CAM_PITCH = 0` dejaba las 883 aserciones EN VERDE, porque con otra
+      // cámara la proyección sigue siendo internamente coherente — sólo deja de
+      // describir lo que se dibuja. Ése es exactamente el agujero por el que se
+      // coló el charco del 26 %: una cuenta pura que nadie ata al shader mide un
+      // orbe que no existe. Las cuatro constantes de cámara tienen que
+      // aparecer LITERALES en el shader, o las dos mitades pueden derivar.
+      n3ShaderCode.includes(`const float CAM_PITCH = ${ORB_CAM_PITCH.toFixed(2)};`) &&
+      n3ShaderCode.includes(`vec3 ro = vec3(0.0, 0.0, ${ORB_CAM_DISTANCE.toFixed(1)});`) &&
+      n3ShaderCode.includes(
+        `vec3 rd = normalize(vec3(uv*${ORB_CAM_SPREAD.toFixed(2)}, -${ORB_CAM_FOCAL.toFixed(1)}));`,
+      ) &&
+      // y el alto visible crece con el dato en todo el rango: si se aplastara
+      // en algún tramo, dos saldos distintos se verían iguales
+      [0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 1].every(
+        (level, index, all) =>
+          index === 0 ||
+          orbWaterApex(orbWaterline(level)) >
+            orbWaterApex(orbWaterline(all[index - 1]!)),
+      ) &&
       // y recorrido visible entre los dos extremos, o los valores del medio
       // serían indistinguibles
       ORB_WATERLINE_CEILING - ORB_WATERLINE_FLOOR >= 0.6 &&
@@ -28609,6 +28700,307 @@ assert(
       aireArriba: +(1 - ORB_WATERLINE_CEILING).toFixed(3),
       valorIntacto: reserveLevel({ amount: 2880, target: 2400 }).note,
       payloadNombraElMapeo: /orbWaterline/u.test(n0PayloadRender),
+    }),
+  );
+
+  // ── N3B-1 · EL AGUA SIMULA: OSCILA Y SE AQUIETA (F4) ──────────────────────
+  //
+  // La queja del founder fue «no me da ninguna sensación de líquido o agua… la
+  // mayoría de veces una masa deforme». La causa no era el detalle de la
+  // superficie: era que el agua no tenía MASA. N3 metía la inclinación del
+  // giroscopio CRUDA en el shader (`tiltX: leanX + gyro.x`) — cero inercia
+  // entre el teléfono y el líquido — y llevaba el resorte del arrastre suelto
+  // dentro del `requestAnimationFrame`, donde nadie lo podía ejecutar. Es la
+  // sexta aparición de la familia de agujeros del bloque: la función pura
+  // sujeta y el argumento no. Acá el gate INTEGRA el líquido y le exige física.
+  const n3bImpulse = (() => {
+    const dt = 1 / 120;
+    let state = createOrbWaterState(0.5);
+    const tilts: number[] = [];
+    for (let step = 0; step < 360; step += 1) {
+      state = advanceOrbWater(
+        state,
+        { tiltX: 0, tiltZ: 0, travel: step === 0 ? 0.9 : 0, waterline: 0.5, impulse: 0 },
+        dt,
+      );
+      tilts.push(state.tiltX);
+    }
+    let crossings = 0;
+    for (let i = 1; i < tilts.length; i += 1) {
+      if (Math.sign(tilts[i]!) !== 0 && Math.sign(tilts[i]!) !== Math.sign(tilts[i - 1]!)) {
+        crossings += 1;
+      }
+    }
+    return {
+      crossings,
+      peak: Math.max(...tilts.map(Math.abs)),
+      settled: Math.abs(tilts[tilts.length - 1]!),
+      energyAtRest: orbWaveEnergy(createOrbWaterState(0.5)),
+    };
+  })();
+  // Un giroscopio que se queda quieto en un ángulo: el agua tiene que LLEGAR
+  // ahí, pero pasándose de largo primero. Si llegara sin pasarse sería una
+  // aguja de instrumento, no un líquido.
+  const n3bGyro = (() => {
+    const dt = 1 / 120;
+    let state = createOrbWaterState(0.5);
+    let overshoot = 0;
+    let last = 0;
+    for (let step = 0; step < 480; step += 1) {
+      state = advanceOrbWater(
+        state,
+        { tiltX: 0.2, tiltZ: 0, travel: 0, waterline: 0.5, impulse: 0 },
+        dt,
+      );
+      overshoot = Math.max(overshoot, state.tiltX - 0.2);
+      last = state.tiltX;
+    }
+    return { overshoot, last };
+  })();
+  assert(
+    "N3B-1 · el agua tiene MASA: un golpe la hace oscilar, cruza el cero varias veces y se aquieta sola",
+    // ── oscila: cruzar el cero es lo que separa un líquido de un amortiguador ──
+    n3bImpulse.crossings >= 3 &&
+      // ── y se aquieta: sin esto marearía para siempre ──
+      n3bImpulse.settled < 0.01 &&
+      n3bImpulse.peak > 0.05 &&
+      // ── el agua QUIETA no tiene ola. Es lo que la vuelve un espejo, y lo que
+      // mata la «masa deforme»: antes el oleaje corría igual pasara algo o no ──
+      n3bImpulse.energyAtRest === 0 &&
+      orbWaveEnergy({
+        ...createOrbWaterState(0.5),
+        velX: 0.9,
+      }) > 0.3 &&
+      // ── el giroscopio es un OBJETIVO, no un valor: el agua llega, pero
+      // pasándose de largo. Esto es exactamente lo que N3 no hacía ──
+      n3bGyro.overshoot > 0.01 &&
+      Math.abs(n3bGyro.last - 0.2) < 0.01 &&
+      // ── estabilidad: un paso enorme (pestaña que vuelve de segundo plano) no
+      // puede lanzar el agua fuera del vaso ──
+      (() => {
+        let state = createOrbWaterState(0.5);
+        for (let step = 0; step < 200; step += 1) {
+          state = advanceOrbWater(
+            state,
+            { tiltX: 0.3, tiltZ: -0.3, travel: 4, waterline: 0.5, impulse: 3 },
+            9,
+          );
+        }
+        return (
+          Math.abs(state.tiltX) <= TILT_LIMIT &&
+          Math.abs(state.tiltZ) <= TILT_LIMIT &&
+          Math.abs(state.bob) <= BOB_LIMIT &&
+          Number.isFinite(state.tiltX) &&
+          Number.isFinite(state.spin)
+        );
+      })() &&
+      // ── EL CABLE, además de la conducta (trampa nº8, sexta aparición) ──
+      // Que el simulador oscile no sirve de nada si el santuario no lo llama.
+      n3LiveCode.includes("advanceOrbWater(") &&
+      n3LiveCode.includes("orbWaveEnergy(") &&
+      // y la inclinación que llega al shader tiene que salir del LÍQUIDO, no
+      // sumarse a mano desde el giroscopio como hacía N3
+      n3LiveCode.includes("tiltX: water.tiltX") &&
+      !/tiltX:\s*leanX\s*\+\s*gyro/u.test(n3LiveCode) &&
+      // el shader recibe la ola y la usa para la amplitud: si el uniforme
+      // existiera y no se leyera, el agua volvería a moverse por el reloj
+      n3ShaderCode.includes("wave: number") &&
+      n3ShaderCode.includes("uWave*2.9"),
+    JSON.stringify({
+      cruces: n3bImpulse.crossings,
+      pico: +n3bImpulse.peak.toFixed(4),
+      alFinal: +n3bImpulse.settled.toFixed(5),
+      olaEnReposo: n3bImpulse.energyAtRest,
+      giroscopioSePasa: +n3bGyro.overshoot.toFixed(4),
+      giroscopioLlega: +n3bGyro.last.toFixed(4),
+    }),
+  );
+
+  // ── N3B-2 · LA GOTA VUELVE A LLEGAR AL VIDRIO (F5) ────────────────────────
+  //
+  // El defecto que el founder vio como «se ve demasiado lleno» tenía DOS
+  // mitades, y la segunda no estaba en ningún spec: N2 decidió que un cero
+  // leído se dibuja como una gota deliberada, `orbFill` seguía devolviendo
+  // "gota"… y el lienzo no la miraba. Miraba `matter` y `fill === "nucleo"`, así
+  // que un cero caía en la materia de agua con `orbWaterline(null)` — el piso
+  // del mapeo — y el piso del mapeo, proyectado, dibujaba un cuarto de vaso.
+  // La decisión estaba viva y el cable cortado.
+  assert(
+    "N3B-2 · un cero LEÍDO llega al vidrio como GOTA, y ninguna otra materia puede ocupar su lugar",
+    orbMaterialCode({ kind: "saldo", matter: "liquido", fill: "gota" }) ===
+      ORB_MATERIAL_GOTA &&
+      // la gota gana sobre todo lo demás: es lo único que distingue «miré y no
+      // hay nada» de «hay poco»
+      ORB_KINDS.every(
+        (kind) =>
+          orbMaterialCode({ kind, matter: "cristal", fill: "gota" }) === ORB_MATERIAL_GOTA,
+      ) &&
+      // sin techo declarado, cristal — en cualquiera de las cinco
+      ORB_KINDS.every(
+        (kind) =>
+          orbMaterialCode({ kind, matter: "liquido", fill: "nucleo" }) ===
+          ORB_MATERIAL.patrimonio,
+      ) &&
+      // y con techo, el pigmento de SU capa: las cinco distintas entre sí
+      new Set(
+        ORB_KINDS.map((kind) =>
+          orbMaterialCode({ kind, matter: "liquido", fill: "nivel" }),
+        ),
+      ).size === ORB_KINDS.length &&
+      // la gota no comparte código con ninguna capa, o el vidrio no podría
+      // distinguirla
+      !ORB_KINDS.some((kind) => ORB_MATERIAL[kind] === ORB_MATERIAL_GOTA) &&
+      // ── EL CABLE: los DOS dibujantes piden la misma decisión ──
+      // Estaba duplicada (`MATERIAL_BY_KIND` en LiveOrb y otra igual en la
+      // probeta), y dos copias de una regla no son una regla: ahí se perdió.
+      // Se cuentan las llamadas, no se busca UNA. Lo encontré mutando: cortar
+      // el cable de la probeta de un solo orbe dejaba el gate en verde, porque
+      // la probeta del carrusel todavía llamaba a la función y el `includes`
+      // se conformaba con eso. Un pin que se conforma con cualquier sitio no
+      // protege ninguno — y son los DOS dibujantes de la probeta los que
+      // tienen que pedir la misma decisión, que es donde se perdió la gota.
+      (n1Code(n3Specimen).match(/orbMaterialCode\(\{/gu) ?? []).length === 2 &&
+      (n3LiveCode.match(/orbMaterialCode\(\{/gu) ?? []).length === 1 &&
+      !/const MATERIAL_BY_KIND/u.test(n3LiveCode) &&
+      !/const MATERIAL_BY_KIND/u.test(n1Code(n3Specimen)) &&
+      // y el shader tiene una rama para ella
+      n3ShaderCode.includes("float isDrop()"),
+    JSON.stringify({
+      gota: orbMaterialCode({ kind: "saldo", matter: "liquido", fill: "gota" }),
+      sinTecho: orbMaterialCode({ kind: "saldo", matter: "liquido", fill: "nucleo" }),
+      conTecho: orbMaterialCode({ kind: "saldo", matter: "liquido", fill: "nivel" }),
+    }),
+  );
+
+  // ── N3B-3 · LAS CAPAS NO SE PISAN, Y NO POR SUERTE (F7) ───────────────────
+  //
+  // El founder dijo que se pisaban y resultó ser GEOMETRÍA, no sombreado: el
+  // santuario pide `orbRadius ≈ 0,35 × ancho` y coloca los centros a
+  // `ORB_TRAVEL × ancho` — con los números de N3, 242 px de separación para dos
+  // círculos que necesitan 272 px. Se pisaban SIEMPRE. Y como el radio sale del
+  // DOM, elegir mejor un número en la superficie lo dejaría roto otra vez a la
+  // próxima maquetación. Por eso la regla vive en quien COLOCA, y el gate la
+  // barre entera: todo el recorrido, todos los pares visibles.
+  const n3bWorstGap = (() => {
+    let worst = Infinity;
+    let at = 0;
+    for (let step = 0; step <= 800; step += 1) {
+      const position = (step / 800) * 4;
+      const placements = orbFieldPlacements({
+        count: 5,
+        position,
+        // el radio que PIDE el santuario, no uno cómodo elegido para el test
+        geometry: { centerX: 195, centerY: 200, radius: 0.35 * 390, trackWidth: 390 },
+      });
+      const visible = placements.filter((slot) => slot.presence > 0.002);
+      for (let a = 0; a < visible.length; a += 1) {
+        for (let b = a + 1; b < visible.length; b += 1) {
+          const gap =
+            Math.abs(visible[a]!.centerX - visible[b]!.centerX) -
+            (visible[a]!.radius + visible[b]!.radius);
+          if (gap < worst) {
+            worst = gap;
+            at = position;
+          }
+        }
+      }
+    }
+    return { worst, at };
+  })();
+  assert(
+    "N3B-3 · dos orbes visibles NUNCA se intersecan, con el radio que el santuario pide de verdad",
+    n3bWorstGap.worst > 0 &&
+      // y con aire de sobra, no rozándose por un píxel
+      n3bWorstGap.worst >= 8 &&
+      // el radio se ACOTA donde se coloca: si el DOM pide de más, se le baja
+      orbFieldPlacements({
+        count: 5,
+        position: 0,
+        geometry: { centerX: 195, centerY: 200, radius: 9_000, trackWidth: 390 },
+      })[0]!.radius <= orbMaxRadius(390) + 1e-9 &&
+      // …y si pide de menos NO se le sube: el orbe es del santuario, no de acá
+      orbFieldPlacements({
+        count: 5,
+        position: 0,
+        geometry: { centerX: 195, centerY: 200, radius: 40, trackWidth: 390 },
+      })[0]!.radius === 40 &&
+      // la profundidad es perspectiva, no una vecina degradada: la que se va se
+      // ve ENTERA (presencia 1) mientras está en la meseta, sólo más lejos
+      orbSlots({ count: 5, position: 1.5 })[2]!.presence === 1 &&
+      orbSlots({ count: 5, position: 1.5 })[2]!.depth > 0 &&
+      orbSlots({ count: 5, position: 1 })[1]!.depth === 0 &&
+      orbSlots({ count: 5, position: 1 })[2]!.depth === 1 &&
+      // ── EL CABLE: el shader tiene que USAR la profundidad ──
+      n3ShaderCode.includes("depth: number") &&
+      n3ShaderCode.includes("uDepth") &&
+      n3LiveCode.includes("depth: slot.depth"),
+    JSON.stringify({
+      huecoMinimoPx: +n3bWorstGap.worst.toFixed(2),
+      enPosicion: +n3bWorstGap.at.toFixed(3),
+      radioPedido: 0.35 * 390,
+      radioMaximo: +orbMaxRadius(390).toFixed(1),
+    }),
+  );
+
+  // ── N3B-4 · RESERVA Y PATRIMONIO TIENEN TECHO, Y NADIE LO INVENTA (F8/F10) ─
+  //
+  // Decisión del founder, textual: «Confirmo que tenemos que usar las metas para
+  // que reservas y patrimonio tengan tope». Revierte D-N2. Y la doctrina NO se
+  // relaja: sin techo declarado el orbe sigue sin inventarlo — cambia la
+  // materia, y ahora además Kipu lo pregunta.
+  assert(
+    "N3B-4 · el techo sale de lo DECLARADO; sin declarar no hay nivel y nadie rellena un número",
+    wealthLevel({ amount: 40_000, target: 100_000 }).level === 0.4 &&
+      wealthLevel({ amount: 40_000, target: 100_000 }).note === "40% de tu meta" &&
+      // pasarse de la meta se DICE entero; lo que se acota es el agua
+      wealthLevel({ amount: 150_000, target: 100_000 }).note === "150% de tu meta" &&
+      wealthLevel({ amount: 150_000, target: 100_000 }).level === 1 &&
+      // ── sin techo: NO hay nivel. Ni un 0, ni un 1, ni una estimación ──
+      wealthLevel({ amount: 40_000, target: null }).level === null &&
+      wealthLevel({ amount: 40_000, target: 0 }).level === null &&
+      wealthLevel({ amount: 40_000, target: undefined }).level === null &&
+      wealthLevel({ amount: null, target: 100_000 }).level === null &&
+      wealthLevel({ amount: 40_000, target: Number.NaN }).level === null &&
+      // y sin nivel no hay frase con porcentaje: un % sin denominador es un
+      // defecto (doctrina de M6)
+      wealthLevel({ amount: 40_000, target: null }).note === null &&
+      // un patrimonio NEGATIVO es un hecho posible: se acota el trazo, no se
+      // esconde el hecho
+      wealthLevel({ amount: -5_000, target: 100_000 }).level === 0 &&
+      // ── el techo declarado: no se pudo leer y no lo declaró colapsan a lo
+      // mismo, y ninguno se rellena ──
+      wealthTargetFrom({ prefsError: false, raw: 250_000 }) === 250_000 &&
+      wealthTargetFrom({ prefsError: true, raw: 250_000 }) === null &&
+      wealthTargetFrom({ prefsError: false, raw: null }) === null &&
+      wealthTargetFrom({ prefsError: false, raw: 0 }) === null &&
+      wealthTargetFrom({ prefsError: false, raw: "no soy un número" }) === null &&
+      // ── llegar a la meta se AFIRMA, no se adivina con un >= suelto ──
+      orbTargetReached({ amount: 100_000, target: 100_000 }) === true &&
+      orbTargetReached({ amount: 99_999, target: 100_000 }) === false &&
+      orbTargetReached({ amount: 100_000, target: null }) === false &&
+      orbTargetReached({ amount: null, target: 100_000 }) === false &&
+      // ── EL CABLE, y acá pesa más que en ningún otro sitio: el payload tiene
+      // que LEER la columna, o el techo existiría sólo en el test ──
+      n0PayloadRender.includes("wealth_target") &&
+      n0PayloadRender.includes("wealthTargetFrom({") &&
+      n0PayloadRender.includes("wealthLevel({") &&
+      // …y el orbe de Patrimonio tiene que ENTREGAR ese nivel: dejarlo en null
+      // pasaría todos los tests de arriba y no se vería nada en pantalla
+      !/kind: "patrimonio",[\s\S]{0,400}?level: null/u.test(n0PayloadRender) &&
+      // ── y el onboarding tiene que PREGUNTAR las dos (F9) ──
+      n3bOnboarding.includes("reserveTarget") &&
+      n3bOnboarding.includes("wealthTarget") &&
+      n3bSaveActions.includes("emergency_reserve_target") &&
+      n3bSaveActions.includes("wealth_target") &&
+      // en blanco NO se escribe un cero: eso sería inventarle un techo
+      /emergencyReserveTarget !== undefined &&\s*\n?\s*draft\.profile\.emergencyReserveTarget > 0/u.test(
+        n3bSaveActions,
+      ),
+    JSON.stringify({
+      conTecho: wealthLevel({ amount: 40_000, target: 100_000 }),
+      sinTecho: wealthLevel({ amount: 40_000, target: null }),
+      pasado: wealthLevel({ amount: 150_000, target: 100_000 }),
+      llego: orbTargetReached({ amount: 100_000, target: 100_000 }),
     }),
   );
 
@@ -28687,7 +29079,32 @@ assert(
           rest[1]!.centerX === 200 &&
           rest[2]!.centerX === 200 + ORB_TRAVEL * 400 &&
           Math.abs(mid[1]!.centerX - (200 - ORB_TRAVEL * 200)) < 1e-9 &&
-          rest.every((slot) => slot.centerY === 100 && slot.radius === 60)
+          rest.every((slot) => slot.centerY === 100) &&
+          // ── N3B · RE-ANCLADO MÁS FUERTE (F2), y declarado ──────────────
+          // N3 pinchaba `slot.radius === 60` para los cinco: todos del mismo
+          // tamaño. Eso era justo el defecto — sin perspectiva, dos discos
+          // traslúcidos que se cruzan dan una lente con dos bordes duros, que
+          // es lo que el founder vio como «se pisan». Ahora el pin exige lo que
+          // de verdad importa: la ACTIVA conserva exactamente el radio pedido
+          // (nadie le toca el orbe que mirás) y las demás encogen de forma
+          // monótona con la distancia. Es más fuerte: antes admitía cualquier
+          // reparto mientras todos midieran igual.
+          rest[1]!.radius === 60 &&
+          rest[0]!.radius < rest[1]!.radius &&
+          rest[2]!.radius < rest[1]!.radius &&
+          mid[1]!.radius === mid[2]!.radius &&
+          mid[1]!.radius < 60 &&
+          [0, 0.15, 0.3, 0.45, 0.6, 0.75, 1].every((step, index, all) => {
+            if (index === 0) return true;
+            const here = orbFieldPlacements({ count: 5, position: 1 + step, geometry });
+            const before = orbFieldPlacements({
+              count: 5,
+              position: 1 + (all[index - 1] as number),
+              geometry,
+            });
+            // el que se va, se va: nunca se acerca de vuelta a mitad de camino
+            return here[1]!.radius <= before[1]!.radius + 1e-9;
+          })
         );
       })() &&
       // ── y el cable, por los dos lados ──
@@ -28748,8 +29165,23 @@ assert(
       /thick \*= 1\.0 - crystal;/u.test(n3ShaderCode) &&
       /has \*= 1\.0 - crystal;/u.test(n3ShaderCode) &&
       /surfaceSeen \*= 1\.0 - crystal;/u.test(n3ShaderCode) &&
-      // y la superficie manda cristal cuando la materia lo pide O no hay techo
-      n3LiveCode.includes('orb.matter === "cristal" || orb.fill === "nucleo"'),
+      // ── N3B · RE-ANCLADO MÁS FUERTE (F2), y declarado ─────────────────────
+      // N3 pinchaba la CADENA literal `orb.matter === "cristal" || orb.fill ===
+      // "nucleo"` escrita dentro del bucle de dibujo. Ese literal estaba
+      // duplicado —el mismo `? :` vivía también en la probeta— y ahí se perdió
+      // la gota de N2: dos copias de una regla no son una regla. Ahora la
+      // decisión es UNA función pura, y el pin la EJECUTA en vez de buscar un
+      // texto, que es lo único que prueba que decide bien.
+      ORB_KINDS.every(
+        (kind) =>
+          orbMaterialCode({ kind, matter: "liquido", fill: "nucleo" }) ===
+          ORB_MATERIAL.patrimonio,
+      ) &&
+      orbMaterialCode({ kind: "saldo", matter: "cristal", fill: "nivel" }) ===
+        ORB_MATERIAL.patrimonio &&
+      // …y que quien dibuja la pida, en vez de traer su propia copia
+      n3LiveCode.includes("orbMaterialCode({") &&
+      !/orb\.matter === "cristal" \|\| orb\.fill === "nucleo"/u.test(n3LiveCode),
     JSON.stringify({
       salteaSinDato: n3LiveCode.includes('if (orb.fill === "sin-dato") continue;'),
       cristalSinAgua: n3ShaderCode.includes("float crystal = step(2.5, uMat)"),
@@ -28818,9 +29250,31 @@ assert(
       // las corrientes y el menisco no miran la inclinación en absoluto
       n3ShaderCode.includes("float flow = fbm(") &&
       n3ShaderCode.includes("float men = smoothstep(") &&
-      // y la inclinación que llega al lienzo es gesto MÁS giroscopio: con el
-      // permiso denegado queda el gesto, que ya es movimiento
-      n3LiveCode.includes("tiltX: leanX + gyro.x"),
+      // ── N3B · RE-ANCLADO MÁS FUERTE (F2), y declarado ─────────────────────
+      //
+      // N3 pinchaba la cadena `tiltX: leanX + gyro.x`, y esa línea ERA EL
+      // DEFECTO: la inclinación del teléfono entraba CRUDA al shader, sin una
+      // sola línea de inercia entre el aparato y el líquido. El pin sujetaba el
+      // problema en su sitio. Ahora la inclinación sale de la simulación, y lo
+      // que se exige es la conducta —que el agua se mueva SIN giroscopio— en
+      // vez de una forma de escribirla.
+      n3LiveCode.includes("tiltX: water.tiltX") &&
+      !/tiltX:\s*leanX\s*\+\s*gyro/u.test(n3LiveCode) &&
+      (() => {
+        // Sin giroscopio (tiltX/tiltZ en 0) pero con el gesto del carrusel: el
+        // agua se mueve igual. Si dependiera del permiso, esto daría cero.
+        let state = createOrbWaterState(0.5);
+        let moved = 0;
+        for (let step = 0; step < 90; step += 1) {
+          state = advanceOrbWater(
+            state,
+            { tiltX: 0, tiltZ: 0, travel: step < 12 ? 0.05 : 0, waterline: 0.5, impulse: 0 },
+            1 / 60,
+          );
+          moved = Math.max(moved, Math.abs(state.tiltX) + orbWaveEnergy(state));
+        }
+        return moved > 0.05;
+      })(),
     JSON.stringify({
       armadoPorGesto: n1Code(n0ShellSource).includes(
         "onPointerDown={deviceTilt.armFromUserGesture}",

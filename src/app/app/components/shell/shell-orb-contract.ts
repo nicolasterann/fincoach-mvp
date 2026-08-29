@@ -67,15 +67,38 @@ function percent(ratio: number): number {
 }
 
 /**
- * Patrimonio no lleva nivel y eso es correcto: **el patrimonio total no tiene
- * techo honesto**, así que un nivel sería una mentira. Conserva su núcleo de
- * cristal, que es su señal de vida propia.
+ * N3B · SE REVIERTE D-N2 — decisión del founder, textual:
+ *
+ *   «Confirmo que tenemos que usar las metas para que reservas y patrimonio
+ *   tengan tope, lo podemos preguntar siempre en el onboarding y sino también
+ *   se pueden preguntar y establecer por chat.»
+ *
+ * N2 había decidido que Patrimonio no lleva nivel «porque el patrimonio total
+ * no tiene techo honesto». Era verdad a medias: no tiene un techo que Kipu
+ * pueda *deducir*, pero sí puede tener uno que el usuario **declare** — y eso
+ * es lo que `wealth_target` guarda desde antes de este bloque.
+ *
+ * Así que el cristal deja de ser una NATURALEZA y pasa a ser un ESTADO. Las
+ * cinco capas son líquidas por naturaleza; el cristal aparece cuando falta el
+ * techo, en cualquiera de las cinco, y desaparece en cuanto el techo se
+ * declara. Es la doctrina de N2 aplicada más a fondo que en N2: la materia
+ * sigue al conocimiento, no a la etiqueta de la capa.
+ *
+ * Quién dibuja qué no cambia de manos: `orbFill` devuelve `nucleo` cuando hay
+ * materia sin techo, y `orbMaterialCode` lo convierte en cristal.
  */
 export function orbMatter(kind: OrbKind): OrbMatter {
-  return kind === "patrimonio" ? "cristal" : "liquido";
+  // Las cinco son líquidas por naturaleza. `kind` sigue en la firma porque la
+  // frontera es esta función: si mañana una capa volviera a tener materia
+  // propia, se decide ACÁ y no en la superficie que dibuja.
+  void kind;
+  return "liquido";
 }
 
-/** Patrimonio nunca acepta un nivel, venga de donde venga. */
+/**
+ * Ya no hay capa que rechace un nivel por ser quien es: lo que decide es si hay
+ * un techo declarado, y eso lo mira `orbFill`.
+ */
 export function orbAcceptsLevel(kind: OrbKind): boolean {
   return orbMatter(kind) === "liquido";
 }
@@ -243,6 +266,64 @@ export function debtCycleCardsFrom(
     }));
 }
 
+/**
+ * N3B · Patrimonio contra la meta que el usuario DECLARÓ
+ * (`prefs.wealth_target`).
+ *
+ * Misma forma que `reserveLevel` a propósito: son la misma clase de hecho —una
+ * cifra del motor contra un techo declarado por el usuario— y tratarlas
+ * distinto sería inventar una diferencia que no existe. Sin techo declarado no
+ * hay nivel, y entonces cambia la materia: Kipu **no inventa un techo**, lo
+ * pregunta.
+ *
+ * `wealth_target` ya existe como columna guardada, `setGoalPrefs` ya la
+ * escribe y la herramienta `set_wealth_target` ya la fija desde el chat. Esta
+ * etapa no agrega ni una migración ni una lectura: usa lo que ya estaba.
+ */
+export function wealthLevel(input: {
+  amount: number | null | undefined;
+  target: number | null | undefined;
+}): OrbLevelReading {
+  const { amount, target } = input;
+  if (amount == null || !Number.isFinite(amount)) return NO_LEVEL;
+  if (target == null || !Number.isFinite(target) || target <= ZERO) return NO_LEVEL;
+  // Un patrimonio NEGATIVO es un hecho posible y no se puede dibujar como agua
+  // en un vaso: se acota el trazo en cero, y la frase sigue diciendo la verdad.
+  const ratio = amount / target;
+  return { level: clamp01(ratio), note: `${percent(ratio)}% de tu meta` };
+}
+
+/**
+ * N3B · La meta de patrimonio declarada. Idéntica en forma a
+ * `reserveTargetFrom`, y por el mismo motivo: dos ausencias distintas —no se
+ * pudo leer la fila, o el usuario no la declaró— colapsan a «sin denominador»,
+ * y ninguna de las dos se rellena con un número.
+ */
+export function wealthTargetFrom(input: {
+  prefsError: boolean;
+  raw: unknown;
+}): number | null {
+  if (input.prefsError) return null;
+  if (input.raw == null) return null;
+  const value = Number(input.raw);
+  return Number.isFinite(value) && value > ZERO ? value : null;
+}
+
+/**
+ * N3B · ¿Ya llegó a la meta? Pedido explícito del founder: «al alcanzar la meta,
+ * ofrecer una nueva». Es una función y no un `>=` suelto en la superficie
+ * porque decide QUÉ SE LE DICE al usuario sobre su dinero, y eso se prueba.
+ */
+export function orbTargetReached(input: {
+  amount: number | null | undefined;
+  target: number | null | undefined;
+}): boolean {
+  const { amount, target } = input;
+  if (amount == null || !Number.isFinite(amount)) return false;
+  if (target == null || !Number.isFinite(target) || target <= ZERO) return false;
+  return amount >= target;
+}
+
 /** Reserva contra su meta de respaldo (`prefs.emergency_reserve_target`). */
 export function reserveLevel(input: {
   amount: number | null | undefined;
@@ -390,8 +471,84 @@ export function orbMustRedraw(input: {
  * Entre el piso —donde vive la gota de N2— y el techo hay recorrido de sobra
  * para que los valores del medio se distingan a simple vista.
  */
-export const ORB_WATERLINE_FLOOR = 0.07;
-export const ORB_WATERLINE_CEILING = 0.84;
+export const ORB_WATERLINE_FLOOR = 0.02;
+export const ORB_WATERLINE_CEILING = 0.70;
+
+// ── N3B · LA ALTURA QUE SE VE NO ES LA ALTURA QUE SE PIDE ───────────────────
+//
+// El founder vio esto y lo dijo sin rodeos: «en el saldo que se supone que está
+// acabado se ve demasiado lleno». Medí su orbe vacío en píxeles antes de
+// creerle o desmentirlo, y tenía razón con números: con `FLOOR = 0.07` la
+// superficie del nivel CERO aterrizaba al **26 % de la altura** del vidrio. Un
+// vaso vacío dibujaba un cuarto de vaso.
+//
+// Y no era un número mal elegido: es GEOMETRÍA, y por eso no se arregla
+// bajando la constante a ojo. La cámara mira el agua un poco desde arriba
+// (`CAM_PITCH`), así que la superficie no es una cuerda recta sino una ELIPSE,
+// y **el borde lejano de esa elipse queda más alto que el plano del agua**. Lo
+// que el ojo lee como «el nivel» es el punto más alto de la elipse, no el
+// plano. Sumale el menisco trepando la pared y el 7 % se convierte en 26 %.
+//
+// Esta función es esa proyección, en la única forma en la que se puede AUDITAR:
+// pura, acá, donde el gate la ejecuta. El shader dibuja exactamente esto —las
+// mismas constantes, la misma cuenta— así que el pin deja de mirar una
+// constante y pasa a mirar **lo que se ve**, que es lo que el founder puntúa.
+
+/** La inclinación de la cámara sobre el agua. El shader usa este mismo valor. */
+export const ORB_CAM_PITCH = -0.3;
+/** Distancia de la cámara al centro del orbe, en radios. */
+export const ORB_CAM_DISTANCE = 3.4;
+/** Los dos factores del rayo: `vec3(uv*0.94, -3.2)` en el shader. */
+export const ORB_CAM_SPREAD = 0.94;
+export const ORB_CAM_FOCAL = 3.2;
+
+/**
+ * A qué ALTURA DE LA IMAGEN llega el punto más alto del agua, de 0 (el fondo
+ * del vidrio) a 1 (el tope). Recibe una altura de TRAZO —la que devuelve
+ * `orbWaterline`—, nunca un valor del motor.
+ *
+ * Sigue sin acotar un dato: proyecta un trazo. Es la misma frontera de N3, sólo
+ * que ahora también se puede medir del lado del dibujo.
+ *
+ * ES UNA COTA INFERIOR, Y ESO ESTÁ MEDIDO. La cuenta proyecta el plano del agua
+ * y NO incluye el menisco ni la ola, que en el shader levantan un poco más el
+ * borde. Contra el renderer real, con la misma sonda de píxeles:
+ *
+ *     dato 60 %  → esta función 56,0 %   · medido 58,1 %   (+2,1)
+ *     dato 100 % → esta función 77,0 %   · medido 83,5 %   (+6,5)
+ *
+ * Se deja como cota inferior a propósito, en vez de copiar el menisco acá: el
+ * menisco depende del oleaje, y duplicar lógica del shader en el contrato es
+ * exactamente cómo las dos mitades se separan. Lo que sí se hace es dejarle
+ * MARGEN a los pines, para que «queda aire arriba» siga siendo verdad de lo que
+ * se dibuja y no sólo de lo que se calcula.
+ *
+ * Y no describe la GOTA: un cero leído se dibuja con otra materia, con su propio
+ * disco chico apoyado en el fondo (medido: 4,9 % de la altura).
+ */
+export function orbWaterApex(waterline: number): number {
+  const line = clamp01(Number.isFinite(waterline) ? waterline : ORB_WATERLINE_FLOOR);
+  // El plano del agua, en coordenadas de la esfera de radio 1.
+  const base = line * 2 - 1;
+  // El radio del disco de agua a esa altura: donde el plano corta el vidrio.
+  const wallR = Math.sqrt(Math.max(0, 1 - base * base));
+  const cos = Math.cos(ORB_CAM_PITCH);
+  const sin = Math.sin(ORB_CAM_PITCH);
+  let apex = -1;
+  // El máximo se busca sobre el borde del disco. Analíticamente sale de una
+  // cuadrática, pero el borde es una curva cerrada y corta: barrerlo es exacto
+  // hasta el píxel y no esconde la cuenta detrás de un despeje.
+  for (let step = 0; step <= 180; step += 1) {
+    const w = wallR * (step / 90 - 1);
+    // Del marco del agua al marco de la vista (el `fromWater` del shader).
+    const y = cos * base + sin * w;
+    const z = -sin * base + cos * w;
+    // Y de ahí a la pantalla: la misma proyección en perspectiva del shader.
+    const screenY = (y * ORB_CAM_FOCAL) / (ORB_CAM_SPREAD * (ORB_CAM_DISTANCE - z));
+    if (screenY > apex) apex = screenY;
+  }
+  return clamp01((apex + 1) / 2);
+}
 
 export function orbWaterline(level: number | null | undefined): number {
   if (level == null || !Number.isFinite(level)) return ORB_WATERLINE_FLOOR;
@@ -400,6 +557,52 @@ export function orbWaterline(level: number | null | undefined): number {
   // t = 1 en coma flotante, y el techo del vaso es justo el valor que hay que
   // poder afirmar sin tolerancias.
   return ORB_WATERLINE_FLOOR * (1 - bounded) + ORB_WATERLINE_CEILING * bounded;
+}
+
+/**
+ * N3B · QUÉ MATERIA LE TOCA AL SHADER — una sola decisión, y ejecutable.
+ *
+ * Existía por duplicado: un `MATERIAL_BY_KIND` en `LiveOrb` y otro idéntico en
+ * `OrbSpecimen`, cada uno con su propio `? :` para el cristal. Dos copias de una
+ * regla no son una regla, y en este caso escondían un defecto REAL que el
+ * founder vio y nombró: **`gota` no llegaba nunca al dibujo.**
+ *
+ * N2 había decidido que un orbe leído en cero se dibuja como una gota
+ * deliberada. N3 movió el dibujo al lienzo y esa decisión se perdió por el
+ * camino: `orbFill` seguía devolviendo `"gota"`, pero el lienzo sólo miraba
+ * `matter` y `fill === "nucleo"`, así que un cero terminaba con la materia de
+ * agua y con `orbWaterline(null)` — el piso del mapeo. Y el piso del mapeo,
+ * proyectado, dibujaba un cuarto de vaso. De ahí salió *«en el saldo que se
+ * supone que está acabado se ve demasiado lleno»*: no era un tope mal elegido,
+ * era una materia que no llegaba.
+ *
+ * Ahora la decisión es una sola función, la piden los dos dibujantes, y el gate
+ * la ejecuta — así que perder la gota otra vez cuesta un test rojo.
+ */
+export const ORB_MATERIAL: Record<OrbKind, number> = {
+  saldo: 0,
+  reserva: 1,
+  metas: 2,
+  patrimonio: 3,
+  deuda: 4,
+};
+
+/** La materia del vacío deliberado. No es una capa: es un ESTADO del vidrio. */
+export const ORB_MATERIAL_GOTA = 5;
+
+export function orbMaterialCode(input: {
+  kind: OrbKind;
+  matter: OrbMatter;
+  fill: OrbFill;
+}): number {
+  // Un cero LEÍDO es una gota, y gana sobre todo lo demás: es lo único que
+  // distingue «miré y no hay nada» de «hay poco».
+  if (input.fill === "gota") return ORB_MATERIAL_GOTA;
+  // Sin techo honesto, cristal: la doctrina de N2.
+  if (input.matter === "cristal" || input.fill === "nucleo") {
+    return ORB_MATERIAL.patrimonio;
+  }
+  return ORB_MATERIAL[input.kind];
 }
 
 /**
@@ -417,7 +620,11 @@ export function orbWaterline(level: number | null | undefined): number {
  * número. Y la meseta llega hasta `NEAR`, así que en todo el tramo donde de
  * verdad se la mira vale exactamente 1 — sin degradar.
  */
-export const ORB_TRAVEL = 0.62;
+export const ORB_TRAVEL = 0.66;
+/** Cuánto encoge el orbe más lejano. Es perspectiva, no decoración. */
+export const ORB_DEPTH_SHRINK = 0.2;
+/** El aire que queda entre dos orbes vecinos cuando están lo más juntos posible. */
+export const ORB_CLEARANCE = 0.06;
 export const ORB_PRESENCE_NEAR = 0.34;
 export const ORB_PRESENCE_FAR = 0.6;
 
@@ -427,6 +634,17 @@ export interface OrbSlot {
   offset: number;
   /** 0–1. En reposo la activa vale 1 y ninguna otra se ve. */
   presence: number;
+  /**
+   * N3B · 0 = el orbe que mirás; 1 = el más lejano.
+   *
+   * El founder dijo que las capas «se pisan». Dos discos traslúcidos que se
+   * cruzan producen una lente más clara con DOS bordes duros, y eso no se lee
+   * como una esfera pasando delante de otra: se lee como dos calcomanías
+   * superpuestas. La profundidad es lo que lo arregla, y sale de la MISMA
+   * distancia al centro que ya decide la presencia — así que no hay dos fuentes
+   * que puedan discrepar, y una vecina no puede estar cerca y lejos a la vez.
+   */
+  depth: number;
 }
 
 function smoothstep(edge0: number, edge1: number, value: number): number {
@@ -451,6 +669,16 @@ export function orbSlots(input: {
       index,
       offset,
       presence: 1 - smoothstep(ORB_PRESENCE_NEAR, ORB_PRESENCE_FAR, Math.abs(offset)),
+      // EL CARRUSEL ES UN ARCO, NO UNA FILA. Cada orbe está lo más cerca del
+      // ojo cuando está centrado, y se va hacia atrás al salir. Por eso la
+      // profundidad arranca en el centro y no después de una meseta: un arco no
+      // tiene tramos planos.
+      //
+      // Y no es una «versión barata» de la vecina, que es lo que D-N3.2
+      // prohíbe: su presencia sigue valiendo 1 en todo el gesto —se la ve
+      // ENTERA— y lo único que cambia es a qué distancia está. Estar más lejos
+      // no es estar degradado.
+      depth: smoothstep(0, ORB_TRAVEL, Math.abs(offset)),
     });
   }
   return slots;
@@ -495,6 +723,35 @@ export interface OrbFieldPlacement {
   centerY: number;
   radius: number;
   presence: number;
+  depth: number;
+}
+
+/**
+ * EL RADIO MÁXIMO QUE NO SE PISA (F7) — y por qué esto es una garantía y no un
+ * ajuste.
+ *
+ * El founder dijo que las capas «se pisan», y medido resultó ser GEOMETRÍA, no
+ * un problema de dibujo: el santuario pide `orbRadius ≈ 0,35 × ancho` y coloca
+ * los centros a `ORB_TRAVEL × ancho` — con los números de N3, 0,62 × 390 = 242 px
+ * de separación para dos círculos que necesitan 272 px para no tocarse. Se
+ * pisaban **siempre**, y ninguna cantidad de sombreado lo iba a arreglar: dos
+ * discos traslúcidos que se cruzan dan una lente más clara con dos bordes duros,
+ * y eso se lee como dos calcomanías.
+ *
+ * Podría haberse arreglado eligiendo mejor un radio en la superficie. No sirve:
+ * el radio del santuario sale del DOM (`boxRect.width / 2`), así que un cambio
+ * de maquetación lo volvería a romper y nadie se enteraría hasta la próxima
+ * foto. La regla vive acá, la aplica quien coloca, y el gate la ejecuta contra
+ * el peor caso — el gesto a mitad de camino, que es donde dos vecinas están lo
+ * más cerca que pueden estar.
+ */
+export function orbMaxRadius(trackWidth: number): number {
+  const width = Number.isFinite(trackWidth) && trackWidth > 0 ? trackWidth : 0;
+  // A mitad del gesto ambas vecinas están a `ORB_TRAVEL/2` del centro, o sea
+  // separadas por `ORB_TRAVEL` enteros, y ambas encogidas a la mitad de la
+  // perspectiva. Ese es el caso más apretado que existe.
+  const shrunk = 1 - 0.5 * ORB_DEPTH_SHRINK;
+  return (width * ORB_TRAVEL * (1 - ORB_CLEARANCE)) / (2 * shrunk);
 }
 
 export function orbFieldPlacements(input: {
@@ -503,11 +760,18 @@ export function orbFieldPlacements(input: {
   geometry: OrbFieldGeometry;
 }): OrbFieldPlacement[] {
   const { geometry } = input;
+  // El radio se acota UNA vez, acá, antes de repartirlo: si se acotara por orbe
+  // el tamaño dependería de dónde está cada uno y el carrusel respiraría.
+  const radius = Math.min(geometry.radius, orbMaxRadius(geometry.trackWidth));
   return orbSlots({ count: input.count, position: input.position }).map((slot) => ({
     index: slot.index,
     centerX: geometry.centerX + slot.offset * geometry.trackWidth,
     centerY: geometry.centerY,
-    radius: geometry.radius,
+    // Lo que está más lejos se ve MÁS CHICO. Es la otra mitad de la
+    // profundidad: sin ella la vecina tiene el tamaño de la activa y el ojo la
+    // lee en el mismo plano, por muy apagada que esté.
+    radius: radius * (1 - slot.depth * ORB_DEPTH_SHRINK),
     presence: slot.presence,
+    depth: slot.depth,
   }));
 }

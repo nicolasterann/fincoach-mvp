@@ -447,7 +447,10 @@ const TONE: Record<
   },
 };
 
-function ItemCard(props: { children: React.ReactNode; onRemove: () => void; title: string; tone?: SectionTone }) {
+// N3B — `onRemove` pasa a ser opcional. Una tarjeta que hace UNA pregunta fija
+// (la meta de respaldo, la de patrimonio) no se puede quitar: no es un ítem de
+// una lista. Sin esto habría que ofrecer un botón «Quitar» que no quita nada.
+function ItemCard(props: { children: React.ReactNode; onRemove?: () => void; title: string; tone?: SectionTone }) {
   const t = TONE[props.tone ?? "zinc"];
   return (
     <div className={`kipu-lift rounded-2xl p-4 ${t.card}`}>
@@ -456,9 +459,11 @@ function ItemCard(props: { children: React.ReactNode; onRemove: () => void; titl
           <span className={`h-3.5 w-1 rounded-full ${t.accent}`} aria-hidden />
           <span className={`text-xs font-semibold uppercase tracking-wide ${t.label}`}>{props.title}</span>
         </span>
-        <button type="button" onClick={props.onRemove} className="text-xs text-zinc-500 transition hover:text-rose-300">
-          Quitar
-        </button>
+        {props.onRemove && (
+          <button type="button" onClick={props.onRemove} className="text-xs text-zinc-500 transition hover:text-rose-300">
+            Quitar
+          </button>
+        )}
       </div>
       <div className="flex flex-col gap-3">{props.children}</div>
     </div>
@@ -1188,6 +1193,27 @@ export default function OnboardingWizard({
               />
             }
           >
+            {/* N3B · EL TECHO DEL PATRIMONIO, preguntado. Revierte D-N2, que
+                había decidido que Patrimonio no lleva nivel «porque no tiene
+                techo honesto». Era verdad a medias: Kipu no puede DEDUCIR un
+                techo de patrimonio, pero el usuario sí puede DECLARARLO — y
+                `wealth_target` lo guarda desde antes de este bloque. En blanco
+                no se escribe nada y el orbe sigue siendo cristal. */}
+            <ItemCard tone="violet" title="Tu meta de patrimonio">
+              <p className="text-xs text-zinc-500">
+                ¿A cuánto quieres llegar? Es el número grande, el de años, no el
+                del mes. Sirve para mostrarte cuánto llevas del camino. Si aún no
+                lo tienes claro, déjalo en blanco — se puede fijar después por
+                chat.
+              </p>
+              <MoneyField
+                label="Meta de patrimonio (opcional)"
+                value={state.profile.wealthTarget ?? ""}
+                currency={base}
+                onChange={(v) => patch({ profile: { ...state.profile, wealthTarget: v } })}
+              />
+            </ItemCard>
+
             {(state.assets ?? []).map((a) => (
               <ItemCard
                 key={a.id}
@@ -1270,6 +1296,7 @@ export default function OnboardingWizard({
             onAddReserve={(kind) => patch({ reserves: [...state.reserves, newReserve(base, kind)] })}
             onRemoveReserve={(id) => patch({ reserves: state.reserves.filter((x) => x.id !== id) })}
             onUpdateReserve={(id, patchReserve) => updateItem("reserves", id, patchReserve)}
+            onProfile={(profile) => patch({ profile })}
           />
         )}
 
@@ -1789,6 +1816,7 @@ function ReservesStep(props: {
   onAddReserve: (kind: WizardReserveKind) => void;
   onRemoveReserve: (id: string) => void;
   onUpdateReserve: (id: string, patch: Partial<WizardReserve>) => void;
+  onProfile: (profile: WizardState["profile"]) => void;
 }) {
   const { reservesView: a, capacity, base } = props;
   // O2.1 — dynamic microtext: anchor the ask to what's actually free this month.
@@ -1809,6 +1837,30 @@ function ReservesStep(props: {
       reparto={<RepartoFooter capacity={capacity} allocation={a} base={base} stage="ahorro" />}
       footer={<Footer onBack={props.onBack} onNext={props.onNext} nextLabel="Armar el plan de mis metas" />}
     >
+      {/* N3B · EL TECHO DEL RESPALDO, preguntado.
+          El founder: «tenemos que usar las metas para que reservas y patrimonio
+          tengan tope, lo podemos preguntar siempre en el onboarding». Sin este
+          número el orbe de Reserva no puede mostrar un nivel —no hay contra qué
+          medir— y cambia de materia. Cambiar de materia es honesto, pero deja al
+          usuario mirando un cristal que no explica nada. Preguntarlo es mejor.
+          Y sigue siendo opcional: en blanco NO se escribe nada, y el orbe hace
+          lo que hacía. Kipu no inventa un techo. */}
+      <ItemCard tone="teal" title="Tu meta de respaldo">
+        <p className="text-xs text-zinc-500">
+          ¿Cuánto quieres llegar a tener guardado para imprevistos? Sirve para
+          mostrarte cuánto llevas. Si aún no lo sabes, déjalo en blanco — lo
+          puedes decidir después por chat.
+        </p>
+        <MoneyField
+          label="Meta de respaldo (opcional)"
+          value={props.state.profile.reserveTarget ?? ""}
+          currency={base}
+          onChange={(v) =>
+            props.onProfile({ ...props.state.profile, reserveTarget: v })
+          }
+        />
+      </ItemCard>
+
       {props.state.reserves.map((r) => {
         const freq = r.frequency ?? "monthly";
         const isWeeklyish = freq === "weekly" || freq === "biweekly";

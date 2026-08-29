@@ -15,8 +15,8 @@ import {
 } from "@/app/app/components/state";
 import { MetroOverlay } from "@/app/app/components/metro/MetroOverlay";
 import { StaticOrb } from "@/app/app/components/shell/StaticOrb";
-import { OrbFieldSpecimen, OrbSpecimen } from "@/app/app/components/shell/OrbSpecimen";
-import { ORB_WATERLINE_CEILING, ORB_WATERLINE_FLOOR, orbWaterline } from "@/app/app/components/shell/shell-orb-contract";
+import { OrbFieldSpecimen, OrbSloshStrip, OrbSpecimen } from "@/app/app/components/shell/OrbSpecimen";
+import { ORB_WATERLINE_CEILING, ORB_WATERLINE_FLOOR, orbWaterApex, orbWaterline } from "@/app/app/components/shell/shell-orb-contract";
 import {
   ORB_KINDS,
   orbFill,
@@ -453,7 +453,8 @@ export default async function SistemaPage({
                   <div key={level} className="kipu-sistema-slot" data-slot-shape="orbe">
                     <p className="kipu-sistema-slot__name">
                       dato {Math.round(level * 100)}% · trazo{" "}
-                      {Math.round(orbWaterline(level) * 100)}%
+                      {Math.round(orbWaterline(level) * 100)}% · alto visible{" "}
+                      {Math.round(orbWaterApex(orbWaterline(level)) * 100)}%
                     </p>
                     <OrbSpecimen
                       kind="saldo"
@@ -463,6 +464,16 @@ export default async function SistemaPage({
                     />
                   </div>
                 ))}
+                <div className="kipu-sistema-slot" data-slot-shape="orbe">
+                  <p className="kipu-sistema-slot__name">leído en CERO · gota</p>
+                  <OrbSpecimen
+                    kind="saldo"
+                    level={0}
+                    fill="gota"
+                    size={148}
+                    label="vacío de verdad"
+                  />
+                </div>
               </div>
             </div>
 
@@ -513,6 +524,18 @@ export default async function SistemaPage({
                   </div>
                 ))}
               </div>
+            </div>
+
+            <div className="kipu-sistema-matrix__band">
+              <p className="kipu-sistema-kicker">
+                <b>El agua SIMULA, no se dibuja (N3B).</b> Un golpe, y después
+                nada: lo que se ve es el líquido solo. Se queda atrás, se pasa de
+                largo, vuelve, <b>cruza el cero varias veces</b> y se aquieta.
+                Eso es tener masa, y es lo que separa un líquido de una onda
+                dibujada. Los cuadros salen de integrar el MISMO{" "}
+                <code>advanceOrbWater</code> que corre en el santuario.
+              </p>
+              <OrbSloshStrip />
             </div>
 
             <div className="kipu-sistema-matrix__band">

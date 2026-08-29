@@ -19,12 +19,19 @@ import {
 import {
   orbActiveIndex,
   orbFieldPlacements,
+  orbMaterialCode,
   orbMustRedraw,
   orbWaterline,
   type OrbFill,
   type OrbKind,
   type OrbMatter,
 } from "./shell-orb-contract";
+import {
+  advanceOrbWater,
+  createOrbWaterState,
+  orbWaveEnergy,
+  type OrbWaterState,
+} from "./orb-water-sim";
 import {
   advanceVoiceEnvelope,
   voiceTarget,
@@ -139,13 +146,6 @@ interface RenderInputs {
   active: boolean;
 }
 
-const MATERIAL_BY_KIND: Record<OrbKind, number> = {
-  saldo: 0,
-  reserva: 1,
-  metas: 2,
-  patrimonio: 3,
-  deuda: 4,
-};
 
 const DAWN_STORAGE_KEY = "kipu:shell:dawn:last-day";
 const IDLE_AFTER_MS = 60_000;
@@ -485,10 +485,16 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     let animationFrom = animatedLevel;
     let animationAt = startAt;
     // El agua tiene peso: se inclina con el arrastre y vuelve a su nivel sola.
-    let leanX = 0;
-    let leanV = 0;
-    let spin = 0;
-    let spinV = 0;
+    // N3B · EL AGUA YA NO SE RESUELVE ACÁ ADENTRO.
+    //
+    // N3 tenía siete líneas de resorte sueltas en el bucle, y por eso nadie pudo
+    // probar nunca que amortiguaran: lo que sólo existe dentro de un
+    // `requestAnimationFrame` no se puede ejecutar en un entorno que no compone
+    // cuadros. Es la familia de agujeros que este bloque arrastra desde N1, y
+    // ésta es su sexta aparición. Ahora el líquido vive en `orb-water-sim`,
+    // puro, y el gate lo integra dos segundos y le exige que oscile y se
+    // aquiete. Acá sólo queda el estado.
+    let water: OrbWaterState = createOrbWaterState(0);
     let lastPosition = readPosition.current();
 
     const releaseContextCount = () => {
@@ -640,16 +646,6 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
       // del gesto.
       const dPos = position - lastPosition;
       lastPosition = position;
-      leanV += -dPos * 2.6;
-      leanV -= leanX * 0.055 * step;
-      leanV *= Math.pow(0.90, step);
-      leanX += leanV * step * 0.30;
-      leanX = Math.max(-0.30, Math.min(0.30, leanX));
-      // Y RUEDAN AL VIAJAR: el giro sale del mismo desplazamiento, así que el
-      // orbe se comporta como un cuerpo y no como una lámina que se traslada.
-      spinV += dPos * 1.35;
-      spinV *= Math.pow(0.94, step);
-      spin += spinV * step;
 
       const nextAnimationKey = signalAnimationKey(input);
       const activeInput = input.orbs[input.activeIndex] ?? null;
@@ -695,7 +691,36 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
         step,
       );
 
+      // ── UN CUADRO DE LÍQUIDO ─────────────────────────────────────────────
+      //
+      // El giroscopio entra como OBJETIVO del plano, no como su valor. Es el
+      // defecto que más se notaba en el teléfono y estaba a la vista en una sola
+      // línea de N3: `tiltX: leanX + gyro.x` — la inclinación del teléfono
+      // llegaba CRUDA al shader, sin una sola línea de inercia entre el aparato
+      // y el agua. Inclinabas el teléfono y el agua se inclinaba con él, al
+      // instante y sin peso: exactamente lo que un líquido no hace.
       const gyro = tiltRef.current.tilt.current;
+      water = advanceOrbWater(
+        water,
+        {
+          tiltX: gyro.x,
+          tiltZ: gyro.z,
+          travel: dPos,
+          waterline: animatedLevel,
+          // Un recibo y un cruce de capa GOLPEAN el agua: entran por la
+          // velocidad del pistón, que es como entra un impacto en un líquido.
+          // `animationAt` se acaba de poner en `now` si hubo señal nueva, así
+          // que esta ventana corta ES el flanco: el golpe entra una vez, no en
+          // todos los cuadros de la animación.
+          impulse:
+            now - animationAt < 40 &&
+            (input.signal?.type === "written" || input.signal?.type === "crossing")
+              ? 0.9
+              : 0,
+        },
+        frameDelta == null ? 1 / 60 : Math.max(0.001, frameDelta / 1_000),
+      );
+      const waveEnergy = orbWaveEnergy(water);
       const placements = orbFieldPlacements({
         count: input.orbs.length,
         position,
@@ -727,14 +752,25 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
           waterline: isActive ? animatedLevel : orbWaterline(orb.level),
           energy: isActive ? energy : 0,
           voice: isActive ? animatedVoice : 0,
-          tiltX: leanX + gyro.x,
-          tiltZ: gyro.z,
-          spin,
-          // Sin techo honesto, cristal: la doctrina de N2, en el lienzo.
-          material:
-            orb.matter === "cristal" || orb.fill === "nucleo"
-              ? MATERIAL_BY_KIND.patrimonio
-              : MATERIAL_BY_KIND[orb.kind],
+          tiltX: water.tiltX,
+          tiltZ: water.tiltZ,
+          spin: water.spin,
+          // La ola sale de la VELOCIDAD del líquido: quieto es un espejo.
+          wave: waveEnergy,
+          bob: isActive ? water.bob : 0,
+          // Lo que está detrás se ve detrás: más chico, con menos contraste, y
+          // por eso PASA por atrás en vez de intersecarse con un borde duro.
+          depth: slot.depth,
+          // El santuario SIEMPRE se ilumina con el cuarto. El apagado existe
+          // sólo en la probeta, para poder demostrar que hay uno.
+          env: 1,
+          // La materia la decide UNA función pura, que el gate ejecuta — y que
+          // por fin vuelve a entregarle la GOTA al vidrio.
+          material: orbMaterialCode({
+            kind: orb.kind,
+            matter: orb.matter,
+            fill: orb.fill,
+          }),
           liquid: colors.liquid,
           deep: colors.deep,
           accent: colors.accent,

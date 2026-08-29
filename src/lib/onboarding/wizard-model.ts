@@ -241,7 +241,15 @@ export interface WizardReserve {
 }
 
 export interface WizardState {
-  profile: { fullName: string; country: string; baseCurrency: CurrencyCode };
+  profile: {
+    fullName: string;
+    country: string;
+    baseCurrency: CurrencyCode;
+    /** N3B · El techo de Reserva, tal como se escribe. Se parsea al armar el draft. */
+    reserveTarget?: string;
+    /** N3B · El techo de Patrimonio, igual. */
+    wealthTarget?: string;
+  };
   accounts: WizardAccount[];
   incomes: WizardIncome[];
   expenses: WizardExpense[];
@@ -929,6 +937,13 @@ export function buildOnboardingDraft(
       monthlySavings: savings,
       monthlyInvestment: investment,
       essentialMonthlyEstimate: essentials,
+      // Un techo en blanco NO es un cero: es «no lo declaró». `parseMoney`
+      // devuelve undefined con la cadena vacía, y ese undefined viaja entero
+      // hasta la preferencia — que no se escribe. Un cero declarado tampoco
+      // sirve como techo (dividir por cero no es un nivel), y lo filtra
+      // `reserveTargetFrom`/`wealthTargetFrom` del lado del orbe.
+      emergencyReserveTarget: parseMoney(state.profile.reserveTarget ?? ""),
+      wealthTarget: parseMoney(state.profile.wealthTarget ?? ""),
     },
     accounts: state.accounts.map((a) => ({
       draftId: a.id,

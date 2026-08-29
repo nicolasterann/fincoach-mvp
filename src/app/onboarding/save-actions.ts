@@ -1239,6 +1239,20 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     prefsPatch.essential_monthly_estimate = draft.profile.essentialMonthlyEstimate;
   }
 
+  // N3B — los dos techos declarados en el onboarding. Sólo se escriben si el
+  // usuario puso un número: en blanco significa «no lo declaró», y en ese caso
+  // el orbe cambia de materia y Kipu lo pregunta. Escribir un cero aquí sería
+  // inventarle un techo, que es exactamente lo que la doctrina prohíbe.
+  if (
+    draft.profile.emergencyReserveTarget !== undefined &&
+    draft.profile.emergencyReserveTarget > 0
+  ) {
+    prefsPatch.emergency_reserve_target = draft.profile.emergencyReserveTarget;
+  }
+  if (draft.profile.wealthTarget !== undefined && draft.profile.wealthTarget > 0) {
+    prefsPatch.wealth_target = draft.profile.wealthTarget;
+  }
+
   // Default payment source = the primary day-to-day account, resolved to its real
   // id. S31 (5.7): prefer LIQUID non-goal accounts — "isPrimary" is silently the
   // first account added, and defaulting everyday spend to a protected savings pot

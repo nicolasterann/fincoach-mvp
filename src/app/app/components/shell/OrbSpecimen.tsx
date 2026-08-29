@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createOrbRenderer,
   type OrbDrawCall,
@@ -10,11 +10,19 @@ import {
 import {
   ORB_KINDS,
   orbFieldPlacements,
+  orbMaterialCode,
   orbMatter,
   orbWaterline,
+  type OrbFill,
   type OrbKind,
   type OrbMatter,
 } from "./shell-orb-contract";
+import {
+  advanceOrbWater,
+  createOrbWaterState,
+  orbWaveEnergy,
+  type OrbWaterState,
+} from "./orb-water-sim";
 
 // Bloque N3 · La probeta del orbe.
 //
@@ -73,14 +81,6 @@ function paint(
   return info.glVersion;
 }
 
-const MATERIAL_BY_KIND: Record<OrbKind, number> = {
-  saldo: 0,
-  reserva: 1,
-  metas: 2,
-  patrimonio: 3,
-  deuda: 4,
-};
-
 function readCssColor(element: HTMLElement, token: string): OrbRgb {
   const raw = getComputedStyle(element).getPropertyValue(token).trim();
   if (raw.startsWith("#")) {
@@ -104,17 +104,28 @@ export function OrbSpecimen({
   kind,
   level,
   matter = "liquido",
+  fill = "nivel",
   size = 160,
   time = 4.2,
   tilt = 0,
+  wave = 0,
+  bob = 0,
+  env = 1,
   label,
 }: {
   kind: OrbKind;
   level: number | null;
   matter?: OrbMatter;
+  /** N3B · `gota` es una MATERIA, no un nivel bajo. Por acá se la puede mirar. */
+  fill?: OrbFill;
   size?: number;
   time?: number;
   tilt?: number;
+  /** N3B · la energía del chapoteo, para fotografiar el agua quieta y la agitada. */
+  wave?: number;
+  bob?: number;
+  /** N3B · 0 apaga el cuarto. Es el instrumento de F3. */
+  env?: number;
   label?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -140,8 +151,11 @@ export function OrbSpecimen({
           tiltX: tilt,
           tiltZ: 0,
           spin: 0,
-          material:
-            matter === "cristal" ? MATERIAL_BY_KIND.patrimonio : MATERIAL_BY_KIND[kind],
+          wave,
+          bob,
+          depth: 0,
+          env,
+          material: orbMaterialCode({ kind, matter, fill }),
           liquid: readCssColor(canvas, `--kipu-liquid-${kind}`),
           deep: readCssColor(canvas, `--kipu-deep-${kind}`),
           accent: readCssColor(canvas, `--layer-${kind}`),
@@ -156,14 +170,16 @@ export function OrbSpecimen({
     }
     canvas.dataset.glVersion = String(glVersion);
     canvas.dataset.drawn = "1";
-  }, [kind, level, matter, size, time, tilt]);
+  }, [kind, level, matter, fill, size, time, tilt, wave, bob, env]);
 
   return (
     <figure className="kipu-orb-specimen" data-orb-kind={kind}>
       <canvas
         ref={canvasRef}
         className="kipu-orb-specimen__canvas"
-        data-specimen={`${kind}:${level ?? "sin-nivel"}`}
+        data-specimen={`${kind}:${fill === "gota" ? "gota" : (level ?? "sin-nivel")}`}
+        data-orb-wave={wave}
+        data-orb-env={env}
         style={{ width: size, height: size }}
       />
       {label && <figcaption>{failure ?? label}</figcaption>}
@@ -223,8 +239,11 @@ export function OrbFieldSpecimen({
           tiltX: 0,
           tiltZ: 0,
           spin: 0,
-          material:
-            matter === "cristal" ? MATERIAL_BY_KIND.patrimonio : MATERIAL_BY_KIND[kind],
+          wave: 0,
+          bob: 0,
+          depth: slot.depth,
+          env: 1,
+          material: orbMaterialCode({ kind, matter, fill: "nivel" }),
           liquid: readCssColor(canvas, `--kipu-liquid-${kind}`),
           deep: readCssColor(canvas, `--kipu-deep-${kind}`),
           accent: readCssColor(canvas, `--layer-${kind}`),
@@ -236,6 +255,7 @@ export function OrbFieldSpecimen({
     if (glVersion == null) return;
     canvas.dataset.drawn = "1";
     canvas.dataset.presences = placements.map((p) => p.presence.toFixed(3)).join(",");
+    canvas.dataset.depths = placements.map((p) => p.depth.toFixed(3)).join(",");
   }, [position, levels, width, height]);
 
   return (
@@ -248,5 +268,93 @@ export function OrbFieldSpecimen({
       />
       {label && <figcaption>{label}</figcaption>}
     </figure>
+  );
+}
+
+/**
+ * EL CHAPOTEO, EN UNA TIRA DE CUADROS — la prueba de F4.
+ *
+ * El criterio dice: «se demuestra que responde a un impulso: inclinar, soltar, y
+ * que oscila y se aquieta». En un entorno que no compone cuadros eso no se puede
+ * mostrar con un video, así que se muestra como lo que es: una integración
+ * DETERMINISTA del mismo `advanceOrbWater` que corre en el santuario, muestreada
+ * a tiempos fijos. Cada viñeta es el líquido en ese instante, dibujado por el
+ * renderer real.
+ *
+ * Y prueba lo que un video no probaría: que la superficie está QUIETA en t=0,
+ * que el golpe la mueve, que **cruza el cero varias veces** —eso es oscilar, y
+ * es lo que separa un líquido de un amortiguador— y que vuelve al reposo sola.
+ */
+export function OrbSloshStrip({
+  kind = "saldo",
+  level = 0.55,
+  impulse = 0.9,
+  times = [0, 0.12, 0.28, 0.45, 0.9, 2.2],
+  size = 132,
+}: {
+  kind?: OrbKind;
+  level?: number;
+  impulse?: number;
+  times?: readonly number[];
+  size?: number;
+}) {
+  // La simulación es PURA y determinista: no hay nada que sincronizar con el
+  // mundo, así que no es un efecto. Se calcula al renderizar, y el mismo
+  // `advanceOrbWater` que corre en el santuario produce estos cuadros.
+  const frames = useMemo(() => {
+    const dt = 1 / 120;
+    const wanted = [...times].sort((a, b) => a - b);
+    const last = wanted[wanted.length - 1] ?? 1;
+    let state: OrbWaterState = createOrbWaterState(orbWaterline(level));
+    const out: { t: number; tiltX: number; wave: number; bob: number }[] = [];
+    let cursor = 0;
+    for (let step = 0; step * dt <= last + dt; step += 1) {
+      const t = step * dt;
+      while (cursor < wanted.length && t >= (wanted[cursor] ?? Infinity)) {
+        out.push({
+          t: wanted[cursor]!,
+          tiltX: state.tiltX,
+          wave: orbWaveEnergy(state),
+          bob: state.bob,
+        });
+        cursor += 1;
+      }
+      // El golpe entra UNA vez, en el primer paso, y nada lo sostiene después:
+      // todo lo que se ve a partir de ahí es el líquido solo.
+      state = advanceOrbWater(
+        state,
+        {
+          tiltX: 0,
+          tiltZ: 0,
+          travel: step === 0 ? impulse : 0,
+          waterline: orbWaterline(level),
+          impulse: 0,
+        },
+        dt,
+      );
+    }
+    return out;
+  }, [level, impulse, times]);
+
+  return (
+    <div className="kipu-sistema-row" data-slosh-frames={frames.length}>
+      {frames.map((frame) => (
+        <div key={frame.t} className="kipu-sistema-slot" data-slot-shape="orbe">
+          <p className="kipu-sistema-slot__name">
+            t = {frame.t.toFixed(2)}s · inclinación {frame.tiltX.toFixed(3)}
+          </p>
+          <OrbSpecimen
+            kind={kind}
+            level={level}
+            size={size}
+            time={4.2 + frame.t}
+            tilt={frame.tiltX}
+            wave={frame.wave}
+            bob={frame.bob}
+            label={`ola ${frame.wave.toFixed(2)}`}
+          />
+        </div>
+      ))}
+    </div>
   );
 }
