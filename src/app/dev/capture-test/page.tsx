@@ -51,7 +51,16 @@ import {
   goalsPlannedFrom,
   metasRead,
   orbAcceptsLevel,
+  ORB_PRESENCE_FAR,
+  ORB_PRESENCE_NEAR,
+  ORB_TRAVEL,
+  ORB_WATERLINE_CEILING,
+  ORB_WATERLINE_FLOOR,
+  orbActiveIndex,
+  orbFieldPlacements,
   orbFill,
+  orbSlots,
+  orbWaterline,
   orbMustRedraw,
   orbMatter,
   patrimonioRead,
@@ -25836,9 +25845,14 @@ assert(
       m3ShellSource.includes("onTouchMove={(event) => {") &&
       /onMouseDown=\{\(\) => \{\s*voice\.cancel\(\);\s*setDialogOpen\(false\);\s*\}\}/.test(m3ShellSource) &&
       /onClose=\{\(\) => \{\s*voice\.cancel\(\);\s*setDialogOpen\(false\);\s*\}\}/.test(m3ShellSource) &&
-      m3ShellSource.includes(
-        "active={liveSettled && !dialogOpen && !perspectiveOpen}",
-      ) &&
+      // N3 · el cable de la pausa se movió y el pin lo sigue, MÁS FUERTE. La
+      // invariante que M4 protegía —una hoja encima calma el orbe— sigue
+      // pinchada entera; lo que se cayó es `liveSettled`, porque en la forma
+      // nueva el gesto ES el dibujo y pausarlo sería volver a la sustitución.
+      // El pin agrega lo que antes no decía: que el gesto NO puede volver a
+      // entrar en esa decisión.
+      m3ShellSource.includes("active={!dialogOpen && !perspectiveOpen}") &&
+      !/active=\{[^}]*liveSettled/u.test(m3ShellSource) &&
       m3ShellSource.includes("chatRef.current?.scrollToTurn") &&
       pmChatView.includes(
         'const ACCEPTED_FILES = "image/jpeg,image/png,image/webp,application/pdf";',
@@ -25935,7 +25949,10 @@ assert(
       m5SetVoiceBody.includes("voiceRef.current =") &&
       !m5SetVoiceBody.includes("setSignal(") &&
       !m5SetVoiceBody.includes("renderInputs.current.level") &&
-      m4LiveOrbSource.includes("voice: animatedVoice") &&
+      // N3 · el aura de la voz es de la capa que estás mirando, no del campo
+      // entero: con cinco orbes en el lienzo, un aura repartida entre las cinco
+      // afirmaría que Kipu te escucha desde una capa que no abriste.
+      m4LiveOrbSource.includes("voice: isActive ? animatedVoice : 0") &&
       m4LiveOrbSource.includes("data-voice-state={voiceState}") &&
       m5PreviewSource.includes('voiceQuery === "listening"') &&
       m5PreviewSource.includes('(["calm", "listening", "thinking", "responding"] as const)'),
@@ -26189,12 +26206,13 @@ assert(
       m6ShellSource.includes("perspectiveHandleY.current") &&
       m6ShellSource.includes("finishPerspectiveCloseGesture") &&
       m6ShellSource.includes('role="dialog"') &&
+      // N3 · idem M4-3: cierres y hojas siguen calmando el orbe —eso es lo que
+      // esta aserción protege— y el gesto ya no, porque ahora el gesto dibuja.
+      m6ShellSource.includes("active={!dialogOpen && !perspectiveOpen}") &&
       m6ShellSource.includes(
-        "active={liveSettled && !dialogOpen && !perspectiveOpen}",
+        'data-orb-paused={dialogOpen || perspectiveOpen ? "true" : "false"}',
       ) &&
-      m6ShellSource.includes(
-        'data-orb-paused={!liveSettled || dialogOpen || perspectiveOpen ? "true" : "false"}',
-      ) &&
+      !/data-orb-paused=\{[^}]*liveSettled/u.test(m6ShellSource) &&
       (m6PayloadBuildBody.match(/buildCoachingBriefing\(\{/g) ?? []).length === 1 &&
       (m6PayloadBuildBody.match(/loadSnapshotSeriesRead\(/g) ?? []).length === 1 &&
       m6SnapshotSource.includes("export type SnapshotSeriesRead") &&
@@ -28376,7 +28394,9 @@ assert(
       // la única salida de tier que queda NO es una decisión de calidad
       n2LiveOrb.includes("webglcontextlost") &&
       // pausar la animación sigue siendo legítimo, y el último cuadro sobrevive
-      n0ShellSource.includes("active={liveSettled && !dialogOpen && !perspectiveOpen}") &&
+      // — N3 · pero ya NO por gesto: deslizar es lo que dibuja. Lo que calma el
+      // orbe es que no se lo esté mirando.
+      n0ShellSource.includes("active={!dialogOpen && !perspectiveOpen}") &&
       readFileSync(
         `${process.cwd()}/src/app/app/components/shell/orb-shader.ts`,
         "utf8",
@@ -28507,6 +28527,305 @@ assert(
       alDia: orbMustRedraw({ pauseReason: "inactive", drawnKind: "saldo", activeKind: "saldo" }),
       oculto: orbMustRedraw({ pauseReason: "hidden", drawnKind: "deuda", activeKind: "patrimonio" }),
       consume: n2OrbCode.includes("orbMustRedraw({"),
+    }),
+  );
+
+  // ── Bloque N3 · El orbe ────────────────────────────────────────────────────
+  // Seis aserciones. Lo que se ve —que el agua tenga peso, que el gesto sea
+  // fluido, que «vuele la cabeza»— se rinde en el reporte, en `/dev/sistema` y
+  // en el teléfono del founder: este gate no compone cuadros. Lo que SÍ se puede
+  // sujetar acá es la frontera entre DATO y DIBUJO, que es donde esta etapa se
+  // podía perder.
+
+  const n3Contract = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/shell-orb-contract.ts`,
+    "utf8",
+  );
+  const n3Shader = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/orb-shader.ts`,
+    "utf8",
+  );
+  const n3LiveOrb = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/LiveOrb.tsx`,
+    "utf8",
+  );
+  const n3Tilt = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/useDeviceTilt.ts`,
+    "utf8",
+  );
+  const n3ShaderCode = n1Code(n3Shader);
+  const n3LiveCode = n1Code(n3LiveOrb);
+  const n3TiltCode = n1Code(n3Tilt);
+
+  // N3-1 · EL TOPE DEL VASO ES UN MAPEO DE DIBUJO, JAMÁS UN CAMBIO DE DATO.
+  //
+  // Es la trampa central de la etapa: acotar el trazo para que el menisco se vea
+  // siempre es correcto; acotar el VALOR antes de que llegue a la cifra o a la
+  // frase sería cambiar verdad por belleza. Por eso `orbWaterline` vive en el
+  // contrato puro, esto la ejecuta, y el payload —donde se fabrican la cifra y
+  // la frase— tiene PROHIBIDO nombrarla.
+  const n3Trio = [1, 0.6, 0].map((level) => orbWaterline(level));
+  assert(
+    "N3-1 · el tope del vaso acota el TRAZO y nunca el valor: la cifra y la frase siguen diciendo lo del motor",
+    // ── el trazo: lleno deja aire, vacío deja piso, y el medio tiene recorrido ──
+    orbWaterline(1) === ORB_WATERLINE_CEILING &&
+      orbWaterline(0) === ORB_WATERLINE_FLOOR &&
+      ORB_WATERLINE_CEILING < 1 &&
+      ORB_WATERLINE_FLOOR > 0 &&
+      // aire de sobra arriba para que el menisco del 100 % SIEMPRE se vea
+      1 - ORB_WATERLINE_CEILING >= 0.1 &&
+      // y recorrido visible entre los dos extremos, o los valores del medio
+      // serían indistinguibles
+      ORB_WATERLINE_CEILING - ORB_WATERLINE_FLOOR >= 0.6 &&
+      n3Trio[0]! > n3Trio[1]! && n3Trio[1]! > n3Trio[2]! &&
+      // estrictamente creciente en todo el rango: nada se aplasta contra el tope
+      [0.1, 0.35, 0.5, 0.75, 0.95].every(
+        (level, index, all) =>
+          index === 0 || orbWaterline(level) > orbWaterline(all[index - 1]!),
+      ) &&
+      // un nivel ausente no inventa altura: se dibuja el piso
+      orbWaterline(null) === ORB_WATERLINE_FLOOR &&
+      orbWaterline(Number.NaN) === ORB_WATERLINE_FLOOR &&
+      // lo que entra fuera de rango se acota EN EL TRAZO, no antes
+      orbWaterline(1.4) === ORB_WATERLINE_CEILING &&
+      // ── EL VALOR SIGUE INTACTO. Las mismas funciones de N2, sin tocar ──
+      reserveLevel({ amount: 2880, target: 2400 }).note === "120% de tu meta" &&
+      debtCycleLevel([
+        { currency: "USD", statementTotalDue: 1000, remainingNative: 0, statementCovered: true },
+      ]).note === "Ciclo cubierto 100%" &&
+      goalsLevel({ pending: 420, planned: 420 }).note === "queda 100% del aporte del mes" &&
+      // ── y el cable: el trazo sólo lo pide QUIEN DIBUJA ──
+      n3LiveCode.includes("orbWaterline(") &&
+      n3Contract.includes("export function orbWaterline(") &&
+      // el payload fabrica la cifra y la frase: si pudiera nombrar el mapeo,
+      // podría acotar el dato. No puede.
+      !/orbWaterline/u.test(n0PayloadRender) &&
+      // y el shader recibe una altura YA mapeada: no vuelve a acotar por su
+      // cuenta ni conoce el nivel crudo
+      n3ShaderCode.includes("waterline: number") &&
+      !/uLevel\s*=\s*clamp/u.test(n3ShaderCode),
+    JSON.stringify({
+      trazo: { lleno: n3Trio[0], medio: n3Trio[1], vacio: n3Trio[2] },
+      aireArriba: +(1 - ORB_WATERLINE_CEILING).toFixed(3),
+      valorIntacto: reserveLevel({ amount: 2880, target: 2400 }).note,
+      payloadNombraElMapeo: /orbWaterline/u.test(n0PayloadRender),
+    }),
+  );
+
+  // N3-2 · LAS VECINAS (D-N3.2) · Su presencia es una FUNCIÓN PURA de su
+  // distancia al centro, y de ahí sale la regla entera del founder: durante el
+  // gesto se ven sin cambios, en reposo no se ven, y la salida es parte del
+  // mismo movimiento. Escrito como booleano («¿está deslizando?») la segunda
+  // mitad sería un apagón — una sustitución con otro nombre, la clase exacta
+  // que N2 pagó y que esta forma existe para eliminar.
+  const n3Rest = orbSlots({ count: 5, position: 1 });
+  const n3Mid = orbSlots({ count: 5, position: 1.5 });
+  const n3Settling = orbSlots({ count: 5, position: 1.88 });
+  assert(
+    "N3-2 · en reposo sólo está la activa; durante el gesto las vecinas se ven ENTERAS, y su salida es continua",
+    // ── en reposo: una sola presencia, y es la activa ──
+    n3Rest.filter((slot) => slot.presence > 0).length === 1 &&
+      n3Rest[1]!.presence === 1 &&
+      n3Rest[0]!.presence === 0 &&
+      n3Rest[2]!.presence === 0 &&
+      // ── a mitad del gesto: LAS DOS ENTERAS. Ni una versión barata ni apagada ──
+      n3Mid[1]!.presence === 1 &&
+      n3Mid[2]!.presence === 1 &&
+      // ── asentándose: la que se va TODAVÍA está, yéndose ──
+      n3Settling[1]!.presence > 0 &&
+      n3Settling[1]!.presence < 1 &&
+      n3Settling[2]!.presence === 1 &&
+      // ── y la salida es CONTINUA: ningún paso chico produce un salto grande.
+      // Es lo que distingue «irse» de «apagarse». ←  objetivo de mutación
+      (() => {
+        let previous = orbSlots({ count: 5, position: 1 })[1]!.presence;
+        for (let step = 1; step <= 100; step += 1) {
+          const next = orbSlots({ count: 5, position: 1 + step / 100 })[1]!.presence;
+          if (Math.abs(next - previous) > 0.08) return false;
+          previous = next;
+        }
+        return previous === 0;
+      })() &&
+      // la meseta llega hasta NEAR: en todo el tramo donde se la mira, vale 1
+      ORB_PRESENCE_NEAR > 0 &&
+      ORB_PRESENCE_FAR > ORB_PRESENCE_NEAR &&
+      // en reposo la vecina cae MÁS ALLÁ del borde de la meseta, o se vería
+      ORB_TRAVEL > ORB_PRESENCE_FAR &&
+      // y a mitad de camino cae DENTRO, o no se vería durante el gesto
+      ORB_TRAVEL / 2 <= ORB_PRESENCE_NEAR,
+    JSON.stringify({
+      reposo: n3Rest.map((slot) => slot.presence),
+      gesto: n3Mid.map((slot) => slot.presence),
+      asentando: n3Settling.map((slot) => slot.presence),
+    }),
+  );
+
+  // N3-3 · LA PARIDAD, CON UN SOLO ORIGEN.
+  //
+  // La trampa que el spec marcó: el scroll nativo da inercia, snap y
+  // accesibilidad gratis, y si se reemplaza hay que reponerlos. No se reemplazó
+  // — se mudó el DIBUJO, no el gesto. La vía sigue siendo un scroller del
+  // navegador y `scrollLeft` sigue siendo la fuente de verdad; el lienzo LEE esa
+  // posición. Y la capa activa sale de la misma posición por la misma función
+  // pura, así que el carrusel no puede mentir sobre qué capa mirás.
+  assert(
+    "N3-3 · el gesto sigue siendo scroll nativo y la capa activa sale de la MISMA posición que coloca los orbes",
+    orbActiveIndex({ count: 5, position: 0 }) === 0 &&
+      orbActiveIndex({ count: 5, position: 1.49 }) === 1 &&
+      orbActiveIndex({ count: 5, position: 1.5 }) === 2 &&
+      // fuera de rango se acota a una capa que existe: nunca un índice fantasma
+      orbActiveIndex({ count: 5, position: -3 }) === 0 &&
+      orbActiveIndex({ count: 5, position: 99 }) === 4 &&
+      orbActiveIndex({ count: 5, position: Number.NaN }) === 0 &&
+      orbActiveIndex({ count: 0, position: 2 }) === 0 &&
+      // la colocación DERIVA de la misma posición, en píxeles
+      (() => {
+        const geometry = { centerX: 200, centerY: 100, radius: 60, trackWidth: 400 };
+        const rest = orbFieldPlacements({ count: 5, position: 1, geometry });
+        const mid = orbFieldPlacements({ count: 5, position: 1.5, geometry });
+        return (
+          rest[1]!.centerX === 200 &&
+          rest[2]!.centerX === 200 + ORB_TRAVEL * 400 &&
+          Math.abs(mid[1]!.centerX - (200 - ORB_TRAVEL * 200)) < 1e-9 &&
+          rest.every((slot) => slot.centerY === 100 && slot.radius === 60)
+        );
+      })() &&
+      // ── y el cable, por los dos lados ──
+      // la superficie deriva la capa activa del contrato, no de un `Math.round`
+      // escrito a mano que pueda separarse del lienzo
+      n1Code(n0ShellSource).includes("orbActiveIndex({") &&
+      !/Math\.round\(\s*track\.scrollLeft/u.test(n1Code(n0ShellSource)) &&
+      // el lienzo pide la MISMA función y lee la posición de la vía
+      n3LiveCode.includes("orbActiveIndex({") &&
+      n3LiveCode.includes("orbFieldPlacements({") &&
+      n3LiveCode.includes("track.scrollLeft / track.clientWidth") &&
+      // y el scroll NATIVO sigue puesto: inercia, snap y accesibilidad no se
+      // reemplazaron, así que no hubo que reponerlos
+      n0Css.includes("scroll-snap-type: x mandatory;") &&
+      n0Css.includes("scroll-snap-align: center;") &&
+      n0ShellSource.includes('role="tabpanel"') &&
+      n0ShellSource.includes('role="tablist"') &&
+      // la cifra y la píldora siguen siendo DOM, no textura
+      n0ShellSource.includes("kipu-shell-amount") &&
+      n0ShellSource.includes("kipu-shell-pill__text"),
+    JSON.stringify({
+      capaEn1_49: orbActiveIndex({ count: 5, position: 1.49 }),
+      capaEn1_5: orbActiveIndex({ count: 5, position: 1.5 }),
+    }),
+  );
+
+  // N3-4 · UN SOLO OBJETO, Y LA FRONTERA DE N0 ENTERA EN LA FORMA NUEVA.
+  //
+  // El lienzo dibuja los cinco, así que los cinco de CSS se apagan — antes se
+  // apagaba sólo el de la capa activa porque el lienzo sólo dibujaba una. La
+  // excepción NO se relaja: `sin-dato` no se dibuja en el lienzo, porque «no
+  // pude leer» no es un estado del agua; conserva su silueta interrumpida en el
+  // DOM y por eso jamás puede parecerse a un cero leído.
+  assert(
+    "N3-4 · el lienzo dibuja los cinco y el DOM se apaga, salvo `sin-dato`, que nunca es agua",
+    // el lienzo saltea la lectura caída
+    n3LiveCode.includes('if (orb.fill === "sin-dato") continue;') &&
+      // y el CSS apaga TODOS los de CSS menos ese
+      n0Css.includes(
+        '.kipu-shell-orb:not([data-orb-fill="sin-dato"]) { opacity: 0; }',
+      ) &&
+      // la lista que consume el lienzo sale de `orbFill`, la MISMA función que
+      // dibuja el DOM y con los MISMOS argumentos: no hay una segunda decisión
+      n1Code(n0ShellSource).includes("fill: orbFill({") &&
+      // el cero leído y la lectura caída siguen siendo estados distintos
+      ORB_KINDS.every(
+        (kind) =>
+          orbFill({ kind, amount: 0, level: null, readOk: true }) !==
+          orbFill({ kind, amount: 0, level: null, readOk: false }),
+      ) &&
+      // ── y en el shader: SIN TECHO HONESTO NO HAY LÍNEA DE AGUA ──
+      // Patrimonio y cualquier capa sin denominador toman la materia de cristal,
+      // y el cristal no lleva agua: un nivel sería una mentira. Lo encontré
+      // MIRANDO los píxeles de `/dev/sistema` — el salto vertical de Patrimonio
+      // valía 151 como el de las capas líquidas, o sea que dibujaba un nivel que
+      // el motor no afirma.
+      n3ShaderCode.includes("float crystal = step(2.5, uMat) * step(uMat, 3.5);") &&
+      /thick \*= 1\.0 - crystal;/u.test(n3ShaderCode) &&
+      /has \*= 1\.0 - crystal;/u.test(n3ShaderCode) &&
+      /surfaceSeen \*= 1\.0 - crystal;/u.test(n3ShaderCode) &&
+      // y la superficie manda cristal cuando la materia lo pide O no hay techo
+      n3LiveCode.includes('orb.matter === "cristal" || orb.fill === "nucleo"'),
+    JSON.stringify({
+      salteaSinDato: n3LiveCode.includes('if (orb.fill === "sin-dato") continue;'),
+      cristalSinAgua: n3ShaderCode.includes("float crystal = step(2.5, uMat)"),
+    }),
+  );
+
+  // N3-5 · EL CONTEXTO DEJA DE PEDIR EL CAMINO BARATO.
+  // Hasta N2 el orbe le pedía a la GPU `low-power`, sin antialiasing y en
+  // WebGL1: en un iPhone, dejar rendimiento sobre la mesa a propósito.
+  assert(
+    "N3-5 · se pide WebGL2 con alto rendimiento y antialiasing, con WebGL1 como degradado honesto",
+    n3ShaderCode.includes('powerPreference: "high-performance"') &&
+      !/low-power/u.test(n3ShaderCode) &&
+      n3ShaderCode.includes("antialias: true") &&
+      !/antialias:\s*false/u.test(n3ShaderCode) &&
+      // WebGL2 PRIMERO, y el degradado existe de verdad
+      n1Antes(n3ShaderCode, 'getContext("webgl2"', 'getContext("webgl"') &&
+      // el degradado es EL MISMO shader, no una segunda versión que nadie probó
+      (n3ShaderCode.match(/const FRAGMENT_SOURCE/gu) ?? []).length === 1 &&
+      n3ShaderCode.includes('gl.getExtension("OES_standard_derivatives")') &&
+      // y la versión conseguida se REPORTA, no se supone
+      n3ShaderCode.includes("glVersion: 1 | 2") &&
+      n3ShaderCode.includes("antialias = gl.getContextAttributes()?.antialias === true") &&
+      n3LiveCode.includes("glVersion: buffer?.glVersion ?? null") &&
+      // el último cuadro sigue sobreviviendo a una pausa bajo la hoja
+      n3ShaderCode.includes("preserveDrawingBuffer: true") &&
+      // la escalera de calidad de M2 sigue enterrada
+      !n1Code(n3LiveOrb).includes("evaluateQuality") &&
+      !n1Code(n3LiveOrb).includes("dropToTier"),
+    JSON.stringify({
+      alto: n3ShaderCode.includes('powerPreference: "high-performance"'),
+      barato: /low-power/u.test(n3ShaderCode),
+    }),
+  );
+
+  // N3-6 · EL GIROSCOPIO Y SU TRAMPA (D-N3.3).
+  //
+  // iOS 13+ sólo concede el permiso DESDE UN GESTO del usuario. Colgarlo de un
+  // efecto de arranque es perder la etapa: la llamada falla y el pedido se
+  // quema. Y la regla que manda sobre todo lo demás, en palabras del founder:
+  // «el realismo del agua no debe depender de él».
+  assert(
+    "N3-6 · el permiso se pide desde un gesto real, una sola vez, y el agua no depende de él",
+    // se expone como algo que SE ARMA desde un gesto, y la superficie lo
+    // engancha al primer toque del santuario
+    n3TiltCode.includes("armFromUserGesture") &&
+      n1Code(n0ShellSource).includes("onPointerDown={deviceTilt.armFromUserGesture}") &&
+      // …y NO cuelga de un efecto de arranque, que es la trampa
+      !/useEffect\([^)]*\)\s*=>\s*\{[^}]*requestPermission/u.test(n3TiltCode) &&
+      !/useEffect\(\(\)\s*=>\s*\{\s*[^}]*armFromUserGesture/u.test(n3TiltCode) &&
+      // una sola vez: lo resuelto se guarda y no se vuelve a preguntar
+      n3TiltCode.includes("if (readStored() != null) return;") &&
+      n3TiltCode.includes("if (armed.current) return;") &&
+      n3TiltCode.includes('store(next)') &&
+      // `denied` no empeora nada: sin permiso la inclinación es CERO, no una
+      // inclinación inventada
+      n3TiltCode.includes('if (permission !== "granted") {') &&
+      n3TiltCode.includes("tilt.current = { x: 0, z: 0 };") &&
+      // …y un fallo de transporte NO se guarda como denegado: eso cerraría la
+      // puerta para siempre por un error que no decidió nadie
+      n1Antes(n3TiltCode, ".catch(() => {", "armed.current = false;") &&
+      // ── Y LA LÍNEA BASE: el agua se mueve sin giroscopio ──
+      // el oleaje tiene amplitud propia, y la inclinación sólo SUMA
+      /const float WAVE_AMP = 0\.0[0-9]+;/u.test(n3ShaderCode) &&
+      !/WAVE_AMP\s*\*\s*(length\(uTilt\)|uTilt)/u.test(n3ShaderCode) &&
+      // las corrientes y el menisco no miran la inclinación en absoluto
+      n3ShaderCode.includes("float flow = fbm(") &&
+      n3ShaderCode.includes("float men = smoothstep(") &&
+      // y la inclinación que llega al lienzo es gesto MÁS giroscopio: con el
+      // permiso denegado queda el gesto, que ya es movimiento
+      n3LiveCode.includes("tiltX: leanX + gyro.x"),
+    JSON.stringify({
+      armadoPorGesto: n1Code(n0ShellSource).includes(
+        "onPointerDown={deviceTilt.armFromUserGesture}",
+      ),
+      olaSinGiroscopio: /const float WAVE_AMP = 0\.0[0-9]+;/u.test(n3ShaderCode),
     }),
   );
 

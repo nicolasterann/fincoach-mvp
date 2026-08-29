@@ -15,6 +15,8 @@ import {
 } from "@/app/app/components/state";
 import { MetroOverlay } from "@/app/app/components/metro/MetroOverlay";
 import { StaticOrb } from "@/app/app/components/shell/StaticOrb";
+import { OrbFieldSpecimen, OrbSpecimen } from "@/app/app/components/shell/OrbSpecimen";
+import { ORB_WATERLINE_CEILING, ORB_WATERLINE_FLOOR, orbWaterline } from "@/app/app/components/shell/shell-orb-contract";
 import {
   ORB_KINDS,
   orbFill,
@@ -35,6 +37,7 @@ const SECTIONS = [
   "duelo",
   "estados",
   "materias",
+  "vidrio",
   "claro",
 ] as const;
 type Section = (typeof SECTIONS)[number];
@@ -400,6 +403,133 @@ export default async function SistemaPage({
                 </div>
               </div>
             ))}
+          </div>
+        </section>
+      )}
+
+      {show("vidrio") && (
+        <section className="kipu-sistema-section">
+          <h2>El vidrio vivo — N3</h2>
+          <p className="kipu-sistema-note">
+            Estos orbes NO son CSS: los pinta el mismo <code>createOrbRenderer</code>
+            que corre en el santuario, con el mismo shader y los mismos uniformes.
+            Un cuadro fijo, la misma luz y la misma exposición para todos, para
+            poder comparar sin que el movimiento tape las diferencias.
+          </p>
+
+          <div className="kipu-sistema-matrix">
+            <div className="kipu-sistema-matrix__band">
+              <p className="kipu-sistema-kicker">
+                Las cinco materias, del mismo mundo — misma física, misma
+                exposición, distinto pigmento. Patrimonio es el único que cambia
+                de materia, y no por gusto: el motor no puede afirmarle un techo.
+              </p>
+              <div className="kipu-sistema-row">
+                {ORB_KINDS.map((kind: OrbKind) => (
+                  <div key={kind} className="kipu-sistema-slot" data-slot-shape="orbe">
+                    <p className="kipu-sistema-slot__name">{kind}</p>
+                    <OrbSpecimen
+                      kind={kind}
+                      level={0.62}
+                      matter={orbMatter(kind)}
+                      size={148}
+                      label={orbMatter(kind) === "cristal" ? "cristal" : "62%"}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="kipu-sistema-matrix__band">
+              <p className="kipu-sistema-kicker">
+                El tope del vaso — un vaso lleno de verdad no llega al borde, así
+                que al 100 % queda aire arriba y <b>el menisco siempre se ve</b>.
+                Es un mapeo de DIBUJO: la cifra y la frase siguen diciendo lo que
+                dice el motor. Trazo del 100 % = {Math.round(ORB_WATERLINE_CEILING * 100)} %
+                del vidrio; del 0 % = {Math.round(ORB_WATERLINE_FLOOR * 100)} %.
+              </p>
+              <div className="kipu-sistema-row">
+                {[1, 0.6, 0].map((level) => (
+                  <div key={level} className="kipu-sistema-slot" data-slot-shape="orbe">
+                    <p className="kipu-sistema-slot__name">
+                      dato {Math.round(level * 100)}% · trazo{" "}
+                      {Math.round(orbWaterline(level) * 100)}%
+                    </p>
+                    <OrbSpecimen
+                      kind="saldo"
+                      level={level}
+                      size={148}
+                      label={`nivel ${Math.round(level * 100)}%`}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="kipu-sistema-matrix__band">
+              <p className="kipu-sistema-kicker">
+                Las vecinas — <b>durante el gesto se ven, exactamente como son;
+                en reposo, no.</b> Su presencia es una función pura de su
+                distancia al centro, así que irse y apagarse son el mismo número:
+                no hay apagón posible, hay movimiento. Las tres imágenes salen de
+                la MISMA función que coloca los orbes en el santuario.
+              </p>
+              <div className="kipu-sistema-row">
+                {[
+                  { position: 0, label: "en reposo — sólo la activa" },
+                  { position: 0.5, label: "a mitad del gesto — las dos, enteras" },
+                  { position: 0.88, label: "asentándose — la que se va, yéndose" },
+                ].map((frame) => (
+                  <div key={frame.position} className="kipu-sistema-slot">
+                    <p className="kipu-sistema-slot__name">posición {frame.position}</p>
+                    <OrbFieldSpecimen
+                      position={frame.position}
+                      levels={{ saldo: 0.62, reserva: 0.4, metas: 0.75, deuda: 0.3 }}
+                      label={frame.label}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="kipu-sistema-matrix__band">
+              <p className="kipu-sistema-kicker">
+                El agua se mueve SIEMPRE, no sólo al tocar. Los tres son la misma
+                capa con el mismo nivel, en tres instantes distintos: las olas,
+                las corrientes y las motas corren solas. Si hicieran falta un
+                dedo o un teléfono para verlas vivas, la etapa estaría mal hecha.
+              </p>
+              <div className="kipu-sistema-row">
+                {[0, 3.7, 9.1].map((time) => (
+                  <div key={time} className="kipu-sistema-slot" data-slot-shape="orbe">
+                    <p className="kipu-sistema-slot__name">t = {time}s</p>
+                    <OrbSpecimen
+                      kind="saldo"
+                      level={0.55}
+                      size={148}
+                      time={time}
+                      label={`t = ${time}s`}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="kipu-sistema-matrix__band">
+              <p className="kipu-sistema-kicker">
+                El agua con peso: la misma capa inclinada como la deja un
+                arrastre o el teléfono. El giroscopio SUMA esta inclinación; no
+                la produce — sin permiso el agua se ve igual de viva.
+              </p>
+              <div className="kipu-sistema-row">
+                {[-0.18, 0, 0.18].map((tilt) => (
+                  <div key={tilt} className="kipu-sistema-slot" data-slot-shape="orbe">
+                    <p className="kipu-sistema-slot__name">inclinación {tilt}</p>
+                    <OrbSpecimen kind="reserva" level={0.55} size={148} tilt={tilt} label="55%" />
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </section>
       )}

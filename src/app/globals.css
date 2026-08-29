@@ -428,16 +428,14 @@ body {
   overscroll-behavior-x: contain;
 }
 
+/* N3 · El lienzo deja de ser un cuadrado centrado y pasa a ser TODO el ancho
+   de la vía: es lo que le permite dibujar las vecinas a los costados. No
+   intercepta el gesto —el scroll nativo sigue siendo de la vía de abajo—, así
+   que la inercia, el snap y la accesibilidad siguen siendo del navegador. */
 .kipu-shell-live-layer {
   position: absolute;
   inset: 0;
   z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: clamp(9px, calc(1.4svh + 4px), 17px);
-  padding: 0 22px;
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--kipu-t-quick) var(--kipu-e-out);
@@ -445,13 +443,17 @@ body {
 
 .kipu-shell-track-wrap[data-live-visible="true"] .kipu-shell-live-layer { opacity: 1; }
 
-.kipu-shell-track-wrap[data-live-visible="true"]
-  .kipu-shell-slide[data-active="true"]
-  .kipu-shell-orb { opacity: 0; }
+/* UN SOLO OBJETO (E3). Antes se ocultaba SÓLO el orbe de la capa activa, porque
+   el lienzo sólo dibujaba una. Ahora los dibuja los cinco, así que los cinco de
+   CSS se apagan y quedan de puro primer cuadro y de caja de maquetado.
 
-.kipu-shell-live-spacer { display: block; flex: none; visibility: hidden; }
-.kipu-shell-live-spacer--readout { width: 1px; min-height: 72px; }
-.kipu-shell-live-spacer--pill { width: min(100%, 300px); height: 46px; }
+   La excepción es la frontera de N0 y no se relaja: `sin-dato` NO se dibuja en
+   el lienzo —«no pude leer» no es un estado del agua—, así que ese orbe
+   conserva su silueta interrumpida en el DOM y jamás puede parecerse a un cero
+   leído. */
+.kipu-shell-track-wrap[data-live-visible="true"]
+  .kipu-shell-slide
+  .kipu-shell-orb:not([data-orb-fill="sin-dato"]) { opacity: 0; }
 
 .kipu-shell-slide {
   display: flex;
@@ -657,15 +659,21 @@ body {
 .kipu-shell-orb--fog .kipu-shell-orb__halo,
 .kipu-shell-orb--fog .kipu-shell-orb__floor { opacity: 0.12; }
 
-.kipu-live-orb { opacity: 0; }
+.kipu-live-orb {
+  position: absolute;
+  inset: 0;
+  display: block;
+  opacity: 0;
+  transition: opacity var(--kipu-t-quick) var(--kipu-e-out);
+}
 .kipu-live-orb--visible { opacity: 1; }
 
 .kipu-live-orb__canvas {
   position: absolute;
-  inset: -26%;
+  inset: 0;
   display: block;
-  width: 152%;
-  height: 152%;
+  width: 100%;
+  height: 100%;
 }
 
 .kipu-live-orb[data-live-state="capturing"] .kipu-live-orb__canvas {

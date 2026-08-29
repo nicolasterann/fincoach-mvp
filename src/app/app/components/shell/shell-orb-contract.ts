@@ -366,3 +366,148 @@ export function orbMustRedraw(input: {
   // que corregir.
   return input.pauseReason === "inactive";
 }
+
+// ── N3 · El DIBUJO del orbe, en lógica pura ────────────────────────────────
+//
+// Todo lo de abajo decide TRAZO, jamás dato. Es la línea que N3 no puede
+// cruzar y la razón de que viva aquí, donde el gate la ejecuta: si el mapeo
+// del vaso o el reparto del carrusel vivieran dentro del shader o dentro de un
+// `useEffect`, nadie podría probar que no le tocaron el valor a nadie.
+
+/**
+ * EL TOPE DEL VASO (D-N3.1) — **mapeo de dibujo, no cambio de dato.**
+ *
+ * El founder lo diagnosticó exacto: hoy lleno y vacío se confunden porque un
+ * orbe al 100 % no muestra agua, muestra un orbe de color. Un vaso real no se
+ * llena hasta el borde, así que el lleno visual deja aire arriba y **el menisco
+ * siempre se ve**.
+ *
+ * La regla que no se relaja: esto acota EL TRAZO, nunca el valor. `orbWaterline`
+ * no toca `level`, no lo devuelve, y nadie la llama antes de la cifra ni de la
+ * frase — «Ciclo cubierto 100 %» sigue diciendo 100 %. Lo único que cambia es a
+ * qué altura del vidrio se dibuja ese 100 %.
+ *
+ * Entre el piso —donde vive la gota de N2— y el techo hay recorrido de sobra
+ * para que los valores del medio se distingan a simple vista.
+ */
+export const ORB_WATERLINE_FLOOR = 0.07;
+export const ORB_WATERLINE_CEILING = 0.84;
+
+export function orbWaterline(level: number | null | undefined): number {
+  if (level == null || !Number.isFinite(level)) return ORB_WATERLINE_FLOOR;
+  const bounded = clamp01(level);
+  // Interpolación exacta en los extremos: `a + t*(b-a)` no devuelve `b` con
+  // t = 1 en coma flotante, y el techo del vaso es justo el valor que hay que
+  // poder afirmar sin tolerancias.
+  return ORB_WATERLINE_FLOOR * (1 - bounded) + ORB_WATERLINE_CEILING * bounded;
+}
+
+/**
+ * LAS VECINAS (D-N3.2) — su presencia es una función PURA de su distancia al
+ * centro, y por eso no hay apagón posible.
+ *
+ * La regla del founder tiene dos mitades: durante el gesto las vecinas se ven
+ * SIN CAMBIOS —no una versión barata—, y en reposo no se ven. Escrito como un
+ * booleano («¿está deslizando?») la segunda mitad sería un apagón: la vecina
+ * desaparecería de golpe al asentarse, que es una sustitución con otro nombre,
+ * justo la clase que N2 pagó y que esta forma existe para eliminar.
+ *
+ * Escrito como función de la posición, la salida ES el movimiento: la vecina se
+ * va yendo mientras el gesto termina, porque irse y apagarse son el mismo
+ * número. Y la meseta llega hasta `NEAR`, así que en todo el tramo donde de
+ * verdad se la mira vale exactamente 1 — sin degradar.
+ */
+export const ORB_TRAVEL = 0.62;
+export const ORB_PRESENCE_NEAR = 0.34;
+export const ORB_PRESENCE_FAR = 0.6;
+
+export interface OrbSlot {
+  index: number;
+  /** Desplazamiento del centro del orbe, en anchos de vía. */
+  offset: number;
+  /** 0–1. En reposo la activa vale 1 y ninguna otra se ve. */
+  presence: number;
+}
+
+function smoothstep(edge0: number, edge1: number, value: number): number {
+  if (edge1 <= edge0) return value >= edge1 ? 1 : 0;
+  const t = clamp01((value - edge0) / (edge1 - edge0));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * `position` es la posición REAL de la vía —`scrollLeft / clientWidth`—, no un
+ * índice redondeado: es lo que hace que el paso entre capas sea continuo.
+ */
+export function orbSlots(input: {
+  count: number;
+  position: number;
+}): OrbSlot[] {
+  const position = Number.isFinite(input.position) ? input.position : 0;
+  const slots: OrbSlot[] = [];
+  for (let index = 0; index < input.count; index += 1) {
+    const offset = (index - position) * ORB_TRAVEL;
+    slots.push({
+      index,
+      offset,
+      presence: 1 - smoothstep(ORB_PRESENCE_NEAR, ORB_PRESENCE_FAR, Math.abs(offset)),
+    });
+  }
+  return slots;
+}
+
+/**
+ * La capa activa sale de la MISMA posición que dibuja los orbes, así que el
+ * lienzo no puede discrepar del chip, del acento, del nudo ni de la cifra: no
+ * hay dos fuentes que puedan separarse. Es la paridad de M2/B12, ahora con un
+ * solo origen.
+ */
+export function orbActiveIndex(input: { count: number; position: number }): number {
+  if (input.count <= 0) return 0;
+  const position = Number.isFinite(input.position) ? input.position : 0;
+  return Math.max(0, Math.min(input.count - 1, Math.round(position)));
+}
+
+/**
+ * DÓNDE VA CADA ORBE EN EL LIENZO — puro, y por eso auditable.
+ *
+ * Vive aquí y no dentro del bucle de dibujo por la lección que este bloque pagó
+ * tres veces: lo que sólo existe adentro de un `requestAnimationFrame` no se
+ * puede probar en un entorno que no compone cuadros, y entonces «se ve bien» es
+ * una afirmación de fe. Con la colocación afuera, el santuario y la probeta de
+ * `/dev/sistema` piden la MISMA función, así que la maqueta que se mira no puede
+ * separarse de la que se envía.
+ */
+export interface OrbFieldGeometry {
+  /** Centro horizontal del lienzo, en píxeles CSS. */
+  centerX: number;
+  /** Altura del centro del orbe, en píxeles CSS. */
+  centerY: number;
+  /** Radio del orbe, en píxeles CSS. */
+  radius: number;
+  /** Ancho de la vía: la unidad en la que viaja el carrusel. */
+  trackWidth: number;
+}
+
+export interface OrbFieldPlacement {
+  index: number;
+  centerX: number;
+  centerY: number;
+  radius: number;
+  presence: number;
+}
+
+export function orbFieldPlacements(input: {
+  count: number;
+  position: number;
+  geometry: OrbFieldGeometry;
+}): OrbFieldPlacement[] {
+  const { geometry } = input;
+  return orbSlots({ count: input.count, position: input.position }).map((slot) => ({
+    index: slot.index,
+    centerX: geometry.centerX + slot.offset * geometry.trackWidth,
+    centerY: geometry.centerY,
+    radius: geometry.radius,
+    presence: slot.presence,
+  }));
+}

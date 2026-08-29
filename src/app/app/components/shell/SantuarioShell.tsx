@@ -20,6 +20,7 @@ import type { ThreadView } from "@/lib/chat-memory/thread-view-contract";
 import {
   LiveOrb,
   type LiveOrbHandle,
+  type LiveOrbSlotInput,
   type LiveOrbState,
   type OrbQualityTier,
 } from "./LiveOrb";
@@ -35,9 +36,10 @@ import type {
 import { PerspectiveSheet } from "./PerspectiveSheet";
 import { cintaState } from "./shell-dialog-contract";
 import { StaticOrb } from "./StaticOrb";
-import { orbMatter } from "./shell-orb-contract";
+import { orbActiveIndex, orbFill, orbMatter } from "./shell-orb-contract";
 import type { OrbVoiceState } from "./voice-capture-contract";
 import { useVoiceCapture } from "./useVoiceCapture";
+import { useDeviceTilt } from "./useDeviceTilt";
 
 const ORB_META: Record<OrbKind, { label: string; href: string; ariaPrefix: string }> = {
   saldo: { label: "Saldo", href: "/app/saldo", ariaPrefix: "Saldo disponible" },
@@ -336,7 +338,6 @@ export function SantuarioShell({
   const scrollFrame = useRef<number | null>(null);
   const settleTimer = useRef<number | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [liveSettled, setLiveSettled] = useState(true);
   // N2 §5.1 · UNA sola vez. `liveReady` se enciende cuando el orbe vivo ya
   // pintó su primer cuadro y NO se vuelve a apagar: ni al deslizar, ni al abrir
   // la hoja, ni si la calidad medida cambia. Ese relevo único es el que
@@ -360,6 +361,21 @@ export function SantuarioShell({
   const activeOrb = payload.orbs[activeIndex] ?? payload.orbs[0];
   const activeKind = activeOrb?.kind ?? "saldo";
   const kinds = payload.orbs.map((orb) => orb.kind);
+  // N3 · el lienzo y el DOM piden la materia a la MISMA función pura, con los
+  // MISMOS argumentos. No hay una segunda decisión que pueda contradecir a la
+  // primera — y `sin-dato` sigue siendo del DOM, que es lo que mantiene entera
+  // la frontera de N0 en la forma nueva.
+  const liveOrbs: LiveOrbSlotInput[] = payload.orbs.map((orb) => ({
+    kind: orb.kind,
+    level: orb.level,
+    fill: orbFill({
+      kind: orb.kind,
+      amount: orb.amountRaw,
+      level: orb.level,
+      readOk: orb.readOk,
+    }),
+    matter: orbMatter(orb.kind),
+  }));
 
   // N1 · el hilo se lee al ABRIR la conversación, no antes. Una sola vez por
   // montaje: `ChatView` queda montado a propósito (M4) y su estado local ya
@@ -388,6 +404,12 @@ export function SantuarioShell({
     }
   }
 
+  // N3 §5.5 · iOS sólo concede el giroscopio DESDE UN GESTO, así que esto no
+  // puede colgarse de un efecto de arranque. Se arma en el primer `pointerdown`
+  // del santuario (ver el `onPointerDown` de `<main>`), una sola vez, y el agua
+  // se ve igual de viva si lo deniegan: su oleaje no pasa por acá.
+  const deviceTilt = useDeviceTilt();
+
   const voice = useVoiceCapture({
     sendEvidence: (file) =>
       chatRef.current?.sendEvidence(file) ?? Promise.resolve(null),
@@ -404,28 +426,27 @@ export function SantuarioShell({
 
   const syncActiveFromTrack = (track: HTMLDivElement) => {
     if (track.clientWidth === 0) return;
-    const observed = Math.max(
-      0,
-      Math.min(payload.orbs.length - 1, Math.round(track.scrollLeft / track.clientWidth)),
-    );
+    // N3 · la capa activa y el centro del lienzo salen de la MISMA posición y
+    // de la MISMA función pura, así que el carrusel no puede mentir sobre qué
+    // capa mirás: no existen dos fuentes que puedan separarse.
+    const observed = orbActiveIndex({
+      count: payload.orbs.length,
+      position: track.scrollLeft / track.clientWidth,
+    });
     setActiveIndex(observed);
   };
 
   const goToOrb = (index: number) => {
     const track = trackRef.current;
     if (!track) return;
-    setLiveSettled(false);
     track.scrollLeft = index * track.clientWidth;
     // The label follows the position the browser actually accepted. A failed
     // programmatic move therefore cannot claim a different layer than the one
     // still visible.
     syncActiveFromTrack(track);
-    if (settleTimer.current != null) window.clearTimeout(settleTimer.current);
-    settleTimer.current = window.setTimeout(() => setLiveSettled(true), 140);
   };
 
   const handleScroll = () => {
-    setLiveSettled(false);
     if (scrollFrame.current != null) cancelAnimationFrame(scrollFrame.current);
     scrollFrame.current = requestAnimationFrame(() => {
       const track = trackRef.current;
@@ -436,7 +457,6 @@ export function SantuarioShell({
     settleTimer.current = window.setTimeout(() => {
       const track = trackRef.current;
       if (track) syncActiveFromTrack(track);
-      setLiveSettled(true);
     }, 140);
   };
 
@@ -596,7 +616,8 @@ export function SantuarioShell({
       data-layer={activeKind}
       data-dialog-open={dialogOpen ? "true" : "false"}
       data-perspective-open={perspectiveOpen ? "true" : "false"}
-      data-orb-paused={!liveSettled || dialogOpen || perspectiveOpen ? "true" : "false"}
+      data-orb-paused={dialogOpen || perspectiveOpen ? "true" : "false"}
+      onPointerDown={deviceTilt.armFromUserGesture}
     >
       <span className="kipu-shell-atmosphere" aria-hidden="true" />
       <MetroOverlay
@@ -679,21 +700,22 @@ export function SantuarioShell({
               <LiveOrb
                 key={`live-orb-tier-${preview?.forcedTier ?? "auto"}`}
                 ref={liveOrbRef}
-                kind={activeKind}
-                level={activeOrb?.level ?? null}
-                amountMissing={activeOrb?.amountLabel == null}
+                orbs={liveOrbs}
+                trackRef={trackRef}
                 dawn={activeKind === "saldo" ? payload.dawn : null}
                 runway={activeKind === "saldo" && payload.runwayLine != null}
-                active={liveSettled && !dialogOpen && !perspectiveOpen}
+                // N3 · deslizar YA NO pausa: en la forma nueva el gesto ES el
+                // dibujo, y pausarlo sería volver a la sustitución. Lo único que
+                // calma el orbe es que no se lo esté mirando — una hoja encima,
+                // la pestaña oculta o fuera del viewport (D-N3.4).
+                active={!dialogOpen && !perspectiveOpen}
+                tilt={deviceTilt}
                 forcedTier={preview?.forcedTier}
                 forcedState={forcedRenderState}
                 showPerf={preview?.showPerf}
-                matter={orbMatter(activeKind)}
                 onStateChange={setLiveState}
                 onReady={markLiveReady}
               />
-              <span className="kipu-shell-live-spacer kipu-shell-live-spacer--readout" />
-              <span className="kipu-shell-live-spacer kipu-shell-live-spacer--pill" />
             </div>
             <div ref={trackRef} className="kipu-shell-track" onScroll={handleScroll}>
               {payload.orbs.map((orb, index) => {

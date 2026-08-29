@@ -1,45 +1,147 @@
+// Bloque N3 — el orbe deja de ser un lienzo quieto en el centro.
+//
+// LA FORMA NUEVA: los cinco orbes viven en UN solo lienzo, y el lienzo es el
+// carrusel. Cada orbe se dibuja en su propio cuadrilátero, con su centro
+// derivado del desplazamiento de la vía. Deslizar los mueve a todos; las
+// vecinas asoman a los costados. No hay cambio de capa: hay movimiento — y la
+// familia de defectos que costó N2 (sustitución, relevo, lag de una capa) deja
+// de existir porque ya no hay nada que sustituir.
+//
+// Por qué un cuadrilátero por orbe y no un bucle sobre cinco dentro de un
+// lienzo completo: el rasterizador descarta gratis los píxeles que no toca cada
+// orbe. En reposo sólo hay UNA presencia > 0, así que el costo es el de un solo
+// orbe — el mismo que hasta N2. Durante el gesto hay dos. Nunca cinco.
+//
+// LO QUE ESTE ARCHIVO NO HACE: no decide un nivel, no acota un valor y no sabe
+// qué significan las cifras. Recibe una altura de TRAZO ya mapeada por
+// `orbWaterline` y la dibuja. La frontera entre dato y dibujo vive en el
+// contrato puro, donde el gate puede ejecutarla.
+
 export type OrbRgb = readonly [number, number, number];
 
-export interface OrbUniforms {
-  time: number;
-  level: number;
+/** Cuánto sobra alrededor del radio para el halo y la sombra propia. */
+export const ORB_SPAN = 1.62;
+
+export interface OrbDrawCall {
+  /** Centro del orbe en píxeles CSS, desde la esquina superior izquierda. */
+  centerX: number;
+  centerY: number;
+  /** Radio del orbe en píxeles CSS. */
+  radius: number;
+  /** 0–1. Cuánto está presente. Con 0 no se emite la llamada de dibujo. */
+  presence: number;
+  /** La ALTURA DE TRAZO, ya mapeada por `orbWaterline`. Nunca un valor crudo. */
+  waterline: number;
   energy: number;
-  day: number;
-  material: number;
   voice: number;
+  /** Inclinación del plano de agua: gesto + giroscopio, sumados por el caller. */
+  tiltX: number;
+  tiltZ: number;
+  /** Giro acumulado del orbe, en radianes. */
+  spin: number;
+  material: number;
   liquid: OrbRgb;
   deep: OrbRgb;
   accent: OrbRgb;
+}
+
+export interface OrbFrame {
+  time: number;
+  day: number;
   tier: 1 | 2 | 3;
+  orbs: readonly OrbDrawCall[];
 }
 
 export interface OrbBufferInfo {
   dpr: number;
   width: number;
   height: number;
+  /** `2` cuando el contexto es WebGL2; `1` cuando degradó. */
+  glVersion: 1 | 2;
+  antialias: boolean;
 }
 
 export interface OrbRenderer {
   resize(cssWidth: number, cssHeight: number, dpr: number): OrbBufferInfo;
-  draw(uniforms: OrbUniforms): void;
+  draw(frame: OrbFrame): void;
   dispose(): void;
 }
 
 const VERTEX_SOURCE = `
-attribute vec2 aPos;
+attribute vec2 aQuad;
+uniform vec2 uCanvas;
+uniform vec2 uCenter;
+uniform float uSpan;
+varying vec2 vP;
 void main(){
-  gl_Position = vec4(aPos, 0.0, 1.0);
+  // El eje Y del lienzo crece HACIA ABAJO y el del orbe hacia ARRIBA: el agua
+  // se apoya en el fondo, la luz entra por arriba y la sombra cae abajo. Sin
+  // esta vuelta el agua llena el techo del vaso.
+  vP = vec2(aQuad.x, -aQuad.y) * ${ORB_SPAN.toFixed(2)};
+  vec2 px = uCenter + aQuad * uSpan;
+  vec2 clip = (px / uCanvas) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
 }`;
 
-// The tier-3 path is the measured prototype shader. Tiers 2 and 1 are
-// deliberate branches of the same material model, so changing quality never
-// changes the financial level sent by the server.
+// UN SOLO MUNDO PARA LAS CINCO MATERIAS (§5.3 · E5).
+//
+// El founder fotografió lo contrario: «unos son super intensos en color y otros
+// super opacos, no hay simetría entre ellos». La causa estaba en el código: cada
+// material traía su propia amplitud, su propia velocidad y su propio brillo, así
+// que cada capa vivía con otra física y otra exposición.
+//
+// Ahora hay UNA física (el mismo oleaje, el mismo menisco, la misma absorción de
+// Beer-Lambert), UNA luz (`LKEY`, una sola dirección coherente) y UNA exposición
+// (el mismo tonemap al final, para todas). Lo único que cambia entre capas es el
+// PIGMENTO, que entra como coeficiente de extinción. La excepción es Patrimonio,
+// y no es una decisión de estilo: el motor no puede afirmarle un techo, así que
+// su materia es cristal — la doctrina de N2, no un gusto.
 const FRAGMENT_SOURCE = `
+#ifdef GL_OES_standard_derivatives
+#extension GL_OES_standard_derivatives : enable
+#endif
 precision highp float;
-uniform vec2 uRes;
-uniform float uTime, uLevel, uEnergy, uDay, uMat, uVoice;
+varying vec2 vP;
+uniform float uTime, uLevel, uEnergy, uDay, uMat, uVoice, uPresence, uSpin;
+uniform vec2 uTilt;
 uniform vec3 uLiq, uDeep, uAcc;
 const float KIPU_TIER = __KIPU_TIER__;
+const vec3 LKEY = vec3(-0.4082, 0.8367, 0.3646);
+const vec3 LFILL = vec3(0.6396, -0.2559, 0.7248);
+// EL ESTUDIO. Un vidrio de verdad no refleja un punto: refleja un CUARTO. Hasta
+// acá el orbe tenía un especular y un borde, que es lo que se ve en una bola de
+// plástico. Esto es un entorno procedural —suelo, cielo, un panel de luz
+// principal y un relleno frío— y es NEUTRO y COMPARTIDO a propósito: las cinco
+// capas se reflejan en el mismo cuarto, que es la mitad de por qué se sienten
+// del mismo mundo. Lo que las distingue sigue siendo el pigmento, no la luz.
+// El cuarto SIGUE AL TEMA. Con un estudio oscuro fijo, sobre fondo claro el
+// vidrio vacío se leía como una cúpula gris pegoteada: un vidrio refleja el
+// cuarto donde está, y en tema claro el cuarto es claro.
+const vec3 ENV_SKY = vec3(0.052, 0.070, 0.094);
+const vec3 ENV_FLOOR = vec3(0.011, 0.013, 0.018);
+const vec3 ENV_SKY_DAY = vec3(0.300, 0.322, 0.360);
+const vec3 ENV_FLOOR_DAY = vec3(0.132, 0.146, 0.172);
+const vec3 ENV_KEY = vec3(0.86, 0.92, 1.00);
+const vec3 ENV_FILL = vec3(0.34, 0.44, 0.62);
+const float WAVE_AMP = 0.026;
+// LA CÁMARA MIRA UN POCO DESDE ARRIBA. Es el cambio que convierte el orbe de un
+// disco con una raya en un VOLUMEN: mirada de frente, la superficie del agua es
+// una cuerda recta; inclinada, es una elipse, y el ojo lee profundidad al
+// instante. La silueta sigue siendo un círculo perfecto —se inclina el plano
+// del agua, no la esfera—, así que el orbe no se deforma en la maqueta.
+// Negativo a propósito: mirando el agua DESDE ARRIBA, el borde lejano de la
+// elipse queda ALTO y el cercano BAJO. Con el signo al revés se mira la
+// superficie por debajo, y el vaso parece más lleno de lo que está.
+const float CAM_PITCH = -0.30;
+const float MENISCUS = 0.078;
+// Cuatro trenes de olas en direcciones que NO son perpendiculares. Con senos en
+// x y en z puros el campo es separable y su cáustica sale como una reja de
+// rayas paralelas; cruzadas, sale la RED que uno reconoce del fondo de una
+// pileta. Dos de marejada, dos de rizo.
+const vec2 WD1 = vec2(0.9806, 0.1961);
+const vec2 WD2 = vec2(-0.3162, 0.9487);
+const vec2 WD3 = vec2(0.7071, -0.7071);
+const vec2 WD4 = vec2(0.5547, 0.8321);
 
 float hash21(vec2 p){
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -61,47 +163,78 @@ float fbm(vec2 p){
   }
   return v;
 }
-vec2 vcell(vec2 x){
-  vec2 n = floor(x), f = fract(x);
-  float md = 8.0;
-  vec2 mr = vec2(0.0);
-  for(int j=-1;j<=1;j++){
-    for(int i=-1;i<=1;i++){
-      vec2 g = vec2(float(i), float(j));
-      vec2 o = vec2(hash21(n+g), hash21(n+g+vec2(31.7,11.3)));
-      vec2 r = g + o - f;
-      float dd2 = dot(r,r);
-      if(dd2 < md){ md = dd2; mr = n+g; }
-    }
-  }
-  return vec2(sqrt(md), hash21(mr));
+vec3 envSample(vec3 d){
+  float up = d.y*0.5 + 0.5;
+  vec3 base = mix(mix(ENV_FLOOR, ENV_FLOOR_DAY, uDay),
+                  mix(ENV_SKY, ENV_SKY_DAY, uDay),
+                  pow(up, 1.35));
+  float k = max(dot(d, LKEY), 0.0);
+  // el panel: un núcleo chico y duro dentro de una caja grande y suave, que es
+  // como se ve una ventana reflejada en vidrio
+  base += ENV_KEY * (pow(k, 220.0)*1.15 + pow(k, 14.0)*0.30 + pow(k, 2.6)*0.055);
+  base += ENV_FILL * pow(max(dot(d, LFILL), 0.0), 5.0) * 0.085;
+  return base;
+}
+vec3 toWater(vec3 p){
+  float c = cos(CAM_PITCH), sn = sin(CAM_PITCH);
+  return vec3(p.x, c*p.y - sn*p.z, sn*p.y + c*p.z);
+}
+vec3 fromWater(vec3 q){
+  float c = cos(CAM_PITCH), sn = sin(CAM_PITCH);
+  return vec3(q.x, c*q.y + sn*q.z, -sn*q.y + c*q.z);
 }
 vec3 rotY(vec3 v, float a){
   float c = cos(a), sn = sin(a);
   return vec3(c*v.x + sn*v.z, v.y, -sn*v.x + c*v.z);
 }
-void matParams(out float amp, out float spd){
-  amp = 0.040; spd = 1.0;
-  if(uMat > 0.5 && uMat < 1.5){ amp = 0.017; spd = 0.42; }
-  else if(uMat > 1.5 && uMat < 2.5){ amp = 0.029; spd = 0.68; }
-  else if(uMat > 2.5 && uMat < 3.5){ amp = 0.007; spd = 0.18; }
-  else if(uMat > 3.5){ amp = 0.021; spd = 0.33; }
+
+// La misma exposición para las cinco. Filmic ACES: sin esto, un pigmento claro
+// se satura y uno oscuro se apaga, que es exactamente la asimetría fotografiada.
+vec3 tonemap(vec3 x){
+  x *= 1.04;
+  return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), 0.0, 1.0);
 }
-float surfH(vec3 p, float amp, float spd){
-  if(uMat > 2.5 && uMat < 3.5) return -9.0;
-  float base = uLevel*2.06 - 1.03;
-  float A = amp * (1.0 + uEnergy*2.6);
-  float w = sin(p.x*4.4 + uTime*0.85*spd)*A
-          + sin(p.z*3.2 - uTime*0.66*spd)*A*0.75
-          + (fbm(p.xz*2.6 + vec2(uTime*0.15*spd, 0.0)) - 0.5)*A*2.4;
-  return base + w;
+
+// EL TOPE DEL VASO YA VINO MAPEADO. uLevel es altura de TRAZO, no un dato:
+// quien lo acotó fue orbWaterline en el contrato puro, y la cifra y la frase
+// nunca lo vieron. Aquí sólo se convierte de 0–1 del vidrio a la coordenada Y
+// de la esfera.
+float waterBase(){ return uLevel * 2.0 - 1.0; }
+
+float waveAmp(){
+  return WAVE_AMP * (1.0 + uEnergy*2.2 + min(length(uTilt)*3.4, 1.6));
 }
+
+float waterHeight(vec3 p, float detail){
+  float base = waterBase();
+  float lean = dot(p.xz, uTilt);
+  float A = waveAmp();
+  // La marejada da el vaivén; el rizo da la RED de la cáustica, porque la
+  // curvatura va con el CUADRADO de la frecuencia: pesa poco en la altura y
+  // muchísimo en dónde se junta la luz.
+  float w = A*(       sin(dot(p.xz, WD1)*4.40 + uTime*0.85)
+              + 0.75*sin(dot(p.xz, WD2)*3.20 - uTime*0.66)
+              + 0.20*sin(dot(p.xz, WD3)*11.70 - uTime*1.35)
+              + 0.20*sin(dot(p.xz, WD4)*9.30 + uTime*1.12));
+  if(detail > 0.5){
+    w += (fbm(p.xz*2.6 + vec2(uTime*0.15, 0.0)) - 0.5)*A*2.4;
+  }
+  // EL MENISCO: el agua trepa por la pared. Se mide contra el radio REAL del
+  // vidrio a esa altura, no contra el eje — si no, cerca del tope curvaría donde
+  // no hay pared. Es la mitad de por qué un orbe lleno se lee lleno.
+  float wallR = sqrt(max(0.0, 1.0 - base*base));
+  float rad = length(p.xz);
+  float men = smoothstep(wallR*0.42, wallR*1.02, rad) * MENISCUS;
+  return base + lean + w + men;
+}
+
 void main(){
-  vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / (0.5*min(uRes.x,uRes.y)) * 1.52;
+  vec2 uv = vP;
   float r = length(uv);
   float rr = r*r;
 
-  // The aura varies by direction, never atan: no seam through the halo.
+  // El halo es DISPERSIÓN de la misma luz, no un box-shadow: varía por
+  // dirección y nunca por atan, así que no hay costura.
   vec3 soul = vec3(0.0);
   float soulA = 0.0;
   {
@@ -115,47 +248,33 @@ void main(){
     float farGlow = 1.0 - smoothstep(1.0, 1.0 + (reach - 1.0)*3.1, r);
     float halo = pow(nearGlow, 1.7)*0.45 + pow(farGlow, 1.25)*0.55;
     halo *= smoothstep(0.965, 1.015, r);
+    // La luz se dispersa más hacia donde ilumina.
+    halo *= 0.80 + 0.34*max(dot(dir, LKEY.xy), 0.0);
     vec3 sc = mix(uAcc, uLiq, 0.45);
-    soul = sc * halo * (0.26 + 0.34*uVoice);
-    soulA = clamp(halo*(0.15 + 0.24*uVoice), 0.0, 1.0);
+    soul = sc * halo * (0.21 + 0.30*uVoice);
+    // En claro el halo aporta MENOS: un resplandor claro sobre una página clara
+    // engorda la silueta en vez de separarla del fondo.
+    soulA = clamp(halo*(0.105 + 0.20*uVoice) * mix(1.0, 0.50, uDay), 0.0, 1.0);
   }
-  if(rr > 1.0){ gl_FragColor = vec4(soul, soulA); return; }
 
-  float amp, spd;
-  matParams(amp, spd);
+  // SOMBRA PROPIA. Con alfa premultiplicado un color negro con alfa oscurece lo
+  // que hay detrás, así que la sombra es de verdad y no un degradado pintado.
+  float shadow = 0.0;
+  {
+    vec2 sp = (uv - vec2(0.30, -1.06)) / vec2(0.86, 0.20);
+    shadow = (1.0 - smoothstep(0.0, 1.0, length(sp))) * 0.30;
+  }
 
-  // Tier 1: no raymarch. It keeps the same level and material semantics with
-  // a cheap vertical body, a soft wave and a fixed patrimonio crystal.
-  if(KIPU_TIER < 1.5){
-    float edge1 = 1.0 - smoothstep(0.90, 1.0, rr);
-    float fres1 = pow(smoothstep(0.62, 1.0, r), 2.4);
-    if(uMat > 2.5 && uMat < 3.5){
-      float angle = atan(uv.y, uv.x);
-      float facets = 0.62 + 0.38*cos(angle*8.0 + uTime*0.08);
-      float crystal = 1.0 - smoothstep(0.30, 0.36, r);
-      vec3 core1 = mix(uDeep, uLiq, facets) * crystal;
-      gl_FragColor = vec4((core1 + uAcc*fres1*0.42)*edge1 + soul,
-                         clamp(crystal + fres1*0.34 + soulA, 0.0, 1.0));
-      return;
-    }
-    float wave = sin(uv.x*4.4 + uTime*0.55*spd)*amp*1.8;
-    float surface = uLevel*1.78 - 0.89 + wave;
-    float liquidMask = smoothstep(surface + 0.035, surface - 0.035, uv.y);
-    liquidMask *= step(0.001, uLevel);
-    float depth1 = clamp((surface - uv.y)*0.85, 0.0, 1.0);
-    vec3 body1 = mix(uLiq*1.15, uDeep*1.2, depth1) * liquidMask;
-    float sheen1 = (1.0-smoothstep(0.0,0.045,abs(uv.y-surface))) * step(0.001,uLevel);
-    vec3 col1 = body1 + uAcc*(sheen1*0.72 + fres1*0.34);
-    float alpha1 = clamp(liquidMask*0.82 + sheen1*0.42 + fres1*0.38, 0.02, 1.0);
-    if(uDay > 0.5){ col1 *= 0.86; alpha1 = clamp(alpha1*1.18,0.0,1.0); }
-    gl_FragColor = vec4(col1*edge1 + soul, min(1.0,alpha1*edge1+soulA));
+  if(rr > 1.0){
+    float aOut = clamp(soulA + shadow, 0.0, 1.0) * uPresence;
+    gl_FragColor = vec4(tonemap(soul) * uPresence, aOut);
     return;
   }
 
   vec3 ro = vec3(0.0, 0.0, 3.4);
   vec3 rd = normalize(vec3(uv*0.94, -3.2));
   float b = dot(ro, rd), c = dot(ro,ro) - 1.0, h = b*b - c;
-  if(h < 0.0) discard;
+  if(h < 0.0){ gl_FragColor = vec4(0.0); return; }
   h = sqrt(h);
   float t0 = -b - h, t1 = -b + h;
   vec3 pf = ro + rd*t0;
@@ -164,67 +283,165 @@ void main(){
   float ndv = max(dot(N,V), 0.0);
   float fres = pow(1.0 - ndv, 3.4);
 
-  vec3 rdi = refract(rd, N, 0.78);
-  float steps = KIPU_TIER > 2.5 ? 32.0 : 16.0;
-  float dt = (t1 - t0) / steps;
-  float thick = 0.0;
-  vec3 hp = vec3(0.0);
-  float wbest = 0.0;
-  for(int i=0;i<32;i++){
-    if(float(i) >= steps) break;
-    vec3 p = pf + rdi*(dt*(float(i)+0.5));
-    if(dot(p,p) <= 1.0){
-      float sd = surfH(p, amp, spd) - p.y;
-      float dens = smoothstep(-0.030, 0.030, sd);
-      thick += dens*dt;
-      float w = dens*(1.0-dens);
-      if(w > wbest){ wbest = w; hp = p; }
-    }
-  }
+  // Refracción al entrar en el vidrio: es lo que da PROFUNDIDAD. Sin esto el
+  // agua es un relleno plano detrás de una bola.
+  // La refracción se ablanda A PROPÓSITO. Con el índice del vidrio real los
+  // rayos del borde se doblan tanto que casi todos terminan en el agua, y
+  // entonces el orbe se ve lleno mire donde mire: la refracción se comía el
+  // NIVEL, que es lo único que este objeto tiene que decir. Queda la que
+  // muestra volumen sin mentir sobre la altura.
+  vec3 rdi = refract(rd, N, 0.90);
 
-  float d = clamp(thick*1.25, 0.0, 1.0);
-  float has = smoothstep(0.0, 0.035, thick);
+  // EL AGUA SE RESUELVE, NO SE MARCHA.
+  //
+  // Hasta acá el volumen se muestreaba paso a paso, y con los pasos que aguanta
+  // un teléfono la superficie salía gruesa y temblona — 34 muestras para una
+  // línea que necesita precisión de píxel. El plano del agua es un PLANO: su
+  // corte con el rayo tiene solución exacta, y una sola iteración de Newton le
+  // agrega la ola y el menisco. Sale más nítido y cuesta una fracción.
+  float tExit = max(0.0, -2.0*dot(pf, rdi));
+  vec3 qo = toWater(pf);
+  vec3 qd = toWater(rdi);
+  float base = waterBase();
+  float wallR = sqrt(max(0.0, 1.0 - base*base));
+
+  float tA = 0.0, tB = 0.0;
+  float tS = -1.0;
+  float surfaceSeen = 0.0;
+  vec3 qSurf = qo;
+  if(abs(qd.y) > 0.0015){
+    tS = (base - qo.y) / qd.y;
+    vec3 guess = qo + qd*tS;
+    tS += (waterHeight(guess, KIPU_TIER > 1.5 ? 1.0 : 0.0) - guess.y) / qd.y;
+    qSurf = qo + qd*tS;
+    if(qd.y < 0.0){ tA = max(0.0, tS); tB = tExit; }
+    else { tA = 0.0; tB = min(tS, tExit); }
+    if(tS > 0.0 && tS < tExit && dot(qSurf, qSurf) <= 1.0) surfaceSeen = 1.0;
+  } else {
+    // Rayo paralelo al agua: o está entero abajo, o entero arriba.
+    tA = 0.0;
+    tB = qo.y < base ? tExit : 0.0;
+  }
+  float thick = max(0.0, tB - tA);
+  float has = smoothstep(0.0, 0.030, thick);
   float hit = step(0.004, thick);
-  float sy = surfH(vec3(uv.x, 0.0, 0.0), amp, spd);
-  float below = clamp((sy - uv.y)*1.15, 0.0, 1.0);
-  vec3 body = mix(uLiq*1.40, uDeep*1.30, pow(below, 0.70));
-  body *= (0.40 + 0.70*d);
 
-  float flow = fbm(vec2(uv.x*2.3 + uTime*0.055*spd, uv.y*2.7 - uTime*0.042*spd));
-  float flow2 = fbm(vec2(uv.x*4.6 - uTime*0.03*spd, uv.y*4.1 + uTime*0.025*spd));
-  body *= 0.80 + 0.34*flow + 0.12*flow2;
+  // LA MATERIA DE CRISTAL NO LLEVA AGUA, y no es una decisión de estilo: cuando
+  // el motor no puede afirmar un techo —Patrimonio siempre, y cualquier capa sin
+  // denominador— un nivel sería una mentira. La doctrina de N2, ejecutada acá
+  // donde se dibuja: sin techo honesto no hay línea de agua que mirar.
+  float crystal = step(2.5, uMat) * step(uMat, 3.5);
+  thick *= 1.0 - crystal;
+  has *= 1.0 - crystal;
+  hit *= 1.0 - crystal;
+  surfaceSeen *= 1.0 - crystal;
+  // Profundidad MEDIA del tramo mojado: es lo que la luz recorrió hacia abajo.
+  float depth = max(0.0, base - (qo.y + qd.y*(tA + tB)*0.5));
+  float below = clamp(depth*1.15, 0.0, 1.0);
+  vec3 hp = qo + qd*mix(tA, tB, 0.62);
 
-  if(KIPU_TIER > 2.5){
-    float ca = fbm(hp.xz*5.0 + vec2(uTime*0.26*spd, uTime*0.12*spd));
-    body += uAcc * pow(max(ca-0.44, 0.0), 1.8) * 2.4 * hit * (1.0 - below*0.6);
+  // ESPESOR QUE SE NOTA — Beer-Lambert POR CANAL. El pigmento entra como
+  // coeficiente de extinción, así que el agua no se limita a oscurecerse:
+  // CAMBIA DE TONO al bajar, que es lo que hace un líquido de verdad. La misma
+  // ley para las cinco capas; lo único distinto es de qué color se traga la luz.
+  vec3 sigma = (vec3(1.0) - uLiq) * 1.55 + 0.16;
+  vec3 Tl = exp(-sigma * depth * 1.45);
+  vec3 body = mix(uDeep * 0.92, uLiq * 1.30, Tl);
+  body *= 0.60 + 0.55 * clamp(thick * 1.15, 0.0, 1.0);
+
+  // Corrientes lentas: el agua se mueve SIEMPRE, no sólo al tocar.
+  float flow = fbm(vec2(uv.x*2.3 + uTime*0.055, uv.y*2.7 - uTime*0.042));
+  float flow2 = fbm(vec2(uv.x*4.6 - uTime*0.03, uv.y*4.1 + uTime*0.025));
+  body *= 0.82 + 0.30*flow + 0.12*flow2;
+
+  if(KIPU_TIER > 1.5){
+    // CÁUSTICA ENFOCADA — es CONVERGENCIA, no ruido.
+    //
+    // Hasta acá esto era fbm con un umbral: manchas que se movían, que es lo
+    // que se ve cuando alguien dibuja «cáustica» sin calcularla. La cáustica
+    // real es DENSIDAD DE RAYOS: donde la superficie curva junta la luz, el
+    // mismo haz cae sobre menos fondo y brilla. Eso es el jacobiano del mapeo
+    // superficie→fondo, y como la ola son dos senos sus segundas derivadas
+    // salen EXACTAS — la cáustica de verdad cuesta dos senos más que la falsa.
+    //
+    // Donde el jacobiano se acerca a cero los rayos se cruzan y aparece la
+    // línea brillante: por eso salen filamentos y no manchas.
+    // LA CÁUSTICA VIVE EN EL FONDO DEL VASO, no flotando en el volumen. Pintada
+    // en un punto cualquiera del rayo salían rayones cruzando el agua entera;
+    // es una mancha de luz apoyada en la pared interior de abajo.
+    vec3 qFloor = qo + qd*tExit;
+    float dBelow = max(0.0, base - qFloor.y);
+    float onFloor = smoothstep(0.04, 0.34, dBelow) * smoothstep(0.05, -0.55, qFloor.y);
+    vec3 lw = toWater(LKEY);
+    // por dónde entró ESE rayo de luz: se sigue la dirección de la LUZ hacia
+    // arriba, no la del ojo. Sin esta paralaje el dibujo no se corre con la
+    // profundidad y vuelve a parecer una calcomanía pegada al fondo.
+    vec2 entry = qFloor.xz + (lw.xz / max(lw.y, 0.30)) * dBelow;
+    // y gira con el vaso: el agua se la lleva consigo cuando lo hacés rodar
+    entry = rotY(vec3(entry.x, 0.0, entry.y), uSpin).xz;
+    float A = waveAmp();
+    // Segundas derivadas EXACTAS de los cuatro trenes, montadas en la HESSIANA
+    // completa. El jacobiano del mapeo superficie→fondo es su determinante:
+    // donde se acerca a cero los rayos se cruzan y ahí está la línea brillante.
+    // Con el término cruzado la red se cierra; sin él quedaban rayas paralelas.
+    float h1 = -A * 1.00 *  19.36 * sin(dot(entry, WD1)*4.40 + uTime*0.85);
+    float h2 = -A * 0.75 *  10.24 * sin(dot(entry, WD2)*3.20 - uTime*0.66);
+    float h3 = -A * 0.20 * 136.89 * sin(dot(entry, WD3)*11.70 - uTime*1.35);
+    float h4 = -A * 0.20 *  86.49 * sin(dot(entry, WD4)*9.30 + uTime*1.12);
+    float hxx = h1*WD1.x*WD1.x + h2*WD2.x*WD2.x + h3*WD3.x*WD3.x + h4*WD4.x*WD4.x;
+    float hyy = h1*WD1.y*WD1.y + h2*WD2.y*WD2.y + h3*WD3.y*WD3.y + h4*WD4.y*WD4.y;
+    float hxy = h1*WD1.x*WD1.y + h2*WD2.x*WD2.y + h3*WD3.x*WD3.y + h4*WD4.x*WD4.y;
+    float f = dBelow * 3.4;
+    float jac = abs((1.0 + f*hxx)*(1.0 + f*hyy) - f*f*hxy*hxy);
+    float caus = clamp(1.0/max(jac, 0.11) - 1.0, 0.0, 4.0);
+    body += mix(uAcc, vec3(1.0), 0.46) * caus * hit * onFloor * 0.22;
   }
 
-  float wl = abs(uv.y - sy);
-  float sheen = (1.0 - smoothstep(0.0, 0.05, wl)) * has;
-  body += uAcc * sheen * 0.95;
-  body += uLiq * pow(max(-uv.y,0.0), 2.0) * 0.34 * d;
+  // LA SUPERFICIE, VISTA COMO LO QUE ES: un disco dentro de la esfera. En
+  // perspectiva se lee como una elipse, y su borde brillante es EL MENISCO —
+  // el sitio exacto donde el agua toca el vidrio. Es lo que hace que un orbe
+  // lleno se lea lleno en vez de pintado.
+  float rho = length(qSurf.xz);
+  float ring = smoothstep(wallR*0.70, wallR*1.005, rho);
+  float glance = pow(1.0 - min(1.0, abs(normalize(qd).y)), 3.0);
+  float sheen = surfaceSeen * clamp(ring*0.85 + glance*0.55, 0.0, 1.0);
+  body += mix(uAcc, vec3(1.0), 0.34) * sheen * 1.25;
 
   if(KIPU_TIER > 2.5){
+    // MOTAS SUSPENDIDAS, en el volumen y no pegadas a la pantalla: se mide la
+    // distancia del rayo REFRACTADO a un punto 3D, así que derivan con
+    // profundidad y giran con el orbe.
     float motes = 0.0;
-    for(int i=0;i<6;i++){
+    for(int i=0;i<7;i++){
       float fi = float(i);
-      float ph = fract(uTime*0.028 + fi*0.1631);
-      vec2 mp = vec2(sin(uTime*0.19 + fi*2.37)*0.52, -0.92 + ph*1.7);
-      motes += smoothstep(0.023, 0.0, length(uv - mp));
+      // La mota vive EN EL AGUA, así que su altura se juzga en espacio de agua
+      // y su distancia al rayo en espacio de vista. Mezclar los dos la habría
+      // dejado flotando fuera del líquido cuando el vaso está a medio llenar.
+      vec3 mq = rotY(vec3(
+        sin(uTime*0.11 + fi*2.13)*0.56,
+        fract(uTime*0.020 + fi*0.1631)*1.72 - 0.86,
+        cos(uTime*0.09 + fi*1.71)*0.56), uSpin);
+      if(mq.y < base + dot(mq.xz, uTilt)){
+        vec3 mp = fromWater(mq);
+        motes += smoothstep(0.034, 0.004, length(cross(mp - pf, rdi)));
+      }
     }
-    body += uAcc * motes * 1.15 * hit;
+    body += mix(uAcc, vec3(1.0), 0.45) * motes * 0.52 * hit;
   }
 
-  vec3 Lk = normalize(vec3(-0.42, 0.86, 0.55));
+  // EL VIDRIO REFLEJA EL CUARTO, no un punto. Fresnel de Schlick sobre el
+  // entorno: de frente el vidrio es casi transparente y al ras devuelve casi
+  // todo, que es exactamente lo que hace que se lea como vidrio y no como
+  // plástico brillante.
   vec3 R = reflect(-V, N);
-  float spec = pow(max(dot(R, Lk), 0.0), 210.0) * 0.85;
-  float spec2 = pow(max(dot(R, normalize(vec3(0.58,-0.42,0.7))), 0.0), 46.0) * 0.14;
+  float schlick = 0.04 + 0.96*pow(1.0 - ndv, 5.0);
+  vec3 reflection = envSample(R) * schlick * mix(2.35, 1.45, uDay);
   float rimw = pow(1.0 - ndv, 5.0);
   vec3 irid = 0.5 + 0.5*cos(6.28318*(vec3(0.0,0.34,0.68) + fres*1.5 + uTime*0.025));
-  vec3 rim = mix(uAcc, irid, 0.26) * (fres*1.30 + rimw*2.35);
+  vec3 rim = mix(uAcc, irid, 0.26) * (fres*0.62 + rimw*1.05);
 
-  // Patrimonio deliberately has a fixed crystal. Its number carries value;
-  // no invented denominator changes this geometry.
+  // Patrimonio conserva su núcleo de cristal, y no por estética: el motor no
+  // puede afirmarle un techo honesto, así que un nivel sería una mentira.
   vec3 core = vec3(0.0);
   float coreA = 0.0;
   if(uMat > 2.5 && uMat < 3.5){
@@ -234,7 +451,7 @@ void main(){
       hh = sqrt(hh);
       float ct0 = max(-bb - hh, 0.0);
       vec3 cn = normalize(pf + rdi*ct0);
-      float rota = uTime*0.05;
+      float rota = uTime*0.05 + uSpin;
       vec2 sph = vec2(atan(cn.z, cn.x) + rota, acos(clamp(cn.y,-1.0,1.0)));
       vec2 q = vec2(sph.x*1.55, sph.y*2.15);
       vec2 tri = vec2(q.x + q.y*0.577, q.y*1.155);
@@ -244,9 +461,8 @@ void main(){
       float qy = cell.y/1.155, qx = cell.x - qy*0.577;
       vec2 cs = vec2(qx/1.55, qy/2.15);
       vec3 fn = rotY(normalize(vec3(sin(cs.y)*cos(cs.x), cos(cs.y), sin(cs.y)*sin(cs.x))), -rota);
-      vec3 Lc = normalize(vec3(-0.38, 0.80, 0.62));
-      float lam = max(dot(fn, Lc), 0.0);
-      float sp = pow(max(dot(reflect(rdi, fn), Lc), 0.0), 24.0);
+      float lam = max(dot(fn, LKEY), 0.0);
+      float sp = pow(max(dot(reflect(rdi, fn), LKEY), 0.0), 24.0);
       float fh = hash21(floor(tri) + sub*17.0);
       core = uDeep*(0.75 + 0.35*fh) + uLiq*(0.16 + 0.80*lam*lam);
       core += vec3(0.94,0.98,1.0) * sp * 0.85;
@@ -256,14 +472,49 @@ void main(){
     }
   }
 
-  vec3 col = body*has + core*coreA + rim + vec3(spec) + uAcc*spec2;
-  float alpha = clamp(has*(0.42 + 0.56*d) + coreA*0.90 + fres*0.34 + rimw*0.72 + spec + sheen*0.4 + 0.02, 0.0, 1.0);
-  if(uDay > 0.5){ col *= 0.86; alpha = clamp(alpha*1.22 + d*0.1, 0.0, 1.0); }
-  float edge = 1.0 - smoothstep(0.958, 1.0, rr);
-  gl_FragColor = vec4(col*edge + soul, min(1.0, alpha*edge + soulA));
+  // ARRIBA DE LA LÍNEA HAY VIDRIO, Y EL VIDRIO TIENE CUERPO: una pared trasera
+  // que devuelve algo de luz y un tinte propio. Sin esto, un orbe a medio llenar
+  // se lee como media bola cortada sobre un agujero negro — y entonces el tope
+  // del vaso no serviría de nada, porque el aire de arriba no se vería.
+  // Y por el vidrio VACÍO se ve el cuarto, refractado: el rayo entra, cruza la
+  // esfera y sale al entorno. Antes era un degradado inventado; ahora es el
+  // mismo estudio que se refleja por fuera, lo que ata las dos mitades.
+  vec3 backP = normalize(pf + rdi*tExit);
+  vec3 exitDir = refract(rdi, -backP, 1.0/0.90);
+  if(dot(exitDir, exitDir) < 0.0001) exitDir = reflect(rdi, -backP);
+  // En claro el vidrio DEJA PASAR el fondo en vez de pintarlo: menos energía y
+  // menos cobertura. Un vidrio vacío que tapa la página no es vidrio, es una
+  // bola blanca.
+  vec3 empty = envSample(exitDir) * mix(2.15, 1.05, uDay)
+             + mix(uAcc, vec3(1.0), 0.42) * 0.085 * pow(1.0 - ndv, 1.6);
+
+  vec3 col = body*has + empty*(1.0 - has*0.74) + core*coreA + rim + reflection;
+  float alpha = clamp(has*(0.42 + 0.56*clamp(thick*1.25,0.0,1.0)) + coreA*0.90
+                      + (1.0 - has)*mix(0.23, 0.12, uDay)
+                      + fres*0.30 + rimw*0.62
+                      + clamp(schlick*1.15, 0.0, 0.85) + sheen*0.4 + 0.02, 0.0, 1.0);
+  if(uDay > 0.5){ col *= 0.88; alpha = clamp(alpha*1.20, 0.0, 1.0); }
+
+  // BORDE DE UN PÍXEL EXACTO, a cualquier DPR. Para una esfera calculada en el
+  // fragmento el MSAA no hace nada —sólo suaviza bordes de geometría, y aquí la
+  // geometría es un cuadrilátero—, así que el antialiasing que sirve es este:
+  // analítico, con la derivada del radio.
+#ifdef GL_OES_standard_derivatives
+  float aa = max(fwidth(r), 0.0015);
+#else
+  float aa = 0.006;
+#endif
+  float edge = 1.0 - smoothstep(1.0 - aa*1.3, 1.0 + aa*0.4, r);
+
+  vec3 outCol = tonemap(col*edge + soul);
+  float outA = clamp(alpha*edge + soulA + shadow*(1.0-edge), 0.0, 1.0);
+  gl_FragColor = vec4(outCol * uPresence, outA * uPresence);
 }`;
 
-function compileShader(gl: WebGLRenderingContext, type: number, source: string): WebGLShader | null {
+type Gl = WebGLRenderingContext | WebGL2RenderingContext;
+type RenderTier = 1 | 2 | 3;
+
+function compileShader(gl: Gl, type: number, source: string): WebGLShader | null {
   const shader = gl.createShader(type);
   if (!shader) return null;
   gl.shaderSource(shader, source);
@@ -275,19 +526,22 @@ function compileShader(gl: WebGLRenderingContext, type: number, source: string):
   return shader;
 }
 
-type RenderTier = 1 | 2 | 3;
-
 interface ProgramBundle {
   tier: RenderTier;
   program: WebGLProgram;
   locations: {
-    resolution: WebGLUniformLocation | null;
+    canvas: WebGLUniformLocation | null;
+    center: WebGLUniformLocation | null;
+    span: WebGLUniformLocation | null;
     time: WebGLUniformLocation | null;
     level: WebGLUniformLocation | null;
     energy: WebGLUniformLocation | null;
     day: WebGLUniformLocation | null;
     material: WebGLUniformLocation | null;
     voice: WebGLUniformLocation | null;
+    presence: WebGLUniformLocation | null;
+    spin: WebGLUniformLocation | null;
+    tilt: WebGLUniformLocation | null;
     liquid: WebGLUniformLocation | null;
     deep: WebGLUniformLocation | null;
     accent: WebGLUniformLocation | null;
@@ -297,7 +551,7 @@ interface ProgramBundle {
 const RENDER_TIERS: readonly RenderTier[] = [1, 2, 3];
 
 function linkTierProgram(
-  gl: WebGLRenderingContext,
+  gl: Gl,
   vertex: WebGLShader,
   tier: RenderTier,
 ): ProgramBundle | null {
@@ -311,7 +565,7 @@ function linkTierProgram(
   }
   gl.attachShader(program, vertex);
   gl.attachShader(program, fragment);
-  gl.bindAttribLocation(program, 0, "aPos");
+  gl.bindAttribLocation(program, 0, "aQuad");
   gl.linkProgram(program);
   gl.deleteShader(fragment);
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
@@ -323,13 +577,18 @@ function linkTierProgram(
     tier,
     program,
     locations: {
-      resolution: uniform("uRes"),
+      canvas: uniform("uCanvas"),
+      center: uniform("uCenter"),
+      span: uniform("uSpan"),
       time: uniform("uTime"),
       level: uniform("uLevel"),
       energy: uniform("uEnergy"),
       day: uniform("uDay"),
       material: uniform("uMat"),
       voice: uniform("uVoice"),
+      presence: uniform("uPresence"),
+      spin: uniform("uSpin"),
+      tilt: uniform("uTilt"),
       liquid: uniform("uLiq"),
       deep: uniform("uDeep"),
       accent: uniform("uAcc"),
@@ -337,27 +596,45 @@ function linkTierProgram(
   };
 }
 
-export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null {
-  const gl = canvas.getContext("webgl", {
+/**
+ * §5.1 · «Trabajamos desde lo más alto posible», literal.
+ *
+ * Hasta N2 el orbe le PEDÍA a la GPU el camino de bajo consumo, sin antialiasing
+ * y en WebGL1 — en un iPhone, dejar rendimiento sobre la mesa a propósito. Ahora
+ * se pide WebGL2 con alto rendimiento, y WebGL1 queda como degradado honesto:
+ * el shader está escrito en GLSL ES 1.00, que compila en los dos, así que la
+ * rama de degradado es la MISMA que se ejecuta todos los días y no una segunda
+ * versión que nadie probó nunca.
+ */
+function acquireContext(canvas: HTMLCanvasElement): { gl: Gl; version: 1 | 2 } | null {
+  const attributes: WebGLContextAttributes = {
     alpha: true,
     premultipliedAlpha: true,
-    antialias: false,
+    antialias: true,
     depth: false,
-    powerPreference: "low-power",
-    // N2 §5.1 · Sin esto, el navegador PUEDE limpiar el lienzo después de
-    // componer, y un lienzo pausado se queda en blanco. Hasta N1 daba igual
-    // porque pausar coincidía con esconder el orbe vivo; ahora el orbe vivo se
-    // queda puesto mientras se desliza o mientras el chat está abierto, así que
-    // el último cuadro TIENE que sobrevivir. Pausar la animación es legítimo;
-    // quedarse sin imagen sería otra sustitución con otro nombre.
+    powerPreference: "high-performance",
+    // N2 §5.1 · Un lienzo pausado no puede quedarse en blanco: cuando la hoja
+    // de conversación tapa el orbe el bucle para, y el último cuadro tiene que
+    // sobrevivir debajo.
     preserveDrawingBuffer: true,
-  });
-  if (!gl) return null;
+  };
+  const gl2 = canvas.getContext("webgl2", attributes);
+  if (gl2) return { gl: gl2, version: 2 };
+  const gl1 = canvas.getContext("webgl", attributes);
+  if (gl1) return { gl: gl1, version: 1 };
+  return null;
+}
+
+export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null {
+  const acquired = acquireContext(canvas);
+  if (!acquired) return null;
+  const { gl, version } = acquired;
+  // Core en WebGL2; en WebGL1 hay que pedirla, y si no está el shader cae a un
+  // ancho de borde fijo en vez de mentir con una derivada que no existe.
+  if (version === 1) gl.getExtension("OES_standard_derivatives");
 
   const vertex = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SOURCE);
-  if (!vertex) {
-    return null;
-  }
+  if (!vertex) return null;
   const programs: ProgramBundle[] = [];
   for (const tier of RENDER_TIERS) {
     const bundle = linkTierProgram(gl, vertex, tier);
@@ -376,44 +653,66 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
     return null;
   }
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.bufferData(
+    gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+    gl.STATIC_DRAW,
+  );
   gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-  let width = 1;
-  let height = 1;
+
+  let cssWidth = 1;
+  let cssHeight = 1;
+  let antialias = gl.getContextAttributes()?.antialias === true;
   let disposed = false;
 
   return {
-    resize(cssWidth, cssHeight, requestedDpr) {
+    resize(nextCssWidth, nextCssHeight, requestedDpr) {
       const dpr = Math.min(Math.max(requestedDpr || 1, 1), 2);
-      width = Math.max(1, Math.round(cssWidth * dpr));
-      height = Math.max(1, Math.round(cssHeight * dpr));
+      cssWidth = Math.max(1, nextCssWidth);
+      cssHeight = Math.max(1, nextCssHeight);
+      const width = Math.max(1, Math.round(cssWidth * dpr));
+      const height = Math.max(1, Math.round(cssHeight * dpr));
       if (canvas.width !== width) canvas.width = width;
       if (canvas.height !== height) canvas.height = height;
       gl.viewport(0, 0, width, height);
-      return { dpr, width, height };
+      antialias = gl.getContextAttributes()?.antialias === true;
+      return { dpr, width, height, glVersion: version, antialias };
     },
-    draw(values) {
+    draw(frame) {
       if (disposed || gl.isContextLost()) return;
-      const bundle = programs[values.tier - 1];
+      const bundle = programs[frame.tier - 1];
       if (!bundle) return;
       const { locations } = bundle;
       gl.useProgram(bundle.program);
-      gl.uniform2f(locations.resolution, width, height);
-      gl.uniform1f(locations.time, values.time);
-      gl.uniform1f(locations.level, values.level);
-      gl.uniform1f(locations.energy, values.energy);
-      gl.uniform1f(locations.day, values.day);
-      gl.uniform1f(locations.material, values.material);
-      gl.uniform1f(locations.voice, values.voice);
-      gl.uniform3fv(locations.liquid, values.liquid);
-      gl.uniform3fv(locations.deep, values.deep);
-      gl.uniform3fv(locations.accent, values.accent);
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.uniform2f(locations.canvas, cssWidth, cssHeight);
+      gl.uniform1f(locations.time, frame.time);
+      gl.uniform1f(locations.day, frame.day);
+      // Atrás primero: las vecinas quedan DEBAJO de la activa, así que al
+      // solaparse durante el gesto la que mirás nunca queda tapada.
+      const ordered = [...frame.orbs]
+        .filter((orb) => orb.presence > 0.002 && orb.radius > 0.5)
+        .sort((a, b) => b.presence - a.presence);
+      for (let i = ordered.length - 1; i >= 0; i -= 1) {
+        const orb = ordered[i]!;
+        gl.uniform2f(locations.center, orb.centerX, orb.centerY);
+        gl.uniform1f(locations.span, orb.radius * ORB_SPAN);
+        gl.uniform1f(locations.level, orb.waterline);
+        gl.uniform1f(locations.energy, orb.energy);
+        gl.uniform1f(locations.material, orb.material);
+        gl.uniform1f(locations.voice, orb.voice);
+        gl.uniform1f(locations.presence, orb.presence);
+        gl.uniform1f(locations.spin, orb.spin);
+        gl.uniform2f(locations.tilt, orb.tiltX, orb.tiltZ);
+        gl.uniform3fv(locations.liquid, orb.liquid);
+        gl.uniform3fv(locations.deep, orb.deep);
+        gl.uniform3fv(locations.accent, orb.accent);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+      }
     },
     dispose() {
       if (disposed) return;
