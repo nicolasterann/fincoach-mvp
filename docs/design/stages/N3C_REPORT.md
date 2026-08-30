@@ -906,3 +906,95 @@ podía dar el movimiento. Cero dependencias.
 
 ```
 ```
+
+---
+
+## Ronda 7 — medir el suyo, y calibrar contra el número
+
+El founder trajo su Chrome al frente. Con la pestaña visible el navegador vuelve
+a componer cuadros, y por fin pude **capturar su orbe cuadro a cuadro**: 181
+cuadros de reposo y 181 con audio, leídos DENTRO del cuadro de animación
+(su lienzo no conserva el búfer, así que copiarlo desde fuera devuelve vacío).
+
+### Lo que mide su orbe
+
+| | **en reposo** | **hablando** |
+|---|---|---|
+| magnitud del movimiento (px/0,5 s sobre 80) | **5,99** | pulsa 3,4 → 7,4 |
+| coherencia de traslación | **0,12** | **0,56 – 0,74** |
+| coherencia de rotación | 0,07 | 0,10 – 0,39 |
+| decorrelación a 0,25 / 0,5 / 1 / 2 s | 0,0246 / 0,0449 / 0,0747 / 0,0969 | — |
+| saturación (mín / media / máx) | 0,55 / **0,91** / 1,00 | — |
+| luz (mín / máx) | 0,34 / 0,83 | — |
+| tono | banda de ~40°, 85 % en un solo tono | — |
+
+**Y ahí está la respuesta a las dos preguntas.**
+
+**En reposo su movimiento es INCOHERENTE.** Las tres coherencias valen ~0,1: no
+hay traslación de conjunto, ni giro de conjunto, ni expansión. Cada trozo va por
+su lado. Eso es lo que se lee como paz — nada tiene dirección, así que no hay
+nada que seguir.
+
+**Hablando pasa a ser COHERENTE.** La coherencia de traslación salta a 0,56–0,74
+y la magnitud pulsa al ritmo del sonido. Eso son **olas**: movimiento con
+dirección, que barre y vuelve. Es literalmente lo que el founder describió —
+«crea como ondas u olas de líquido que responden a la voz».
+
+Son dos regímenes opuestos, y nosotros no teníamos ninguno de los dos.
+
+### Tres defectos nuestros, cada uno encontrado por una medición
+
+**1 · Un error de UNIDADES tenía el fluido congelado.** La advección desplaza
+`dt × velocidad × (1/128)` por cuadro: con `dt = 1/60` eso divide la velocidad
+por **7680**. Yo inyectaba velocidades de ~0,07, que mueven el rastro **una
+diezmilésima de téxel por cuadro**. El fluido no estaba lento: estaba parado.
+
+Lo delató una medición absurda: **quintuplicar la fuerza bajó el movimiento**
+(1,52 → 1,02). Ninguna cantidad de ajuste iba a arreglar una escala equivocada.
+
+**2 · El rastro saturaba contra su propio tope.** Con la inyección alta el
+rastro vivía en ±10 y el orbe lo recortaba a ±1,35. Pasado el recorte el
+desplazamiento es **constante en casi todo el disco**, y un desplazamiento
+constante no mueve nada. Ése era, exactamente, el «patrón trabado» que el
+founder vio tres rondas seguidas. Ahora el tope es **suave**: siempre queda
+pendiente, por fuerte que sea el rastro.
+
+**3 · El mapeo tonal desaturaba el color.** Medido: 0,50 contra su 0,91. No era
+el vidrio — es que comprimir los altos les quita saturación. Ellos lo compensan
+con un paso propio (`czm_saturation` está en su shader); acá va el mismo.
+**Medido después: 0,91, igual que ellos.**
+
+Y una corrección de forma: los agitadores empujaban **hacia donde iban**, así que
+los cinco sumaban una corriente de conjunto — coherencia 0,49 contra su 0,12, que
+es justo lo que se lee como «una capa que pasa». Ahora empujan **de costado y
+con sentidos alternos**: cada uno inyecta un remolino, la suma se cancela, y
+queda el corte entre remolinos.
+
+### Dónde quedamos, con el mismo instrumento
+
+| | ellos | antes de la ronda | **ahora** |
+|---|---|---|---|
+| magnitud | 5,99 | 1,52 | **4,88** |
+| coherencia de traslación | 0,12 | 0,21 → 0,49 | **0,26** |
+| decorrelación a 1 s | 0,0747 | 0,0048 | **0,0184** |
+| saturación media | 0,91 | 0,50 | **0,91** |
+
+La saturación está igualada. La magnitud está al **81 %**. La decorrelación
+sigue **4× por debajo**: el campo se renueva menos que el suyo, y ése es el
+trabajo que queda.
+
+### Lo que el gate aprendió de todo esto
+
+Tres pines nuevos, y los tres nacieron de un defecto que **había sobrevivido**:
+
+- **las unidades**: un empujón tiene que mover el rastro más de un décimo de
+  téxel por cuadro. Por debajo de eso no hay movimiento que ver, y nada lo
+  delataba.
+- **el tope suave**: prohibido el recorte duro, que es como se fabrica un patrón
+  trabado.
+- **el factor de saturación** tiene que ser mayor que 1,2: con 1,0 la función
+  existe y no hace nada — así sobrevivía su mutación.
+
+```
+lint 0 · build 0 · capture 891/891 · mutación 65/65 con nombre
+```

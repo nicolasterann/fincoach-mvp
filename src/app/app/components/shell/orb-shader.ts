@@ -480,7 +480,9 @@ vec3 fieldRamp(float gray, float hue, float inverted){
   vec3 c0 = mix(uDeep, mid, 0.30);
   vec3 c1 = mix(uDeep, mid, 0.62);
   vec3 c2 = mid;
-  vec3 c3 = mix(mid, vec3(1.0), 0.20);
+  // el claro alto deja de irse al blanco: el blanco no tiene tono, y era otra
+  // vía por la que se perdía saturación
+  vec3 c3 = mix(mid, vec3(1.0), 0.08);
   // interpolación suavizada en cada tramo: sin esto la unión entre paradas es
   // un quiebre de pendiente, y un quiebre de pendiente se VE como un borde
   if(l < 0.38){ float t = l / 0.38; return mix(c0, c1, t*t*(3.0-2.0*t)); }
@@ -538,6 +540,16 @@ vec3 fromWater(vec3 q){
 vec3 rotY(vec3 v, float a){
   float c = cos(a), sn = sin(a);
   return vec3(c*v.x + sn*v.z, v.y, -sn*v.x + c*v.z);
+}
+// LA SATURACIÓN, EXPLÍCITA — como su 'czm_saturation'.
+//
+// Medido: su orbe promedia 0,91 de saturación y el nuestro 0,50. El culpable no
+// era el vidrio: es el mapeo tonal, que comprime los altos y de paso los
+// desatura. Ellos lo compensan con un paso de saturación propio; acá va el
+// mismo, aplicado al campo antes de comprimir.
+vec3 saturar(vec3 c, float k){
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  return max(mix(vec3(l), c, k), 0.0);
 }
 vec3 tonemap(vec3 x){
   x *= 1.04;
@@ -659,14 +671,18 @@ void main(){
       float fc = cos(fa), fs = sin(fa);
       vec2 fr = vec2(fc*fq.x - fs*fq.y, fs*fq.x + fc*fq.y);
       vec3 fl = texture2D(uFluid, clamp(fr * 0.44 + 0.5, 0.015, 0.985)).xyz;
-      gFlow = clamp(fl.xy * 1.85, -1.0, 1.0);
+      // Tope SUAVE en vez de recorte: un recorte pega el valor contra el
+      // límite y ahí deja de variar — que es como se fabricó el patrón
+      // trabado. Así siempre queda pendiente, por fuerte que sea el rastro.
+      vec2 fw = fl.xy * 11.0;
+      gFlow = fw / (1.0 + abs(fw) * 0.72);
       gFlowMag = clamp(fl.z * 3.0, 0.0, 1.0);
     }
     vec2 fp = vec2(cs*fq.x + sn*fq.y, -sn*fq.x + cs*fq.y) * 0.22;
     // Cada capa mira OTRA PARTE del mismo campo. Sin esto las cinco dibujan el
     // mismo patrón con distinto color, y el carrusel se lee como un filtro.
     fp += vec2(uMat * 0.37, uMat * 0.23);
-    gField = fieldRamp(fieldGray(fp, uField, drive), fieldHue(fp, uField), 1.0 - uDay) * uEnv;
+    gField = saturar(fieldRamp(fieldGray(fp, uField, drive), fieldHue(fp, uField), 1.0 - uDay), 1.62) * uEnv;
     gField += fieldGrain(fq) * (0.055 + 0.02*uDay) * uEnv;
     // donde el fluido acaba de pasar queda un rastro más claro: es la estela,
     // y es lo que hace que se vea DE DÓNDE viene el movimiento
@@ -918,7 +934,10 @@ void main(){
   // …y cuando no hay techo, ese vidrio vacío ES el campo, entero.
   // 1,02 y no 1,30: medido, con ganancia el extremo claro de la rampa recorta
   // y el cristal sale con un agujero blanco en el medio.
-  empty = mix(empty, gField * 1.02, crystal * 0.86);
+  // Medido: su saturación media es 0,91 y la nuestra 0,50. El 14 % de vidrio
+  // que quedaba mezclado es gris azulado, y gris mezclado con color es color
+  // lavado. Con el campo lleno el vidrio casi no participa.
+  empty = mix(empty, gField * 1.04, crystal * 0.965);
 
   // El borde es el ACENTO de la capa, y nada más. Intenté sumarle aquí la
   // dispersión otra vez y salió mal, medido: el término era 'sR - sB', o sea la
@@ -929,8 +948,9 @@ void main(){
   // índice. Sumarla dos veces no es más física, es un error de color.
   vec3 rim = uAcc * (fres*0.10 + rimw*0.20) * mix(1.0, 1.75, uDay);
 
+  // …y el reflejo tampoco: es acromático, y sumado encima desatura todo.
   vec3 col = body*has + empty*(1.0 - has*0.985) + core*coreA + rim
-           + reflection * (1.0 - has*0.62);
+           + reflection * (1.0 - has*0.62) * (1.0 - crystal*0.78);
   float alpha = clamp(has*(0.42 + 0.56*clamp(thick*1.25,0.0,1.0)) + coreA*0.90
                       + (1.0 - has)*mix(0.23, 0.30, uDay)
                       // sin techo el vidrio está LLENO del campo, así que tapa

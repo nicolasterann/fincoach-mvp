@@ -43,24 +43,62 @@ export const ORB_FLUID_DYE_SIZE = 192;
  */
 export const ORB_FLUID_ITERATIONS: Record<1 | 2 | 3, number> = { 1: 0, 2: 8, 3: 14 };
 
-/** Cuánto se frena el fluido por segundo. Sin esto no se aquieta nunca. */
-export const ORB_FLUID_VELOCITY_DISSIPATION = 0.34;
+/**
+ * Cuánto se frena el fluido por segundo.
+ *
+ * MEDIDO, y es la corrección que importa: con 0,34 el fluido llegaba a un
+ * RÉGIMEN ESTACIONARIO — la disipación se comía la energía tan rápido que el
+ * campo quedaba dominado por el forzado, que es periódico, y se asentaba en una
+ * figura. Quintuplicar la fuerza no movió el patrón ni un píxel (1,52 → 1,02):
+ * ésa fue la prueba de que el problema no era cuánto se empuja sino que el
+ * fluido se estaba asentando. El founder lo había visto sin medir nada: «fluye
+ * pero sigue quedando estático en ese patrón».
+ *
+ * Con una disipación baja el fluido CONSERVA su energía, los remolinos se
+ * rompen entre sí y el campo no vuelve a pasar dos veces por el mismo estado.
+ */
+export const ORB_FLUID_VELOCITY_DISSIPATION = 0.055;
 /** Y cuánto se desvanece el rastro. Más lento que la velocidad: deja estela. */
-export const ORB_FLUID_DYE_DISSIPATION = 0.16;
+export const ORB_FLUID_DYE_DISSIPATION = 0.045;
 /** La vorticidad: cuánto se enrosca. Es lo que hace que «bordee la esfera». */
-export const ORB_FLUID_CURL = 22;
+export const ORB_FLUID_CURL = 34;
 
-/** Una salpicadura: dónde se empuja el fluido, hacia dónde y con cuánta fuerza. */
+/**
+ * Una salpicadura. **Las dos mitades viven en unidades distintas y por eso van
+ * separadas** — confundirlas fue el defecto que tuvo el fluido congelado tres
+ * mediciones seguidas.
+ *
+ * La ADVECCIÓN desplaza `dt × velocidad × (1/128)` por cuadro. Con dt = 1/60 eso
+ * divide la velocidad por 7680: para que el rastro se mueva un téxel por cuadro
+ * la velocidad tiene que valer varios cientos. Yo estaba inyectando 0,07.
+ *
+ * El RASTRO, en cambio, es lo que el orbe lee como desplazamiento, y tiene que
+ * quedarse en ±0,3: pasado de ahí satura contra el tope y deja de variar — que
+ * es exactamente el «patrón trabado».
+ */
 export interface OrbFluidSplat {
   /** 0–1 en la rejilla. */
   x: number;
   y: number;
-  /** El empujón, en unidades de la rejilla por segundo. */
+  /** Empujón de VELOCIDAD, en unidades de la rejilla (cientos, no décimas). */
   dx: number;
   dy: number;
+  /** Lo que se inyecta en el RASTRO. Acotado, y en otra escala. */
+  tx: number;
+  ty: number;
+  tz: number;
   /** Radio del empujón, al cuadrado, como lo quiere el shader. */
   radius: number;
 }
+
+/**
+ * El puente entre las dos escalas. La advección divide por `SIM × 1/dt`, así que
+ * una velocidad útil vive en los cientos. Es el número que faltaba.
+ */
+export const ORB_FLUID_GRID = 5200;
+
+/** Cuánto rastro deja cada empujón. Chico a propósito: ver arriba. */
+export const ORB_FLUID_TRAIL = 0.030;
 
 function finite(value: number, fallback = 0): number {
   return Number.isFinite(value) ? value : fallback;
@@ -70,10 +108,30 @@ function clamp01(value: number): number {
   return Math.min(1, Math.max(0, finite(value)));
 }
 
-/** El empujón de fondo: lo que mantiene el fluido vivo sin que pase nada. */
-export const ORB_FLUID_AMBIENT_FORCE = 0.85;
+/**
+ * El empujón de fondo. MEDIDO contra el suyo con el mismo instrumento: su orbe
+ * en reposo mueve el patrón **5,99 px** por medio segundo sobre una muestra de
+ * 80; el nuestro movía **1,52**. Cuatro veces menos — y por debajo de lo que el
+ * ojo registra como movimiento, que es de dónde salía «se queda estático».
+ */
+export const ORB_FLUID_AMBIENT_FORCE = 5.5;
+
+/**
+ * CUÁNTOS AGITADORES, y por qué importa más que su fuerza.
+ *
+ * Con dos, el fluido llega a un régimen estacionario: dos remolinos siempre en
+ * el mismo sitio, y el campo se traba en una forma que el ojo reconoce. El
+ * founder lo vio exacto — «un patrón trabado… fluye pero sigue quedando
+ * estático en ese patrón».
+ *
+ * Medido: la coherencia de traslación de su orbe es 0,12 y la nuestra era 0,21.
+ * Casi el doble de movimiento «en bloque», que es justo lo que hace que se
+ * reconozca un patrón. Cinco agitadores con frecuencias que no son múltiplos
+ * entre sí reparten el forzado, no vuelven a alinearse y el campo no se asienta.
+ */
+export const ORB_FLUID_STIRRERS = 5;
 /** Y el de la voz, que es el que tiene que sentirse como una respuesta. */
-export const ORB_FLUID_VOICE_FORCE = 5.0;
+export const ORB_FLUID_VOICE_FORCE = 3.2;
 
 /**
  * EL CALENDARIO DE SALPICADURAS — puro, y por eso auditable.
@@ -101,19 +159,46 @@ export function orbFluidSplats(input: {
   const wave = clamp01(input.wave);
   const splats: OrbFluidSplat[] = [];
 
-  for (let i = 0; i < 2; i += 1) {
+  // Cinco agitadores, cada uno con SU velocidad, y ninguna es múltiplo de otra:
+  // así no vuelven a alinearse nunca y el fluido no se asienta en una figura.
+  const ritmos = [0.231, 0.317, 0.409, 0.173, 0.541];
+  const ritmosY = [0.187, 0.263, 0.347, 0.451, 0.139];
+  for (let i = 0; i < ORB_FLUID_STIRRERS; i += 1) {
     const phase = i * 2.3999632;
-    const ax = 0.5 + 0.28 * Math.sin(t * 0.231 + phase);
-    const ay = 0.5 + 0.28 * Math.cos(t * 0.187 + phase * 1.7);
+    const wx = ritmos[i]!;
+    const wy = ritmosY[i]!;
+    const alcance = 0.19 + 0.09 * ((i * 7) % 5) / 4;
+    const ax = 0.5 + alcance * Math.sin(t * wx + phase);
+    const ay = 0.5 + alcance * Math.cos(t * wy + phase * 1.7);
     // la dirección es la DERIVADA de la trayectoria: el agitador empuja hacia
     // donde va, que es lo que hace un dedo dentro del agua
-    const force = ORB_FLUID_AMBIENT_FORCE * dt * (1 + wave * 1.4);
+    // la dirección normalizada: la fuerza la ponen las constantes, no la
+    // velocidad del agitador, que sólo dice HACIA DÓNDE
+    let ux = Math.cos(t * wx + phase) * wx;
+    let uy = -Math.sin(t * wy + phase * 1.7) * wy;
+    const norma = Math.hypot(ux, uy) || 1;
+    ux /= norma; uy /= norma;
+    // GIRAN LA DIRECCIÓN UN CUARTO DE VUELTA, Y ALTERNANDO EL SENTIDO.
+    //
+    // Empujando hacia donde van, los cinco suman una corriente de conjunto: la
+    // coherencia medida subió a 0,49 contra 0,12 de ellos, y eso es exactamente
+    // lo que el ojo lee como «una capa que pasa». Empujando de costado, cada uno
+    // inyecta un REMOLINO en vez de arrastre, y con sentidos alternos la suma se
+    // cancela: queda el corte entre remolinos, que es lo que revuelve el campo
+    // sin llevarlo a ninguna parte.
+    const giro = i % 2 === 0 ? 1 : -1;
+    const gx = -uy * giro, gy = ux * giro;
+    ux = gx; uy = gy;
+    const force = (ORB_FLUID_AMBIENT_FORCE / ORB_FLUID_STIRRERS) * (1 + wave * 1.4);
     splats.push({
       x: ax,
       y: ay,
-      dx: Math.cos(t * 0.231 + phase) * 0.231 * 0.28 * force * 60,
-      dy: -Math.sin(t * 0.187 + phase * 1.7) * 0.187 * 0.28 * force * 60,
-      radius: 0.0090,
+      dx: ux * force * ORB_FLUID_GRID * dt * 60,
+      dy: uy * force * ORB_FLUID_GRID * dt * 60,
+      tx: ux * ORB_FLUID_TRAIL * force,
+      ty: uy * ORB_FLUID_TRAIL * force,
+      tz: ORB_FLUID_TRAIL * force * 0.6,
+      radius: 0.0115,
     });
   }
 
@@ -122,14 +207,18 @@ export function orbFluidSplats(input: {
       const phase = i * 2.0943951;
       const spin = t * (0.83 + i * 0.31) + phase;
       const reach = 0.20 + 0.16 * voice;
-      const force = ORB_FLUID_VOICE_FORCE * voice * dt;
+      const force = ORB_FLUID_VOICE_FORCE * voice;
+      const ux = Math.cos(spin), uy = Math.sin(spin);
       splats.push({
-        x: 0.5 + reach * Math.cos(spin),
-        y: 0.5 + reach * Math.sin(spin),
+        x: 0.5 + reach * ux,
+        y: 0.5 + reach * uy,
         // empuja hacia AFUERA desde el centro: la voz abre el fluido, no lo
         // arrastra hacia un lado
-        dx: Math.cos(spin) * force * 60,
-        dy: Math.sin(spin) * force * 60,
+        dx: ux * force * ORB_FLUID_GRID * dt * 60,
+        dy: uy * force * ORB_FLUID_GRID * dt * 60,
+        tx: ux * ORB_FLUID_TRAIL * force * 1.6,
+        ty: uy * ORB_FLUID_TRAIL * force * 1.6,
+        tz: ORB_FLUID_TRAIL * force,
         radius: 0.0180 + 0.016 * voice,
       });
     }
@@ -466,7 +555,15 @@ export function createOrbFluid(gl: Gl): OrbFluid | null {
         gl.uniform2f(u(progs.splat, "uPoint"), s.x, s.y);
         // el rastro guarda HACIA DÓNDE empujó: por eso el orbe puede leerlo
         // como un desplazamiento y no como un color
-        gl.uniform3f(u(progs.splat, "uValue"), s.dx * 0.030, s.dy * 0.030, Math.hypot(s.dx, s.dy) * 0.020);
+        // el rastro tiene que llevar SEÑAL: con 0,030 el desplazamiento que
+        // llegaba al orbe era casi cero y el patrón no se movía
+        // MEDIDO, y es el defecto que hacía el «patrón trabado»: con 0,115 el
+        // rastro llegaba a un régimen de ±10, muy por encima del tope que el
+        // orbe le aplica (±1,35). Pasado el tope, el desplazamiento es
+        // CONSTANTE en casi todo el disco — y un desplazamiento constante no
+        // mueve nada. Por eso quintuplicar la fuerza empeoraba las cosas.
+        // Con 0,0040 el rastro vive en ±0,3 y lo que el orbe ve es su VARIACIÓN.
+        gl.uniform3f(u(progs.splat, "uValue"), s.tx, s.ty, s.tz);
         gl.uniform1f(u(progs.splat, "uRadius"), s.radius);
         blit(dye.write);
         dye.swap();

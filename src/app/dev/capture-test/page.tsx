@@ -103,6 +103,7 @@ import {
 import { orbReferenceClock } from "@/app/app/components/shell/orb-shader";
 import {
   ORB_FLUID_ITERATIONS,
+  ORB_FLUID_SIM_SIZE,
   ORB_FLUID_VELOCITY_DISSIPATION,
   orbFluidPush,
   orbFluidSplats,
@@ -29701,6 +29702,10 @@ assert(
       // desplazamiento ya no lo inventa un seno, lo da el fluido — y cuando no
       // hay fluido, el respaldo sigue siendo deformación y no transporte.
       /q = 0\.5 \+ gFlow;/u.test(n3ShaderCode) &&
+      // N3C r7 · TOPE SUAVE, no recorte. Medido: con recorte el rastro se pegaba
+      // contra el límite y dejaba de variar — el «patrón trabado» del founder.
+      /gFlow = fw \/ \(1\.0 \+ abs\(fw\) \* [0-9.]+\);/u.test(n3ShaderCode) &&
+      !/gFlow = clamp\(/u.test(n3ShaderCode) &&
       /q = vec2\(fieldFbm\(p \+ vec2\(anim/u.test(n3ShaderCode) &&
       // los siete óvalos sobreviven SÓLO en el porte fiel, que es de ellos
       ORB_FIELD_OVALS === 7 &&
@@ -29709,8 +29714,19 @@ assert(
       // el campo entra en el líquido, no encima del vidrio: `body` ES el campo
       n3ShaderCode.includes("vec3 body = mix(gField,") &&
       // …y se puede apagar para fotografiar el antes y el después
-      n3ShaderCode.includes("gField = fieldRamp(") &&
-      /gField = fieldRamp\([^;]*\) \* uEnv;/u.test(n3ShaderCode),
+      // N3C r7 · el campo pasa por un paso de SATURACIÓN explícito antes de
+      // llegar al píxel, como su `czm_saturation`. Medido: su orbe promedia
+      // 0,91 de saturación y el nuestro daba 0,50 — el mapeo tonal comprime los
+      // altos y de paso los desatura, y sin compensarlo el color nunca se
+      // parece. Con el paso puesto medimos 0,91, igual que ellos.
+      n3ShaderCode.includes("vec3 saturar(vec3 c, float k)") &&
+      /gField = saturar\(fieldRamp\([^;]*\) \* uEnv;/u.test(n3ShaderCode) &&
+      // …y el factor tiene que SATURAR de verdad: con 1,0 la función existe y
+      // no hace nada, que es como su mutación sobrevivía.
+      (() => {
+        const m = n3ShaderCode.match(/gField = saturar\([^;]*?\), ([0-9.]+)\) \* uEnv;/u);
+        return m != null && Number.parseFloat(m[1]!) > 1.2;
+      })(),
     JSON.stringify({
       ventana: n3ShaderCode.includes("panelMask"),
       marco: n3ShaderCode.includes("mullion"),
@@ -29787,7 +29803,12 @@ assert(
       orbFluidPush(n3cFluCallada) > 0 &&
       // ── Y HABLANDO EMPUJA MUCHO MÁS ──
       n3cFluHablando.length > n3cFluCallada.length &&
-      orbFluidPush(n3cFluHablando) > orbFluidPush(n3cFluCallada) * 8 &&
+      // N3C r7 · re-anclado. La razón bajó al repartir el fondo en cinco
+      // agitadores —hay más empuje de base—, así que lo que se exige es lo que
+      // importa: que la voz AÑADA mucho más de lo que ya había, no un cociente.
+      orbFluidPush(n3cFluHablando) - orbFluidPush(n3cFluCallada) >
+        orbFluidPush(n3cFluCallada) * 1.5 &&
+      n3cFluHablando.length === n3cFluCallada.length + 3 &&
       // ── LA FUERZA VA POR SEGUNDO, NO POR CUADRO ──
       // Sin esto un teléfono de 120 Hz revuelve el fluido al doble que uno de
       // 60, y «responde exacto» pasa a depender del aparato.
@@ -29805,6 +29826,18 @@ assert(
       // ── EL FLUIDO SE AQUIETA: hay disipación, o el empuje se acumula para
       // siempre y el orbe termina hirviendo ──
       ORB_FLUID_VELOCITY_DISSIPATION > 0 &&
+      // ── LAS UNIDADES ─────────────────────────────────────────────────────
+      // La advección desplaza `dt × velocidad × (1/128)`: con dt = 1/60 eso
+      // divide la velocidad por 7680. Inyectar décimas deja el fluido
+      // CONGELADO, y así estuvo tres mediciones seguidas sin que nada lo
+      // delatara. Se exige que un empujón mueva el rastro al menos un décimo
+      // de téxel por cuadro, que es el umbral por debajo del cual no hay
+      // movimiento que ver.
+      (() => {
+        const s = orbFluidSplats({ time: 2, voice: 0, wave: 0, dtSeconds: 1 / 60 })[0]!;
+        const texelesPorCuadro = (Math.hypot(s.dx, s.dy) * (1 / 60)) / ORB_FLUID_SIM_SIZE;
+        return texelesPorCuadro > 0.1;
+      })() &&
       // ── EL DEGRADADO ES HONESTO ──
       // Sin texturas de coma flotante no hay fluido, y el orbe vuelve a su
       // deformación de ruido. Nunca se finge un fluido que no corrió.

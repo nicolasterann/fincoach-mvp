@@ -480,14 +480,14 @@ const mutations = [
     result:
       "el fluido se queda sin empuje de fondo: en silencio se aquieta y no vuelve solo — «el nuestro es mucho mas estatico», otra vez",
     file: FLUID,
-    from: "export const ORB_FLUID_AMBIENT_FORCE = 0.85;",
+    from: "export const ORB_FLUID_AMBIENT_FORCE = 5.5;",
     to: "export const ORB_FLUID_AMBIENT_FORCE = 0;",
   },
   {
     name: "N3C-8",
     result: "la voz deja de empujar el fluido: el orbe se mueve igual hablando que callado",
     file: FLUID,
-    from: "export const ORB_FLUID_VOICE_FORCE = 5.0;",
+    from: "export const ORB_FLUID_VOICE_FORCE = 3.2;",
     to: "export const ORB_FLUID_VOICE_FORCE = 0.1;",
   },
   {
@@ -502,7 +502,7 @@ const mutations = [
     name: "N3C-8",
     result: "el fluido no se disipa: el empuje se acumula para siempre y el orbe termina hirviendo",
     file: FLUID,
-    from: "export const ORB_FLUID_VELOCITY_DISSIPATION = 0.34;",
+    from: "export const ORB_FLUID_VELOCITY_DISSIPATION = 0.055;",
     to: "export const ORB_FLUID_VELOCITY_DISSIPATION = 0;",
   },
   {
@@ -519,6 +519,29 @@ const mutations = [
     file: SHADER,
     from: "    q = 0.5 + gFlow;",
     to: "    q = vec2(0.5);",
+  },
+  {
+    name: "N3C-5",
+    result:
+      "vuelve el RECORTE duro del rastro: pasado el tope el desplazamiento es constante y el campo se traba — el «patron trabado» que el founder vio tres veces",
+    file: SHADER,
+    from: "      gFlow = fw / (1.0 + abs(fw) * 0.72);",
+    to: "      gFlow = clamp(fw, -1.35, 1.35);",
+  },
+  {
+    name: "N3C-5",
+    result: "muere el paso de saturacion: el mapeo tonal desatura y el color pasa de 0,91 a 0,50 — la mitad del de ellos",
+    file: SHADER,
+    from: "), 1.62) * uEnv;",
+    to: "), 1.0) * uEnv;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "vuelve el error de UNIDADES: la velocidad se inyecta en decimas y la adveccion la divide por 7680, asi que el fluido queda congelado",
+    file: FLUID,
+    from: "export const ORB_FLUID_GRID = 5200;",
+    to: "export const ORB_FLUID_GRID = 1;",
   },
 ];
 
