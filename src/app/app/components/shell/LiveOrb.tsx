@@ -19,7 +19,7 @@ import {
 import {
   orbActiveIndex,
   orbFieldPlacements,
-  orbMaterialCode,
+  orbPresentationMaterial,
   orbMustRedraw,
   orbWaterline,
   type OrbFill,
@@ -780,7 +780,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
           field: fieldClock,
           // La materia la decide UNA función pura, que el gate ejecuta — y que
           // por fin vuelve a entregarle la GOTA al vidrio.
-          material: orbMaterialCode({
+          material: orbPresentationMaterial({
             kind: orb.kind,
             matter: orb.matter,
             fill: orb.fill,

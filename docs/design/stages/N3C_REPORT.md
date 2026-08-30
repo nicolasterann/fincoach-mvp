@@ -615,3 +615,122 @@ Total de N3C: **+5,9 KB comprimidos**, cero dependencias.
 cuadros. Lo que sí puedo afirmar con números es que el campo pasó de cruzar una
 mancha en 45 s a hacerlo en 4,3 s, y en 1,3 s hablando — pero si eso «se mueve
 de una forma interesante» sólo lo dice el teléfono.
+
+---
+
+## Ronda 4 — fui a mirar su página
+
+El founder pidió que entrara a `elevenlabs.io` y viera **cómo se mueve**. Lo que
+encontré cambia el encuadre por segunda vez.
+
+### Cómo está hecho su orbe en reposo
+
+No es un shader. Es esto, leído de su DOM:
+
+```html
+<svg>
+  <filter id="…">
+    <feGaussianBlur stdDeviation="4"/>
+    <feColorMatrix values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 100 -1"/>
+    <feFlood/><feComposite operator="out"/><feComposite in2="SourceGraphic"/>
+    <feGaussianBlur stdDeviation="4"/>
+  </filter>
+  <image width="100%" height="100%" preserveAspectRatio="xMidYMid slice"
+         href="data:image/png;base64,…" style="filter:url(#…)"/>
+</svg>
+```
+
+Decodifiqué ese PNG. **Mide 8×8 píxeles.** Sesenta y cuatro colores, todos
+opacos, todos distintos — estirados a 200 px (magnificación **25×**) y pasados
+**dos veces** por un desenfoque gaussiano, encima de un PNG pre-renderizado.
+
+Ahí está entera la respuesta a *«se fusionan perfecto sin manchas duras»*:
+**no hay casi información espacial con la que hacer un borde.** Es una malla de
+color de orden bajísimo, difuminada. No hay ruido fractal, no hay octavas, no
+hay deformación.
+
+Y hay un `<canvas>` WebGL encima que sólo pinta al reproducir — ése es el orbe
+animado. **No lo pude ver correr:** este entorno no compone cuadros, así que el
+lienzo de ellos también quedó en cero píxeles. Intenté capturar su shader
+forzando una pérdida/restauración de contexto y no recompiló.
+
+### Lo que cambió en el nuestro
+
+| | antes | ahora | por qué |
+|---|---|---|---|
+| octavas | 3 | **~1** (0,88 + 0,12) | los suyos tienen 64 muestras y punto |
+| deformación | 0,34–1,05 | **0,11–0,26** | 1,05 desplaza cuatro manchas: eso no enrosca, revuelve — y revuelto se lee «brusco» |
+| movimiento | traslación + giro | **sólo giro** | «viene de un solo lado como viento» vs «bordea la esfera»: es traslación vs rotación |
+| vuelta completa | — | **46 s** callado · **15 s** hablando | la ronda 3 se pasó de largo |
+| rampa | de `uDeep*0.55` a casi blanco | **cuatro tonos medios** | en sus orbes no hay ni un negro ni un blanco |
+
+El campo del color gira **al revés** que el del tono: dos rotaciones opuestas se
+leen como algo que se revuelve sobre sí mismo en vez de girar como un carrusel.
+
+### La decisión del founder: apagar el agua, para poder juzgar
+
+Textual:
+
+> «Vamos con el campo llena el orbe entero, sólo porque quiero ver con eso qué
+> tanto nos logramos parecer al de ellos, y después de eso probamos opciones
+> como el tono sin superficie o seguimos tratando con el agua.»
+
+Es un **experimento**, no un cierre, y por eso se implementó como un
+interruptor y no como un borrado: `ORB_FIELD_ONLY` en el contrato puro. El agua
+—`advanceOrbWater`, el menisco, la superficie, la onda de la voz, `orbWaterline`,
+`orbWaterApex`— **no se tocó**. Apagar el interruptor devuelve todo.
+
+**Lo que cuesta, dicho sin adornos:** con el experimento encendido **el orbe
+deja de mostrar el nivel.** La cifra y la frase de abajo lo siguen diciendo
+enteras —no cambia un solo número— pero el vidrio deja de afirmarlo.
+
+**La excepción que no es estética:** un cero LEÍDO sigue siendo una gota.
+Dibujar un cero como un orbe lleno y luminoso no es un gusto distinto, es una
+afirmación falsa sobre plata. Eso no entra en un experimento visual, y una
+mutación lo prueba.
+
+### Un hallazgo que NO arreglé, a propósito
+
+El founder: *«en los orbes de saldo no hay nada de nivel, ni el nivel mínimo
+para mostrar el vacío»*. Lo rastreé hasta `shell-payload.ts`:
+
+```ts
+level: saldo.cap > 0 ? clampLevel(saldo.saldo / saldo.cap) : null,
+```
+
+Su `cap` —el techo del tanque— **es cero**, así que el nivel es `null`, la
+materia pasa a cristal y el orbe dibuja el campo entero sin línea. **El dibujo
+está haciendo lo correcto**: sin techo no se inventa un nivel. Lo que hay que
+mirar es por qué el motor no puede afirmarle un techo al Saldo, que es su capa
+principal — y eso es motor, no presentación, así que queda fuera de N3C y no lo
+toqué. Es la doctrina en acción: nadie rellena un número.
+
+### Los números de la ronda 4
+
+```
+npm run lint    → 0 errores
+npm run build   → exit 0
+capture gate    → 890/890  (una aserción NUEVA: N3C-7)
+mutación        → 55/55 mueren con su nombre
+```
+
+**N3C-7** existe para que el experimento no pueda volverse permanente por
+descuido: exige que el interruptor sea uno solo, que **delegue** en
+`orbMaterialCode` en vez de reemplazarla, que la doctrina de abajo siga
+diciendo lo de siempre al ejecutarla, que un cero leído nunca se dibuje lleno,
+y que las cifras no se enteren del experimento.
+
+Cuatro re-anclajes por el cambio de `orbMaterialCode` a `orbPresentationMaterial`
+en los cuatro dibujantes; la regla no se movió —sigue habiendo UNA decisión— y
+lo que se cuenta es la llamada nueva.
+
+### Lo que queda abierto
+
+1. **El movimiento**, otra vez y sigue siendo lo único que decide.
+2. **Cómo se muestra el nivel** si el experimento gusta: el anillo del carrusel,
+   un arco fino en el borde, o la opción de «tono sin superficie» que el
+   founder ya nombró.
+3. **El vacío bajo el experimento.** La gota se conserva por honestidad, pero
+   con el resto sin agua se ve fuera de lugar. Si el experimento sigue, el cero
+   necesita su propia forma dentro del material nuevo.
+4. **El techo del Saldo**, en el motor.

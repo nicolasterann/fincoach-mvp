@@ -627,6 +627,50 @@ export function orbMaterialCode(input: {
 }
 
 /**
+ * ── N3C r4 · EL EXPERIMENTO DEL CAMPO LLENO ────────────────────────────────
+ *
+ * **Temporal, y declarado como tal.** Decisión del founder, textual:
+ *
+ *   «Vamos con el campo llena el orbe entero, sólo porque quiero ver con eso
+ *   qué tanto nos logramos parecer al de ellos, y después de eso probamos
+ *   opciones como el tono sin superficie o seguimos tratando con el agua.»
+ *
+ * Con esto encendido todos los orbes dibujan el CAMPO ENTERO —el material de
+ * ellos, sin línea de agua, sin menisco y sin aire—, para poder juzgar el
+ * parecido sin la variable del agua encima.
+ *
+ * QUÉ CUESTA, y hay que decirlo: **el orbe deja de mostrar el nivel.** La
+ * cifra y la frase de abajo lo siguen diciendo enteras —no cambia un solo
+ * número—, pero el vidrio deja de afirmarlo. Es el precio del experimento y
+ * por eso vive en UN interruptor, no repartido por el código.
+ *
+ * LA EXCEPCIÓN QUE NO ES ESTÉTICA: un cero LEÍDO sigue siendo una gota.
+ * Dibujar un cero como un orbe lleno y luminoso no es un gusto distinto, es
+ * una afirmación falsa sobre plata. Eso no entra en un experimento visual.
+ *
+ * Cómo se apaga: `false`, y vuelve todo. `orbMaterialCode` no se toca — sigue
+ * siendo la decisión de doctrina, con sus pines, debajo de esto.
+ */
+export const ORB_FIELD_ONLY = true;
+
+/**
+ * Qué materia dibuja el vidrio HOY, incluido el experimento. Es la única
+ * función que los dibujantes piden; la doctrina sigue viviendo entera en
+ * `orbMaterialCode`, que ésta consulta primero.
+ */
+export function orbPresentationMaterial(input: {
+  kind: OrbKind;
+  matter: OrbMatter;
+  fill: OrbFill;
+}): number {
+  const decided = orbMaterialCode(input);
+  if (!ORB_FIELD_ONLY) return decided;
+  // el cero leído conserva su materia: ver arriba
+  if (decided === ORB_MATERIAL_GOTA) return decided;
+  return ORB_MATERIAL_CRISTAL;
+}
+
+/**
  * LAS VECINAS (D-N3.2) — su presencia es una función PURA de su distancia al
  * centro, y por eso no hay apagón posible.
  *

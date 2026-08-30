@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 // build no prueba nada: prueba que el código no compila, no que alguien estaba
 // mirando.
 
-const TOTAL = 889;
+const TOTAL = 890;
 const runner = ["scripts/qa/run-capture-gate.mjs"];
 
 const CONTRACT = "src/app/app/components/shell/shell-orb-contract.ts";
@@ -97,7 +97,7 @@ const mutations = [
     name: "N3B-2",
     result: "CABLE · la probeta vuelve a traer su propia copia de la tabla de materias",
     file: SPECIMEN,
-    from: "          material: orbMaterialCode({ kind, matter, fill }),",
+    from: "          material: orbPresentationMaterial({ kind, matter, fill }),",
     to: "          material: matter === \"cristal\" ? 3 : 0,",
   },
   {
@@ -322,7 +322,7 @@ const mutations = [
     name: "N3C-4",
     result: "el reloj del campo corre siempre igual: el orbe deja de acelerar cuando hablás",
     file: SIM,
-    from: "  return 1.05 + (1 - Math.pow(bounded - 1, 2)) * 2.55;",
+    from: "  return 0.85 + (1 - Math.pow(bounded - 1, 2)) * 1.75;",
     to: "  return 1.05;",
   },
   {
@@ -364,7 +364,7 @@ const mutations = [
     name: "N3B-2",
     result: "RE-ANCLADO · el tercer dibujante de la probeta deja de pedir la materia a la función pura y se la inventa",
     file: SPECIMEN,
-    from: "            material: orbMaterialCode({\n              kind: slot.kind,\n              matter: orbMatter(slot.kind),\n              fill: slot.fill ?? \"nivel\",\n            }),",
+    from: "            material: orbPresentationMaterial({\n              kind: slot.kind,\n              matter: orbMatter(slot.kind),\n              fill: slot.fill ?? \"nivel\",\n            }),",
     to: "            material: slot.fill === \"gota\" ? 5 : 0,",
   },
   // ── N3C ronda 2 · lo que el founder vio en producción ─────────────────────
@@ -400,7 +400,7 @@ const mutations = [
     result:
       "muere la deformación de dominio: el campo vuelve a ser manchas redondas, que es lo que hace que NO se parezca al de ellos",
     file: SHADER,
-    from: "  float f = fieldFbm(p + amount*(q - 0.5) + vec2(1.7, 9.2) + vec2(0.0, anim*0.021));",
+    from: "  float f = fieldFbm(p + amount*(q - 0.5) + vec2(1.7, 9.2));",
     to: "  float f = fieldFbm(p + vec2(1.7, 9.2));",
   },
   {
@@ -416,7 +416,7 @@ const mutations = [
     result:
       "vuelve el campo CASI QUIETO: la razón entre hablar y callar se conserva, pero una mancha tarda 45 s en cruzar — que es lo que se veía",
     file: SIM,
-    from: "  return 1.05 + (1 - Math.pow(bounded - 1, 2)) * 2.55;",
+    from: "  return 0.85 + (1 - Math.pow(bounded - 1, 2)) * 1.75;",
     to: "  return 0.1 + (1 - Math.pow(bounded - 1, 2)) * 0.9;",
   },
   {
@@ -447,6 +447,22 @@ const mutations = [
     file: CONTRACT,
     from: "export const ORB_CAM_PITCH = -0.11;",
     to: "export const ORB_CAM_PITCH = -0.3;",
+  },
+  // ── N3C ronda 4 · el experimento del campo lleno ──────────────────────────
+  {
+    name: "N3C-7",
+    result:
+      "un cero LEIDO se dibuja como un orbe lleno y luminoso — que no es una decision estetica sino una afirmacion falsa sobre plata",
+    file: CONTRACT,
+    from: "  if (decided === ORB_MATERIAL_GOTA) return decided;",
+    to: "",
+  },
+  {
+    name: "N3C-7",
+    result: "el experimento deja de delegar en la doctrina y la reemplaza: apagarlo ya no devolveria las materias correctas",
+    file: CONTRACT,
+    from: "  const decided = orbMaterialCode(input);",
+    to: "  const decided = ORB_MATERIAL_CRISTAL;",
   },
 ];
 

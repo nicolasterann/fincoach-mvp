@@ -319,24 +319,39 @@ float fieldTex(vec2 p){
 // arrugado —fractal, con detalle en todas las escalas— y sus orbes son lo
 // contrario: dos o tres manchas grandes y nada de detalle fino. Lo fino lo pone
 // el GRANO, que es otra cosa y va aparte.
+// N3C r4 · CASI UNA SOLA OCTAVA — y la razón salió de MIRAR SU PÁGINA.
+//
+// Su orbe en reposo no es un shader: es un PNG de **8×8 píxeles** estirado a
+// 200 y pasado dos veces por un desenfoque gaussiano. Sesenta y cuatro colores,
+// difuminados. Ahí está entera la respuesta a «se fusionan perfecto sin manchas
+// duras»: **no hay casi información espacial con la que hacer un borde**.
+//
+// Nuestro campo tenía tres octavas de detalle. La segunda baja a un tercio y la
+// tercera se va: lo que queda es una malla de color de orden bajísimo, que es
+// lo que ellos tienen.
 float fieldFbm(vec2 p){
-  float v = 0.70*fieldTex(p);
-  v += 0.30*fieldTex(p*2.07 + vec2(0.31, 0.77));
-  if(KIPU_TIER > 1.5) v += 0.10*(fieldTex(p*4.03 + vec2(0.77, 0.13)) - 0.5);
+  float v = 0.88*fieldTex(p);
+  v += 0.12*fieldTex(p*2.07 + vec2(0.31, 0.77));
   return v;
 }
 
 // LA DEFORMACIÓN. 'q' desplaza el punto antes de volver a leer el ruido: es lo
 // que convierte manchas redondas en esas lenguas de color que se enroscan.
 float fieldGray(vec2 p, float anim, float drive){
-  // EL CAMPO GIRA ADEMÁS DE FLUIR. Sólo trasladándolo, el movimiento se lee
-  // como un fondo que pasa por detrás; girándolo despacio a la vez, se lee como
-  // algo que se revuelve DENTRO. Es la diferencia entre un scroll y una nube.
-  float a = anim * 0.085;
+  // EL CAMPO GIRA. NO SE TRASLADA.
+  //
+  // El founder lo describió exacto: el nuestro «parece que viene de un solo
+  // lado, como viento que pasa», y el de ellos «bordea la esfera». Eso es la
+  // diferencia entre trasladar y ROTAR, y hasta acá el campo hacía las dos —
+  // con la traslación pesando más, que es de donde salía el viento diagonal.
+  //
+  // Ahora la traslación se va entera y queda el giro, más una deriva MUY lenta
+  // en el segundo campo para que la rotación no se lea como un carrusel rígido.
+  float a = anim * 0.16;
   float cs = cos(a), sn = sin(a);
   p = vec2(cs*p.x - sn*p.y, sn*p.x + cs*p.y);
-  vec2 q = vec2(fieldFbm(p + vec2(anim*0.055, anim*0.031)),
-                fieldFbm(p + vec2(5.2, 1.3) - vec2(anim*0.043, anim*0.027)));
+  vec2 q = vec2(fieldFbm(p + vec2(0.0, anim*0.012)),
+                fieldFbm(p + vec2(5.2, 1.3) - vec2(anim*0.009, 0.0)));
   // la voz abre la deformación: el campo se revuelve más mientras hablás, que
   // es lo único que su 'uOutputVolume' hacía con el ángulo.
   //
@@ -347,8 +362,12 @@ float fieldGray(vec2 p, float anim, float drive){
   // …y la voz ABRE la deformación mucho más que antes: el founder dijo que al
   // hablar «casi no hay movimiento», y con 0,32→0,58 tenía razón — el campo se
   // movía casi igual callado que hablando.
-  float amount = mix(0.34, 1.05, drive);
-  float f = fieldFbm(p + amount*(q - 0.5) + vec2(1.7, 9.2) + vec2(0.0, anim*0.021));
+  // Y LA DEFORMACIÓN SE ACHICA MUCHO. Con 0,34–1,05 desplazaba hasta cuatro
+  // manchas: eso no enrosca el campo, lo REVUELVE, y revuelto se lee como
+  // brusco. Su orbe no tiene deformación en absoluto — es una malla suave — así
+  // que acá queda lo mínimo para que las manchas no sean círculos.
+  float amount = mix(0.11, 0.26, drive);
+  float f = fieldFbm(p + amount*(q - 0.5) + vec2(1.7, 9.2));
   // El rango útil del fbm no es [0,1]: sin esto el campo vive apretado en el
   // medio de la rampa y sale un color plano.
   return clamp((f - 0.32) / 0.38, 0.0, 1.0);
@@ -359,9 +378,13 @@ float fieldGray(vec2 p, float anim, float drive){
 // primero: donde una empieza, la otra va por la mitad. Es lo que hace que los
 // colores se fundan en vez de repartirse en zonas.
 float fieldHue(vec2 p, float anim){
-  vec2 q = vec2(fieldFbm(p + vec2(2.9, 7.4) + vec2(anim*0.037, -anim*0.049)),
-                fieldFbm(p + vec2(8.1, 0.6) - vec2(anim*0.031, anim*0.041)));
-  float h = fieldFbm(p + 0.62*(q - 0.5) + vec2(6.3, 2.1));
+  // gira al revés y más despacio que el del tono: dos rotaciones opuestas dan
+  // esa sensación de algo que se revuelve sobre sí mismo, sin ir a ningún lado
+  float a = -anim * 0.11;
+  float cs = cos(a), sn = sin(a);
+  p = vec2(cs*p.x - sn*p.y, sn*p.x + cs*p.y);
+  vec2 q = vec2(fieldFbm(p + vec2(2.9, 7.4)), fieldFbm(p + vec2(8.1, 0.6)));
+  float h = fieldFbm(p + 0.16*(q - 0.5) + vec2(6.3, 2.1));
   return clamp((h - 0.34) / 0.34, 0.0, 1.0);
 }
 
@@ -389,10 +412,14 @@ float fieldHue(vec2 p, float anim){
 vec3 fieldRamp(float gray, float hue, float inverted){
   float l = mix(gray, 1.0 - gray, inverted);
   vec3 mid = mix(uLiq, uAcc, hue);
-  vec3 c0 = uDeep * 0.55;
-  vec3 c1 = mix(uDeep, mid, 0.30);
+  // Las cuatro paradas se JUNTAN. En sus orbes no hay ni un negro ni un blanco:
+  // son todos tonos medios del mismo aire, y por eso se funden. El nuestro
+  // llegaba de 'uDeep * 0.55' hasta casi blanco — un rango que ningún
+  // difuminado alcanza a integrar.
+  vec3 c0 = mix(uDeep, mid, 0.10);
+  vec3 c1 = mix(uDeep, mid, 0.46);
   vec3 c2 = mid;
-  vec3 c3 = mix(mid, vec3(1.0), 0.30);
+  vec3 c3 = mix(mid, vec3(1.0), 0.20);
   // interpolación suavizada en cada tramo: sin esto la unión entre paradas es
   // un quiebre de pendiente, y un quiebre de pendiente se VE como un borde
   if(l < 0.38){ float t = l / 0.38; return mix(c0, c1, t*t*(3.0-2.0*t)); }

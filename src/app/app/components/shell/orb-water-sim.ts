@@ -257,7 +257,11 @@ export function orbFieldSpeed(drive: number): number {
   // que cambia es la ESCALA: en reposo una mancha cruza en ~4 s, y hablando en
   // algo más de 1 s. Eso es lo que se ve como «se está moviendo todo el tiempo»
   // y como «responde exacto» al hablar.
-  return 1.05 + (1 - Math.pow(bounded - 1, 2)) * 2.55;
+  // N3C r4 · la ronda 3 se pasó de largo. El founder: «está muy rápido y muy
+  // brusco». De 45 s por mancha pasé a 4,3, y 4,3 es demasiado para un campo
+  // que tiene que sentirse calmo. Acá queda en ~11 s callado y ~3 hablando:
+  // se mueve todo el tiempo, se nota, y no corre.
+  return 0.85 + (1 - Math.pow(bounded - 1, 2)) * 1.75;
 }
 
 /** Un paso del reloj del campo. Monótono: el campo nunca retrocede. */

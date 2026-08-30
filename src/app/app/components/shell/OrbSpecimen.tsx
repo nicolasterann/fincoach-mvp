@@ -11,7 +11,7 @@ import { ORB_REFERENCE_FRAGMENT_SOURCE } from "./orb-reference-shader";
 import {
   ORB_KINDS,
   orbFieldPlacements,
-  orbMaterialCode,
+  orbPresentationMaterial,
   orbMatter,
   orbWaterline,
   type OrbFill,
@@ -204,7 +204,7 @@ export function OrbSpecimen({
           // Un cuadro fijo, pero con el MISMO reloj que el santuario: la
           // velocidad sale de `orbFieldSpeed`, no de un número escrito acá.
           field: time * orbFieldSpeed(orbFieldDrive(voice, wave)),
-          material: orbMaterialCode({ kind, matter, fill }),
+          material: orbPresentationMaterial({ kind, matter, fill }),
           liquid: readCssColor(canvas, `--kipu-liquid-${kind}`),
           deep: readCssColor(canvas, `--kipu-deep-${kind}`),
           accent: readCssColor(canvas, `--layer-${kind}`),
@@ -294,7 +294,7 @@ export function OrbFieldSpecimen({
           depth: slot.depth,
           env: 1,
           field: 0,
-          material: orbMaterialCode({ kind, matter, fill: "nivel" }),
+          material: orbPresentationMaterial({ kind, matter, fill: "nivel" }),
           liquid: readCssColor(canvas, `--kipu-liquid-${kind}`),
           deep: readCssColor(canvas, `--kipu-deep-${kind}`),
           accent: readCssColor(canvas, `--layer-${kind}`),
@@ -490,7 +490,7 @@ export function OrbCompareSpecimen({
             depth: 0,
             env: 1,
             field: now * orbFieldSpeed(orbFieldDrive(voice, 0)),
-            material: orbMaterialCode({
+            material: orbPresentationMaterial({
               kind: slot.kind,
               matter: orbMatter(slot.kind),
               fill: slot.fill ?? "nivel",

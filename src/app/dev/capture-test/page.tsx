@@ -70,9 +70,11 @@ import {
   orbMatter,
   ORB_MATERIAL,
   ORB_MATERIAL_GOTA,
+  ORB_FIELD_ONLY,
   ORB_MATERIAL_CRISTAL,
   orbMaterialCode,
   orbMaxRadius,
+  orbPresentationMaterial,
   orbTargetReached,
   patrimonioRead,
   reserveLevel,
@@ -28882,8 +28884,14 @@ assert(
       // mañana aparece un cuarto, este número tiene que volver a subir, que es
       // exactamente lo que se quiere — un dibujante que no pide la decisión no
       // pasa inadvertido.
-      (n1Code(n3Specimen).match(/orbMaterialCode\(\{/gu) ?? []).length === 3 &&
-      (n3LiveCode.match(/orbMaterialCode\(\{/gu) ?? []).length === 1 &&
+      // N3C r4 · los dibujantes piden `orbPresentationMaterial`, que consulta a
+      // `orbMaterialCode` y encima aplica el experimento del campo lleno. La
+      // regla no se mueve: sigue habiendo UNA decisión, y los tres dibujantes
+      // de la probeta la piden. Lo que se cuenta es la llamada nueva.
+      (n1Code(n3Specimen).match(/orbPresentationMaterial\(\{/gu) ?? []).length === 3 &&
+      // …y el experimento DELEGA en la doctrina en vez de reemplazarla
+      n1Code(n3Contract).includes("const decided = orbMaterialCode(input);") &&
+      (n3LiveCode.match(/orbPresentationMaterial\(\{/gu) ?? []).length === 1 &&
       !/const MATERIAL_BY_KIND/u.test(n3LiveCode) &&
       !/const MATERIAL_BY_KIND/u.test(n1Code(n3Specimen)) &&
       // y el shader tiene una rama para ella
@@ -29232,7 +29240,7 @@ assert(
       /float isDrop\(\)\{ return step\(4\.5, uMat\) \* step\(uMat, 5\.5\); \}/u
         .test(n3ShaderCode) &&
       // …y que quien dibuja la pida, en vez de traer su propia copia
-      n3LiveCode.includes("orbMaterialCode({") &&
+      n3LiveCode.includes("orbPresentationMaterial({") &&
       !/orb\.matter === "cristal" \|\| orb\.fill === "nucleo"/u.test(n3LiveCode),
     JSON.stringify({
       salteaSinDato: n3LiveCode.includes('if (orb.fill === "sin-dato") continue;'),
@@ -29365,6 +29373,53 @@ assert(
     "utf8",
   );
   const n3cSpecimenCode = n1Code(n3Specimen);
+
+  // ── N3C r4 · EL EXPERIMENTO DEL CAMPO LLENO, SUJETO ────────────────────────
+  //
+  // El founder pidió ver el material de ellos SIN la variable del agua. Es
+  // temporal y por eso vive en un interruptor, pero mientras esté encendido hay
+  // dos cosas que no se relajan y que el gate exige igual:
+  //
+  //   1. La DOCTRINA de abajo sigue intacta. `orbMaterialCode` no se tocó: con
+  //      el experimento apagado, cada capa con techo declarado vuelve a su
+  //      materia y ninguna cae en cristal. Se ejecuta, no se supone.
+  //   2. Un cero LEÍDO sigue siendo una GOTA. Dibujar un cero como un orbe
+  //      lleno y luminoso no es una decisión estética: es una afirmación falsa
+  //      sobre plata, y no entra en un experimento visual.
+  assert(
+    "N3C-7 · el campo lleno es un experimento reversible: la doctrina sigue viva debajo y un cero leído nunca se dibuja lleno",
+    // el interruptor existe, es UNO, y vive en el contrato puro
+    /export const ORB_FIELD_ONLY = (true|false);/u.test(n3Contract) &&
+      (n1Code(n3Contract).match(/ORB_FIELD_ONLY/gu) ?? []).length === 2 &&
+      // ── un cero leído NO se dibuja lleno, con el experimento encendido o no ──
+      ORB_KINDS.every(
+        (kind) =>
+          orbPresentationMaterial({ kind, matter: "liquido", fill: "gota" }) ===
+          ORB_MATERIAL_GOTA,
+      ) &&
+      // ── y la doctrina de abajo, EJECUTADA, sigue diciendo lo de siempre ──
+      ORB_KINDS.every(
+        (kind) =>
+          orbMaterialCode({ kind, matter: "liquido", fill: "nivel" }) !==
+          ORB_MATERIAL_CRISTAL,
+      ) &&
+      ORB_KINDS.every(
+        (kind) =>
+          orbMaterialCode({ kind, matter: "liquido", fill: "nucleo" }) ===
+          ORB_MATERIAL_CRISTAL,
+      ) &&
+      // ── y las CIFRAS no se enteran del experimento: el orbe deja de mostrar
+      // el nivel, el texto no. El payload sigue sin poder nombrar el dibujo ──
+      !/orbWaterline|ORB_FIELD_ONLY|orbPresentationMaterial/u.test(n0PayloadRender) &&
+      reserveLevel({ amount: 2880, target: 2400 }).note === "120% de tu meta" &&
+      goalsLevel({ pending: 420, planned: 420 }).note === "queda 100% del aporte del mes",
+    JSON.stringify({
+      experimento: ORB_FIELD_ONLY,
+      ceroLeido: orbPresentationMaterial({ kind: "saldo", matter: "liquido", fill: "gota" }),
+      conNivel: orbPresentationMaterial({ kind: "saldo", matter: "liquido", fill: "nivel" }),
+      doctrinaDebajo: orbMaterialCode({ kind: "saldo", matter: "liquido", fill: "nivel" }),
+    }),
+  );
   // Sobre el CÓDIGO: la cabecera del porte fiel LISTA las tres traducciones de
   // dialecto que hizo (`texture(` → `texture2D(`, el constructor de arreglos,
   // el resto entero), así que un pin que exija su ausencia sobre el archivo
