@@ -69,7 +69,7 @@ export const ORB_FLUID_ENABLED = false;
 export const ORB_FLUID_SIM_SIZE = 128;
 
 /** Lado de la rejilla del tinte, que es la que el orbe mira. */
-export const ORB_FLUID_DYE_SIZE = 128;
+export const ORB_FLUID_DYE_SIZE = 24;
 
 /**
  * Iteraciones de presión por escalón de calidad. El nivel 1 NO corre fluido:
@@ -119,7 +119,17 @@ export const ORB_FLUID_VELOCITY_DISSIPATION = 0.2;
  */
 export const ORB_FLUID_MAX_SUBSTEPS = 4;
 
-export const ORB_FLUID_MAP_RELAX = 0.20;
+/**
+ * N3C r17 · CUÁNTO DURA UN CICLO DEL MAPA, en segundos.
+ *
+ * Las dos fases van desfasadas medio ciclo, así que ningún mapa vive más de
+ * esto antes de volver a cero — y vuelve justo cuando su peso es cero, o sea
+ * sin que se vea. Corto de más y el movimiento se siente entrecortado; largo de
+ * más y el mapa tiene tiempo de plegarse, que es el defecto que esto ataca.
+ */
+export const ORB_FLUID_CYCLE_SECONDS = 2.4;
+
+export const ORB_FLUID_MAP_RELAX = 0.081;
 
 /**
  * N3C r15 · CUÁNTA VISCOSIDAD LLEVA EL MAPA, por cuadro.
@@ -177,7 +187,7 @@ export interface OrbFluidSplat {
  * clásico de fluidos inyecta del orden de 100–300, y ése es el rango sano: el
  * fluido se desarrolla en segundos, sin recortes y sin muestrear fuera.
  */
-export const ORB_FLUID_GRID = 190;
+export const ORB_FLUID_GRID = 300;
 
 /** Cuánto rastro deja cada empujón. Chico a propósito: ver arriba. */
 export const ORB_FLUID_TRAIL = 0.030;
@@ -241,36 +251,45 @@ export function orbFluidSplats(input: {
   const wave = clamp01(input.wave);
   const splats: OrbFluidSplat[] = [];
 
-  // Cinco agitadores, cada uno con SU velocidad, y ninguna es múltiplo de otra:
-  // así no vuelven a alinearse nunca y el fluido no se asienta en una figura.
-  const ritmos = [0.231, 0.317, 0.409, 0.173, 0.541];
-  const ritmosY = [0.187, 0.263, 0.347, 0.451, 0.139];
+  // ── N3C r17 · LOS AGITADORES ORBITAN. NO BARREN ────────────────────────
+  //
+  // Ésta es la causa de las «olas que pasan como capas», y se ve de un vistazo
+  // pintando el mapa: una banda horizontal recta y una vertical recta, ambas
+  // con borde filoso. Un fluido no dibuja rectas.
+  //
+  // Antes cada agitador tenía DOS frecuencias, una por eje, y su trayectoria
+  // era una Lissajous. Medidas las razones: el agitador 3 daba 2,61 y el 4
+  // daba 3,89 — o sea trayectorias DEGENERADAS, casi segmentos. Uno barría
+  // horizontal y el otro vertical, y un agitador que viaja en línea recta
+  // empujando de costado carva una capa de cizalla con borde recto. Eso es
+  // exactamente la ola: una capa que cruza el orbe y se va.
+  //
+  // Ahora cada uno ORBITA: una sola frecuencia angular, radio que respira, y el
+  // empuje tangencial. Una órbita no tiene lados rectos, así que no hay bordes
+  // que carvar; y los sentidos siguen alternando, que es lo que cancela el
+  // arrastre de conjunto (la coherencia 0,49 contra 0,12 de ellos que la r5
+  // midió empujando hacia adelante).
+  //
+  // Además cada órbita tiene SU centro, repartido con el ángulo áureo: cinco
+  // remolinos concéntricos dejarían un anillo, que es otra estructura fija.
+  const giros = [0.229, 0.317, 0.409, 0.173, 0.541];
+  const respiros = [0.083, 0.117, 0.061, 0.139, 0.097];
   for (let i = 0; i < ORB_FLUID_STIRRERS; i += 1) {
     const phase = i * 2.3999632;
-    const wx = ritmos[i]!;
-    const wy = ritmosY[i]!;
-    const alcance = 0.19 + 0.09 * ((i * 7) % 5) / 4;
-    const ax = 0.5 + alcance * Math.sin(t * wx + phase);
-    const ay = 0.5 + alcance * Math.cos(t * wy + phase * 1.7);
-    // la dirección es la DERIVADA de la trayectoria: el agitador empuja hacia
-    // donde va, que es lo que hace un dedo dentro del agua
-    // la dirección normalizada: la fuerza la ponen las constantes, no la
-    // velocidad del agitador, que sólo dice HACIA DÓNDE
-    let ux = Math.cos(t * wx + phase) * wx;
-    let uy = -Math.sin(t * wy + phase * 1.7) * wy;
-    const norma = Math.hypot(ux, uy) || 1;
-    ux /= norma; uy /= norma;
-    // GIRAN LA DIRECCIÓN UN CUARTO DE VUELTA, Y ALTERNANDO EL SENTIDO.
-    //
-    // Empujando hacia donde van, los cinco suman una corriente de conjunto: la
-    // coherencia medida subió a 0,49 contra 0,12 de ellos, y eso es exactamente
-    // lo que el ojo lee como «una capa que pasa». Empujando de costado, cada uno
-    // inyecta un REMOLINO en vez de arrastre, y con sentidos alternos la suma se
-    // cancela: queda el corte entre remolinos, que es lo que revuelve el campo
-    // sin llevarlo a ninguna parte.
-    const giro = i % 2 === 0 ? 1 : -1;
-    const gx = -uy * giro, gy = ux * giro;
-    ux = gx; uy = gy;
+    const w = giros[i]!;
+    const sentido = i % 2 === 0 ? 1 : -1;
+    // el centro de ESTA órbita, en espiral áurea alrededor del medio
+    const cx = 0.5 + Math.cos(phase) * 0.10;
+    const cy = 0.5 + Math.sin(phase) * 0.10;
+    // el radio respira para que la órbita no deje un anillo fijo
+    const radio = 0.115 + 0.045 * Math.sin(t * respiros[i]! + phase * 1.3);
+    const ang = t * w * sentido + phase;
+    const ax = cx + radio * Math.cos(ang);
+    const ay = cy + radio * Math.sin(ang);
+    // el empuje es TANGENTE a la órbita: eso inyecta rotación, que es lo que
+    // un remolino hace, en vez de arrastre
+    const ux = -Math.sin(ang) * sentido;
+    const uy = Math.cos(ang) * sentido;
     const force = (ORB_FLUID_AMBIENT_FORCE / ORB_FLUID_STIRRERS) * (1 + wave * 1.4);
     splats.push({
       x: ax,
@@ -323,8 +342,10 @@ type Gl = WebGLRenderingContext | WebGL2RenderingContext;
 export interface OrbFluid {
   /** Un paso de simulación. Devuelve la textura del rastro, ya avanzada. */
   step(dtSeconds: number, splats: readonly OrbFluidSplat[], iterations: number): void;
-  /** La textura que el orbe mira: xy = desplazamiento advectado, z = densidad. */
+  /** La textura que el orbe mira: xy = fase A del desplazamiento, zw = fase B. */
   texture: WebGLTexture;
+  /** Dónde va el ciclo del relevo, 0…1. El orbe la necesita para pesar las fases. */
+  phase: number;
   dispose(): void;
 }
 
@@ -401,6 +422,7 @@ vec4 bilerp(sampler2D sam, vec2 uv, vec2 ts){
   vec4 d = texture2D(sam, (iuv + vec2(1.5, 1.5)) * ts);
   return mix(mix(a, b, fuv.x), mix(c, d, fuv.x), fuv.y);
 }
+uniform vec2 uZero;
 void main(){
   vec2 paso = uDt * bilerp(uVelocity, vUv, uTexelSize).xy * uTexelSize;
   vec2 coord = vUv - paso;
@@ -423,7 +445,20 @@ void main(){
   // precisión da resolución RELATIVA: el escalón pasa a ser ~0,1 % de la señal.
   // La identidad ya no es vUv, es el cero, y el paso propio se resta acá:
   //   M(x) = D(x) + x  ⇒  D_nuevo(x) = D_viejo(x - v·dt) - v·dt
-  vec3 d = vec3(r.xy - paso, r.z);
+  // ── N3C r17 · DOS FASES QUE SE RELEVAN ────────────────────────────────────
+  //
+  // Un mapa de flujo SIEMPRE termina plegándose: la velocidad se advecta a sí
+  // misma, forma choques, y el mapa los acumula hasta que dos téxeles vecinos
+  // vienen de puntos cruzados. Ese pliegue es el filo, y el filo es la ola. No
+  // hay parámetro que lo evite — sólo retrasarlo.
+  //
+  // La técnica estándar es no dejar que ningún mapa envejezca: se llevan DOS,
+  // desfasados medio ciclo, y cada uno vuelve a cero cuando su peso es CERO,
+  // así el reinicio es invisible. Ningún mapa vive más de un ciclo, y un mapa
+  // joven no alcanza a plegarse.
+  //
+  //   xy = fase A · zw = fase B · pesos w y 1-w, triangulares y complementarios
+  vec4 d = vec4(r.xy - paso, r.zw - paso);
   // ── N3C r15 · LA VISCOSIDAD QUE LE FALTABA AL MAPA ───────────────────────
   //
   // La velocidad SE ADVECTA A SÍ MISMA, y eso forma choques: es física, no un
@@ -437,14 +472,18 @@ void main(){
   // promedia con los cuatro vecinos, lo justo para redondear el filo sin
   // borrar el flujo. Va sólo en el mapa; la velocidad conserva su física.
   if(uDiffuse > 0.0){
-    vec3 vecinos = 0.25 * (
-      bilerp(uSource, coord + vec2(uSourceTexel.x, 0.0), uSourceTexel).xyz +
-      bilerp(uSource, coord - vec2(uSourceTexel.x, 0.0), uSourceTexel).xyz +
-      bilerp(uSource, coord + vec2(0.0, uSourceTexel.y), uSourceTexel).xyz +
-      bilerp(uSource, coord - vec2(0.0, uSourceTexel.y), uSourceTexel).xyz);
-    d = mix(d, vec3(vecinos.xy - paso, vecinos.z), clamp(uDiffuse, 0.0, 1.0));
+    vec4 vecinos = 0.25 * (
+      bilerp(uSource, coord + vec2(uSourceTexel.x, 0.0), uSourceTexel) +
+      bilerp(uSource, coord - vec2(uSourceTexel.x, 0.0), uSourceTexel) +
+      bilerp(uSource, coord + vec2(0.0, uSourceTexel.y), uSourceTexel) +
+      bilerp(uSource, coord - vec2(0.0, uSourceTexel.y), uSourceTexel));
+    d = mix(d, vec4(vecinos.xy - paso, vecinos.zw - paso), clamp(uDiffuse, 0.0, 1.0));
   }
-  gl_FragColor = vec4(mix(d, vec3(0.0), clamp(uRelax * uDt, 0.0, 1.0)), 1.0);
+  d = mix(d, vec4(0.0), clamp(uRelax * uDt, 0.0, 1.0));
+  // el relevo: cada fase vuelve a cero cuando su peso ya es cero
+  d.xy = mix(d.xy, vec2(0.0), uZero.x);
+  d.zw = mix(d.zw, vec2(0.0), uZero.y);
+  gl_FragColor = d;
 }`;
 
 // N3C r12/r15 · EL MAPA MATERIAL EMPIEZA EN CERO: cada punto guarda cuánto se
@@ -453,7 +492,7 @@ void main(){
 // relativa; guardando la coordenada absoluta, el escalón se comía el 62 % de
 // la señal (r15).
 const IDENTITY = `${HEAD}
-void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }`;
+void main(){ gl_FragColor = vec4(0.0); }`;
 
 const DIVERGENCE = `${HEAD}
 uniform sampler2D uVelocity;
@@ -725,9 +764,19 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
   }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
+  // El reloj del relevo. Vive acá porque el fluido es el dueño de su propio
+  // tiempo: si lo llevara el llamador, dos vistas del mismo fluido podrían
+  // pedirle fases distintas.
+  let fase = 0;
+  let ceroA = 0;
+  let ceroB = 0;
+
   return {
     get texture() {
       return dye.read.tex;
+    },
+    get phase() {
+      return fase;
     },
     /**
      * ── N3C r16 · EL PASO SE PARTE, PORQUE EL DEFECTO ERA EL TAMAÑO DEL PASO ──
@@ -754,6 +803,12 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       if (disposed || gl.isContextLost()) return;
       const total = Math.min(1 / 20, Math.max(1 / 240, Number.isFinite(dtSeconds) ? dtSeconds : 1 / 60));
       const tramos = Math.min(ORB_FLUID_MAX_SUBSTEPS, Math.max(1, Math.ceil(total * 60)));
+      // La fase avanza UNA vez por cuadro, no una por tramo.
+      const antes = fase;
+      fase = (fase + total / ORB_FLUID_CYCLE_SECONDS) % 1;
+      // A vuelve a cero al cruzar 0; B al cruzar 0,5. En ambos su peso vale 0.
+      ceroA = fase < antes ? 1 : 0;
+      ceroB = antes < 0.5 && (fase >= 0.5 || fase < antes) ? 1 : 0;
       const repartidos =
         tramos === 1
           ? splats
@@ -849,6 +904,7 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       gl.uniform1f(u(progs.advect, "uDissipation"), ORB_FLUID_VELOCITY_DISSIPATION);
       gl.uniform1f(u(progs.advect, "uRelax"), 0);
       gl.uniform1f(u(progs.advect, "uDiffuse"), 0);
+      gl.uniform2f(u(progs.advect, "uZero"), 0, 0);
       gl.uniform2f(u(progs.advect, "uSourceTexel"), velocity.read.texel[0], velocity.read.texel[1]);
       bindTex(progs.advect, "uVelocity", 2, velocity.read.tex);
       bindTex(progs.advect, "uSource", 3, velocity.read.tex);
@@ -864,6 +920,9 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       gl.uniform1f(u(progs.advect, "uDissipation"), 0);
       gl.uniform1f(u(progs.advect, "uRelax"), ORB_FLUID_MAP_RELAX);
       gl.uniform1f(u(progs.advect, "uDiffuse"), ORB_FLUID_MAP_DIFFUSE);
+      gl.uniform2f(u(progs.advect, "uZero"), ceroA, ceroB);
+      ceroA = 0;
+      ceroB = 0;
       gl.uniform2f(u(progs.advect, "uSourceTexel"), dye.read.texel[0], dye.read.texel[1]);
       bindTex(progs.advect, "uVelocity", 2, velocity.read.tex);
       bindTex(progs.advect, "uSource", 3, dye.read.tex);

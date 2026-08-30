@@ -516,10 +516,10 @@ const mutations = [
   },
   {
     name: "N3C-5",
-    result: "el shader deja de leer el fluido y vuelve al ruido aunque el solver este corriendo",
+    result: "el shader deja de leer el fluido: el orbe queda con su ruido aunque el solver corra",
     file: SHADER,
-    from: "  if(uHasFluid > 0.5) q += gFlow * 0.30;",
-    to: "  if(uHasFluid > 0.5) q += gFlow * 0.00;",
+    from: "    if(uHasFluid > 0.5) fp += gFlow * 0.115;",
+    to: "    if(uHasFluid > 0.5) fp += gFlow * 0.00;",
   },
   {
     name: "N3C-5",
@@ -557,7 +557,7 @@ const mutations = [
     result:
       "el mapa material deja de relajarse: se aleja para siempre y a los pocos segundos el dibujo se deshilacha en filamentos",
     file: FLUID,
-    from: "export const ORB_FLUID_MAP_RELAX = 0.20;",
+    from: "export const ORB_FLUID_MAP_RELAX = 0.081;",
     to: "export const ORB_FLUID_MAP_RELAX = 0;",
   },
   {
@@ -589,16 +589,16 @@ const mutations = [
     result:
       "el orbe vuelve a leer el mapa NEAREST: el desplazamiento llega cuantizado y dibuja escalones que se mueven",
     file: SHADER,
-    from: "      vec2 mst = fs0 / uFluidTexel - 0.5;",
-    to: "      vec2 mst = fs0 / uFluidTexel;",
+    from: "        vec2 mst2 = (fs0 + mo * uFluidTexel * 0.85) / uFluidTexel - 0.5;",
+    to: "        vec2 mst2 = fs0 / uFluidTexel - 0.5;",
   },
   {
     name: "N3C-8",
     result:
       "el mapa vuelve a resolver MAS FINO que la velocidad que lo mueve: copia los choques con filo perfecto y vuelven las olas duras",
     file: FLUID,
-    from: "export const ORB_FLUID_DYE_SIZE = 128;",
-    to: "export const ORB_FLUID_DYE_SIZE = 640;",
+    from: "export const ORB_FLUID_DYE_SIZE = 24;",
+    to: "export const ORB_FLUID_DYE_SIZE = 128;",
   },
   {
     name: "N3C-8",
@@ -613,8 +613,8 @@ const mutations = [
     result:
       "el mapa vuelve a guardar la COORDENADA absoluta: en media precision el escalon es el 62 % de la senal y el desplazamiento queda en escalones",
     file: FLUID,
-    from: "  vec3 d = vec3(r.xy - paso, r.z);",
-    to: "  vec3 d = vec3(r.xy, r.z);",
+    from: "  vec4 d = vec4(r.xy - paso, r.zw - paso);",
+    to: "  vec4 d = vec4(r.xy, r.zw);",
   },
   {
     name: "N3C-8",
@@ -657,6 +657,46 @@ const mutations = [
     to: "  force /= mag + 0.0001;",
   },
   {
+    name: "N3C-5",
+    result:
+      "el fluido vuelve a entrar por el WARP del campo del color: es el mismo pliegue por la otra puerta",
+    file: SHADER,
+    from: "  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.0;",
+    to: "  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.24;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "el mapa deja de leerse FILTRADO: su gradiente se duplica y vuelve a cruzar el umbral de pliegue",
+    file: SHADER,
+    from: "      for(int mj = 0; mj < 4; mj++){",
+    to: "      for(int mj = 0; mj < 1; mj++){",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "cada capa vuelve a mirar EL MISMO punto del fluido: los cinco orbes dibujan el mismo campo con el mismo pliegue",
+    file: SHADER,
+    from: "      vec2 fofs = vec2(cos(uSeed * 2.3999), sin(uSeed * 2.3999)) * 0.17;",
+    to: "      vec2 fofs = vec2(0.0);",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "la identidad de la capa vuelve a ser su MATERIA: con cristal forzado en las cinco, uSeed es constante y no diferencia nada",
+    file: SHADER,
+    from: "      float fa = uSeed * 1.2566;",
+    to: "      float fa = uMat * 1.2566;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "los agitadores vuelven a viajar en linea recta: un empujon lateral a lo largo de una recta carva una CAPA con borde recto",
+    file: FLUID,
+    from: "    const ang = t * w * sentido + phase;",
+    to: "    const ang = t * w * sentido * 0.0 + phase;",
+  },
+  {
     name: "N3C-8",
     result:
       "se borra el GUARD del interruptor: el fluido se enciende en produccion aunque la constante diga que no, y apagado deja de ser distinguible de roto",
@@ -669,7 +709,7 @@ const mutations = [
     result:
       "vuelve el error de UNIDADES: la velocidad se inyecta en decimas y la adveccion la divide por 7680, asi que el fluido queda congelado",
     file: FLUID,
-    from: "export const ORB_FLUID_GRID = 190;",
+    from: "export const ORB_FLUID_GRID = 300;",
     to: "export const ORB_FLUID_GRID = 1;",
   },
   {
@@ -677,23 +717,23 @@ const mutations = [
     result:
       "la salpicadura se pasa del tope del solver: el recorte a ±1000 deja un salto duro donde empuja y la adveccion muestrea fuera del dominio — las rayas que el founder vio en produccion",
     file: FLUID,
-    from: "export const ORB_FLUID_GRID = 190;",
+    from: "export const ORB_FLUID_GRID = 300;",
     to: "export const ORB_FLUID_GRID = 5200;",
   },
   {
-    name: "N3C-5",
-    result: "el fluido vuelve a SUSTITUIR el desplazamiento propio en vez de sumarle: el movimiento de fondo queda atado a la simulacion",
+    name: "N3C-8",
+    result: "la deformacion vuelve por encima del umbral de pliegue: el dominio se pliega y aparecen causticas — las OLAS que el founder vio dieciseis rondas",
     file: SHADER,
-    from: "  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.24;",
-    to: "  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.0;",
+    from: "  float amount = mix(0.12, 0.22, drive);",
+    to: "  float amount = mix(0.12, 0.22, drive) * 3.0;",
   },
   {
     name: "N3C-8",
     result:
       "el orbe vuelve a muestrear el fluido FUERA de la textura: CLAMP_TO_EDGE repite la ultima fila y eso dibuja rayas verticales — las que el founder vio dos veces",
     file: SHADER,
-    from: "    vec2 fs0 = fr * 0.22 + 0.5;",
-    to: "    vec2 fs0 = fr * 0.75 + 0.5;",
+    from: "      vec2 fs0 = fr * 0.22 + 0.5 + fofs;",
+    to: "      vec2 fs0 = fr * 0.75 + 0.5 + fofs;",
   },
   {
     name: "N3C-8",

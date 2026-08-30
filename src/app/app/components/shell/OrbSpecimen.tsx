@@ -291,6 +291,7 @@ export function OrbSpecimen({
       size,
       [
         {
+          seed: Math.max(0, ORB_KINDS.indexOf(kind)),
           centerX: size / 2,
           centerY: size / 2,
           radius: (size / 2) / 1.62,
@@ -399,6 +400,7 @@ export function OrbFieldSpecimen({
         const kind = ORB_KINDS[slot.index]!;
         const matter = orbMatter(kind);
         return {
+          seed: slot.index,
           centerX: slot.centerX,
           centerY: slot.centerY,
           radius: slot.radius,
@@ -595,6 +597,7 @@ export function OrbCompareSpecimen({
           const voice = slot.voice ?? 0;
           const energy = slot.energy ?? 0.3;
           return {
+            seed: index,
             centerX: index * (size + gap) + size / 2,
             centerY: size / 2,
             radius: size / 2 / 1.62,

@@ -1574,3 +1574,127 @@ No es cero y no se reporta como cero.
 
 Gate **891/891** · mutación **85 muertas, 0 fallas** · lint 0 errores · build verde.
 `ORB_FLUID_ENABLED = false`: producción intacta.
+
+---
+
+## Ronda 17 — las olas no estaban en el fluido
+
+El founder se fue por unas horas dejando su Chrome abierto, con una instrucción
+sin ambigüedad: **no parar hasta no ver ni una sola ola.** Y con el dato que
+resultó ser la llave: «las sigo viendo prácticamente igual de frecuentes que
+antes de esta sesión». O sea que todo lo medido como mejora en las rondas 14–16
+no había tocado lo que él veía.
+
+### Lo primero que hice fue lo que no había hecho en dieciséis rondas: MIRAR
+
+Una captura de pantalla, y dos defectos enormes a la vista:
+
+1. **Los cinco orbes eran idénticos.** La rotación por capa colgaba de `uMat`, y
+   el experimento de campo lleno fuerza CRISTAL en las cinco: `uMat` valía 6 en
+   todas. Los cinco dibujaban el mismo campo con el mismo pliegue en el mismo
+   sitio. Ninguna métrica podía delatarlo: todas miraban un orbe a la vez.
+2. **La «ola» estaba SIEMPRE**, no cada diez segundos. Por eso mi métrica era
+   ciega: normalizaba contra la mediana, y una estructura permanente sube la
+   mediana también.
+
+### El instrumento que faltaba
+
+Un **mapa de crestas acumulado**: para cada píxel, el máximo del laplaciano
+suavizado a lo largo de una ventana larga, pintado en pantalla. Con él la
+respuesta apareció en una comparación:
+
+| | mapa de crestas |
+|---|---|
+| con fluido | **filamentos alargados** cruzando el disco |
+| sin fluido | moteado uniforme, ni una veta |
+
+### Diez cosas que probé dentro del solver, y ninguna lo tocó
+
+Agitadores en órbita · relevo de dos fases · ciclo corto · ciclo largo ·
+vorticidad · tope de velocidad suave · resolución del mapa · viscosidad ·
+precisión · filtrado a mano. Todas medidas, ninguna mató el filamento.
+
+**Porque el defecto no estaba en el fluido.**
+
+### La causa, con su matemática
+
+Deformar el dominio significa evaluar el ruido en `p + a·(q − 0,5)`. La
+jacobiana de eso es `I + a·∇q`, y **cuando `a·|∇q|` alcanza 1 el mapa se
+pliega**: dos puntos vecinos caen en el mismo sitio, la textura se comprime
+contra una línea y aparece una **cáustica** — un filamento brillante de borde
+filoso. Eso es la ola.
+
+Con `|∇q| ≈ 5`, el umbral está en `a ≈ 0,20`. Y en el código había:
+
+```
+float amount = mix(0.17, 0.40, drive) * (uHasFluid > 0.5 ? 1.55 : 1.0);
+```
+
+- sin fluido: 0,17 × 5 = **0,85** → no pliega
+- con fluido: 0,264 × 5 = **1,32** → **pliega**
+- hablando: 0,62 × 5 = **3,10** → pliega mucho
+
+**El `× 1.55` que yo mismo había agregado en una ronda vieja sólo se aplicaba
+con el fluido encendido.** Ésa es la razón exacta de que el defecto apareciera
+sólo con fluido y de que ninguna palanca del solver lo tocara.
+
+### El arreglo, y por qué es un tope y no una calibración
+
+1. **La deformación vive por debajo del umbral**: `mix(0.12, 0.22, drive)`.
+2. **El fluido deja de tocar el warp** en los dos campos (brillo y color):
+   sumar al argumento del ruido multiplica su gradiente.
+3. **El fluido entra moviendo el punto de muestreo** (`fp += gFlow * 0.115`),
+   donde el gradiente es el del propio fluido, suave y acotado.
+4. **El mapa es GRUESO** (24 contra 128 de velocidad): un mapa fino tiene
+   gradiente fino, y el gradiente es lo que pliega.
+5. **La lectura es filtrada** (cuatro tomas promediadas): baja el gradiente por
+   construcción, no por calibración.
+6. Los agitadores **orbitan** en vez de barrer: dos de los cinco tenían
+   trayectorias degeneradas (razones 2,61 y 3,89, casi segmentos) y un agitador
+   que viaja en línea recta carva una capa de cizalla con borde recto — la otra
+   mitad de «pasan como capas».
+7. Cada capa tiene **identidad propia** (`uSeed`) y mira otra parte del fluido.
+
+### Medido, contra el suelo del propio orbe
+
+El suelo es el mismo orbe **sin fluido** — y es distinto por color, cosa que
+casi me hace sacar una conclusión falsa en deuda (ámbar contrasta más).
+
+| orbe | crestas con fluido | su suelo | filamentos |
+|---|---|---|---|
+| saldo, 40 s | mediana 0,0663 · máx 0,0897 | 0,0654 / 0,0766 | ninguno |
+| deuda, 35 s | mediana 0,0728 · máx 0,1139 | 0,0794 / 0,0962 | ninguno |
+
+En los dos, el mapa de crestas es **moteado uniforme**. El exceso del máximo no
+es pliegue: un campo en movimiento recorre más configuraciones que uno quieto.
+
+**Y la prueba que el founder pidió con esas palabras:** el **peor cuadro de
+sesenta segundos en el peor orbe**, capturado y ampliado. Es una nube ámbar
+suave. Ni una línea.
+
+### Y el movimiento subió
+
+| | flujo a 1 s |
+|---|---|
+| al empezar la sesión | 0,0126 |
+| **ahora** | **0,0264** |
+| de ellos | 0,075 |
+
+**El doble de movimiento y cero olas** — no era un intercambio: un dominio
+plegado *destruye* el movimiento coherente, así que arreglar el pliegue dio las
+dos cosas.
+
+### El método, que es lo que más costó
+
+- **Mirar la pantalla es una medición.** Dieciséis rondas de métricas escalares
+  no vieron dos defectos que una captura mostró en cinco segundos.
+- **Una métrica normalizada contra su propia mediana es ciega a lo permanente.**
+- **El instrumento puede fabricar el defecto**: los «listones» de una pasada
+  intermedia eran mi visualización saturando, no el campo.
+- **El suelo se mide POR ORBE**: los colores no contrastan igual.
+- **Calibrar no es garantizar.** Lo que cerró esto fue bajar el gradiente por
+  construcción (mapa grueso + lectura filtrada + warp bajo el umbral), no
+  encontrar el número justo.
+
+Gate **891/891** · lint 0 errores · build verde.
+`ORB_FLUID_ENABLED = false`: producción sigue intacta, a una línea de encenderse.

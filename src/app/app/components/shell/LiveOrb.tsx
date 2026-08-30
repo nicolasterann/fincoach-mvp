@@ -754,6 +754,10 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
         const isActive = slot.index === input.activeIndex;
         const colors = colorsFor(orb.kind, theme);
         calls.push({
+          // N3C r17 · la identidad de la capa, no su materia: el campo y el
+          // fluido se diferencian por ESTO, y `material` puede ser el mismo en
+          // las cinco (el experimento de campo lleno fuerza cristal).
+          seed: slot.index,
           centerX: slot.centerX,
           centerY: slot.centerY,
           radius: slot.radius,

@@ -126,6 +126,15 @@ export interface OrbDrawCall {
   depth: number;
   material: number;
   /**
+   * N3C r17 · QUIÉN ES ESTA CAPA (0…4), independiente de su estado.
+   *
+   * La rotación y el desplazamiento del campo colgaban de `material`, y como el
+   * experimento de campo lleno fuerza CRISTAL en las cinco, las cinco dibujaban
+   * el mismo campo con el mismo pliegue. La identidad de una capa no puede ser
+   * su materia: la materia cambia.
+   */
+  seed: number;
+  /**
    * N3C · EL RELOJ DEL CAMPO DE COLOR. No es `time`: avanza más rápido cuando
    * hay voz, igual que el `uAnimation` de ellos. Lo acumula quien dibuja con
    * `orbFieldSpeed`, así que la velocidad es una función pura que el gate
@@ -234,6 +243,7 @@ const FRAGMENT_SOURCE = `
 precision highp float;
 varying vec2 vP;
 uniform float uTime, uLevel, uEnergy, uDay, uMat, uVoice, uPresence, uSpin;
+uniform float uSeed;
 uniform float uWave, uBob, uDepth, uEnv, uField;
 uniform vec2 uTilt;
 uniform vec3 uLiq, uDeep, uAcc;
@@ -241,6 +251,7 @@ uniform sampler2D uPerlin;
 uniform sampler2D uFluid;
 uniform float uHasFluid;
 uniform vec2 uFluidTexel;
+uniform float uFluidPhase;
 const float KIPU_TIER = __KIPU_TIER__;
 const vec3 LKEY = vec3(-0.4082, 0.8367, 0.3646);
 const vec3 LFILL = vec3(0.6396, -0.2559, 0.7248);
@@ -422,7 +433,9 @@ float fieldGray(vec2 p, float anim, float drive){
   // fluido aporta lo orgánico y la respuesta a la voz.
   vec2 q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),
                 fieldFbm(p + vec2(5.2, 1.3) - vec2(anim*0.061, anim*0.074)));
-  if(uHasFluid > 0.5) q += gFlow * 0.30;
+  // r17 · el fluido NO toca el warp: sumar al argumento del ruido multiplica su
+  // gradiente y es lo que pliega. El fluido entra sólo moviendo el punto.
+  if(uHasFluid > 0.5) q += gFlow * 0.0;
   // la voz abre la deformación: el campo se revuelve más mientras hablás, que
   // es lo único que su 'uOutputVolume' hacía con el ángulo.
   //
@@ -440,7 +453,20 @@ float fieldGray(vec2 p, float anim, float drive){
   // La amplitud sube un poco respecto de la ronda 4 porque ahora es lo ÚNICO
   // que se mueve — pero sigue acotada: el desplazamiento máximo es un cuarto de
   // mancha, así que ningún rasgo llega a cruzar nada.
-  float amount = mix(0.17, 0.40, drive) * (uHasFluid > 0.5 ? 1.55 : 1.0);
+  // ── N3C r17 · LA DEFORMACIÓN VIVE POR DEBAJO DEL UMBRAL DE PLIEGUE ────────
+  //
+  // Deformar el dominio significa evaluar el ruido en p + a·(q-0.5). La
+  // jacobiana de eso es I + a·grad(q), y cuando a·|grad(q)| llega a 1 el mapa se
+  // PLIEGA: dos puntos vecinos caen en el mismo sitio, la textura se comprime
+  // contra una línea y aparece una CÁUSTICA — un filamento brillante de borde
+  // filoso. Ésa era la ola que el founder veía, y por eso ninguna de las diez
+  // cosas que probé dentro del solver la tocó: no estaba en el fluido.
+  //
+  // Con |grad(q)| = 5 aprox (q son dos fbm, escala de rasgo 0,2), el umbral esta en
+  // a = 0,20. Antes aca habia mix(0.17, 0.40, drive) por 1.55 = hasta 0,62:
+  // TRES VECES por encima. Y ese 1,55 solo se aplicaba con el fluido
+  // encendido, que es exactamente por qué el defecto sólo aparecía con fluido.
+  float amount = mix(0.12, 0.22, drive);
   float f = fieldFbm(p + amount*(q - 0.5) + vec2(1.7, 9.2));
   // El rango útil del fbm no es [0,1]: sin esto el campo vive apretado en el
   // medio de la rampa y sale un color plano.
@@ -458,7 +484,10 @@ float fieldHue(vec2 p, float anim){
   // del líquido y aun así no respiran al unísono.
   vec2 q = vec2(fieldFbm(p + vec2(2.9, 7.4) - vec2(anim*0.047, anim*0.068)),
                 fieldFbm(p + vec2(8.1, 0.6) + vec2(anim*0.072, -anim*0.039)));
-  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.24;
+  // r17 · el campo del color tampoco deforma su dominio con el fluido: es el
+  // mismo pliegue por la otra puerta. El fluido llega por el punto de muestreo,
+  // que es donde su gradiente es el suyo y no el del ruido.
+  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.0;
   float h = fieldFbm(p + 0.30*(q - 0.5) + vec2(6.3, 2.1));
   return clamp((h - 0.34) / 0.34, 0.0, 1.0);
 }
@@ -724,7 +753,17 @@ void main(){
     // de la anterior: la simulación es una —un lienzo, un fluido— y aun así las
     // cinco no muestran el mismo remolino.
     if(uHasFluid > 0.5){
-      float fa = uMat * 1.2566;
+      // ── N3C r17 · LA IDENTIDAD DE CADA ORBE NO PUEDE SER SU MATERIA ──────
+      //
+      // Esto colgaba de uMat, y orbPresentationMaterial fuerza CRISTAL en
+      // las cinco capas: uMat valia 6 en todas, asi que la rotacion no rotaba
+      // nada y los cinco orbes mostraban EXACTAMENTE el mismo campo, con el
+      // mismo pliegue en el mismo sitio. Se ve de inmediato en una captura de
+      // pantalla y ninguna de mis métricas lo delataba, porque todas miraban un
+      // orbe a la vez.
+      //
+      // uSeed es la identidad de la capa (0-4), independiente de su estado.
+      float fa = uSeed * 1.2566;
       float fc = cos(fa), fs = sin(fa);
       // ── SE MUESTREA CON LAS COORDENADAS CRUDAS DEL ORBE ──────────────────
       //
@@ -739,18 +778,54 @@ void main(){
       // 'uv' vale como mucho 1 dentro del disco, así que con 0,40 el muestreo
       // vive en [0,10 · 0,90] y nunca toca el borde.
       vec2 fr = vec2(fc*uv.x - fs*uv.y, fs*uv.x + fc*uv.y);
-      vec2 fs0 = fr * 0.22 + 0.5;
+      // Y una rotación alrededor del centro deja el CENTRO quieto: las cinco
+      // seguirían mirando el mismo punto del fluido. Cada capa mira además OTRA
+      // PARTE de la textura. El desplazamiento máximo (0,17) más la ventana
+      // (0,22) da 0,39 < 0,5: ninguna toca el borde.
+      // Y una rotación alrededor del centro deja el CENTRO quieto: las cinco
+      // seguirían mirando el mismo punto del fluido. Cada capa mira además OTRA
+      // PARTE de la textura. El desplazamiento máximo (0,17) más la ventana
+      // (0,22) da 0,39 < 0,5: ninguna toca el borde.
+      vec2 fofs = vec2(cos(uSeed * 2.3999), sin(uSeed * 2.3999)) * 0.17;
+      vec2 fs0 = fr * 0.22 + 0.5 + fofs;
       // N3C r14 · El mismo filtrado a mano que la advección, y por el mismo
       // motivo: sin 'half_float_linear' esta lectura sería NEAREST y el
       // desplazamiento llegaría CUANTIZADO — escalones que barren el orbe.
-      vec2 mst = fs0 / uFluidTexel - 0.5;
-      vec2 mi = floor(mst);
-      vec2 mf = fract(mst);
-      vec3 ma = texture2D(uFluid, (mi + vec2(0.5, 0.5)) * uFluidTexel).xyz;
-      vec3 mb = texture2D(uFluid, (mi + vec2(1.5, 0.5)) * uFluidTexel).xyz;
-      vec3 mc = texture2D(uFluid, (mi + vec2(0.5, 1.5)) * uFluidTexel).xyz;
-      vec3 md = texture2D(uFluid, (mi + vec2(1.5, 1.5)) * uFluidTexel).xyz;
-      vec3 fl = mix(mix(ma, mb, mf.x), mix(mc, md, mf.x), mf.y);
+      // ── N3C r17 · EL DESPLAZAMIENTO SE LEE FILTRADO, Y ES UNA GARANTÍA ────
+      //
+      // Warpear con un campo cuyo gradiente llega a 1 PLIEGA el dominio, y un
+      // dominio plegado produce cáusticas: filamentos brillantes con borde
+      // filoso. Eso —y no el solver— era la ola que el founder veía. Calibrar
+      // la amplitud no alcanza: en 90 s aparecía igual algún pliegue raro.
+      //
+      // Filtrar baja el gradiente por construcción. Cuatro lecturas separadas
+      // un téxel y promediadas son un pasabajos: la mitad del gradiente, con
+      // el flujo de gran escala intacto — que es justo la parte que se ve como
+      // movimiento. Deja de ser una calibración y pasa a ser un tope.
+      vec4 m4 = vec4(0.0);
+      for(int mj = 0; mj < 4; mj++){
+        vec2 mo = mj == 0 ? vec2(-1.0, -1.0)
+                : mj == 1 ? vec2(1.0, -1.0)
+                : mj == 2 ? vec2(-1.0, 1.0)
+                : vec2(1.0, 1.0);
+        vec2 mst2 = (fs0 + mo * uFluidTexel * 0.85) / uFluidTexel - 0.5;
+        vec2 mi2 = floor(mst2);
+        vec2 mf2 = fract(mst2);
+        vec4 ma = texture2D(uFluid, (mi2 + vec2(0.5, 0.5)) * uFluidTexel);
+        vec4 mb = texture2D(uFluid, (mi2 + vec2(1.5, 0.5)) * uFluidTexel);
+        vec4 mc = texture2D(uFluid, (mi2 + vec2(0.5, 1.5)) * uFluidTexel);
+        vec4 md = texture2D(uFluid, (mi2 + vec2(1.5, 1.5)) * uFluidTexel);
+        m4 += mix(mix(ma, mb, mf2.x), mix(mc, md, mf2.x), mf2.y) * 0.25;
+      }
+      // ── N3C r17 · EL RELEVO DE LAS DOS FASES ─────────────────────────────
+      // Los pesos son triangulares y desfasados medio ciclo, así que SUMAN 1 en
+      // todo momento y cada uno vale 0 justo cuando su fase vuelve a cero: el
+      // reinicio es invisible y ningún mapa envejece lo suficiente para
+      // plegarse. Ése era el origen del filo.
+      float wA = 1.0 - abs(2.0 * uFluidPhase - 1.0);
+      float faseB = fract(uFluidPhase + 0.5);
+      float wB = 1.0 - abs(2.0 * faseB - 1.0);
+      vec3 fl = vec3(m4.xy * wA + m4.zw * wB, 0.0);
       // Tope SUAVE en vez de recorte: un recorte pega el valor contra el
       // límite y ahí deja de variar — que es como se fabricó el patrón
       // trabado. Así siempre queda pendiente, por fuerte que sea el rastro.
@@ -762,12 +837,31 @@ void main(){
       // justamente la resta que perdía toda la precisión.
       vec2 fw = fl.xy * 7.0;
       gFlow = fw / (1.0 + abs(fw) * 0.72);
-      gFlowMag = clamp(length(fw) * 0.55, 0.0, 1.0);
+      // r17 · también SUAVE: un clamp aplana lo que lo supera y deja su borde,
+      // y esto se suma como estela visible. Misma regla que el tope del solver.
+      float fm = length(fw) * 0.55;
+      gFlowMag = fm / (1.0 + fm);
     }
     vec2 fp = vec2(cs*fq.x + sn*fq.y, -sn*fq.x + cs*fq.y) * 0.22;
     // Cada capa mira OTRA PARTE del mismo campo. Sin esto las cinco dibujan el
     // mismo patrón con distinto color, y el carrusel se lee como un filtro.
-    fp += vec2(uMat * 0.37, uMat * 0.23);
+    fp += vec2(uSeed * 0.37, uSeed * 0.23);
+    // ── N3C r17 · EL FLUIDO MUEVE EL PUNTO DE MUESTREO, NO AMPLIFICA EL WARP ──
+    //
+    // Aquí está el movimiento, y aquí está por qué no pliega. Deformar el
+    // dominio (sumar al argumento del ruido) MULTIPLICA el gradiente del propio
+    // ruido: pasado 1, el dominio se pliega y aparecen cáusticas — filamentos
+    // brillantes con borde filoso. Eso era la ola.
+    //
+    // Desplazar el punto de muestreo es otra cosa: su gradiente es el del
+    // fluido, que es suave y acotado. Con 0,10 el desplazamiento llega a ~0,14
+    // en unidades del campo —un tercio del orbe— y el gradiente queda en ~0,32,
+    // muy por debajo de 1. Mucho movimiento, ningún pliegue.
+    //
+    // Y no es el «transporte» que la r5 descartó: aquello era una traslación
+    // UNIFORME, que el ojo lee como una capa que pasa. Esto es un campo de
+    // fluido: cada trozo va a su sitio, que es lo que hace la advección.
+    if(uHasFluid > 0.5) fp += gFlow * 0.115;
     gField = saturar(fieldRamp(fieldGray(fp, uField, drive), fieldHue(fp, uField), 1.0 - uDay), 1.24) * uEnv;
     gField += fieldGrain(fq) * (0.055 + 0.020*uDay) * uEnv;
     // donde el fluido acaba de pasar queda un rastro más claro: es la estela,
@@ -1127,6 +1221,7 @@ interface ProgramBundle {
     energy: WebGLUniformLocation | null;
     day: WebGLUniformLocation | null;
     material: WebGLUniformLocation | null;
+    seed: WebGLUniformLocation | null;
     voice: WebGLUniformLocation | null;
     presence: WebGLUniformLocation | null;
     spin: WebGLUniformLocation | null;
@@ -1139,6 +1234,7 @@ interface ProgramBundle {
     fluid: WebGLUniformLocation | null;
     hasFluid: WebGLUniformLocation | null;
     fluidTexel: WebGLUniformLocation | null;
+    fluidPhase: WebGLUniformLocation | null;
     tilt: WebGLUniformLocation | null;
     liquid: WebGLUniformLocation | null;
     deep: WebGLUniformLocation | null;
@@ -1185,6 +1281,7 @@ function linkTierProgram(
       energy: uniform("uEnergy"),
       day: uniform("uDay"),
       material: uniform("uMat"),
+      seed: uniform("uSeed"),
       voice: uniform("uVoice"),
       presence: uniform("uPresence"),
       spin: uniform("uSpin"),
@@ -1197,6 +1294,7 @@ function linkTierProgram(
       fluid: uniform("uFluid"),
       hasFluid: uniform("uHasFluid"),
       fluidTexel: uniform("uFluidTexel"),
+      fluidPhase: uniform("uFluidPhase"),
       tilt: uniform("uTilt"),
       liquid: uniform("uLiq"),
       deep: uniform("uDeep"),
@@ -1396,6 +1494,7 @@ export function createOrbRenderer(
       1 / ORB_FLUID_DYE_SIZE,
       1 / ORB_FLUID_DYE_SIZE,
     );
+    gl.uniform1f(bundle.locations.fluidPhase, fluid ? fluid.phase : 0);
   }
   if (reference) {
     // Los siete desfasajes son de SU componente, no del nuestro: nuestro campo
@@ -1496,6 +1595,7 @@ export function createOrbRenderer(
         gl.uniform1f(locations.level, orb.waterline);
         gl.uniform1f(locations.energy, orb.energy);
         gl.uniform1f(locations.material, orb.material);
+        gl.uniform1f(locations.seed, orb.seed);
         gl.uniform1f(locations.voice, orb.voice);
         gl.uniform1f(locations.presence, orb.presence);
         gl.uniform1f(locations.spin, orb.spin);

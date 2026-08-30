@@ -106,6 +106,8 @@ import {
   ORB_FLUID_MAP_RELAX,
   ORB_FLUID_MAP_DIFFUSE,
   ORB_FLUID_MAX_SUBSTEPS,
+  ORB_FLUID_CYCLE_SECONDS,
+  ORB_FLUID_STIRRERS,
   ORB_FLUID_DYE_SIZE,
   ORB_FLUID_SIM_SIZE,
   ORB_FLUID_VELOCITY_DISSIPATION,
@@ -29753,17 +29755,21 @@ assert(
       // del fluido (`uNoiseSpeed`, `uFbmSpeed`).
       // …y con un factor que NO sea cero: `* 0.0` conserva la forma de la línea
       // y apaga el fluido entero, que es como su mutación sobrevivía.
+      // ── N3C r17 · RE-ANCLADO: EL FLUIDO LLEGA POR OTRA PUERTA ────────────
+      //
+      // Este pin exigía que el fluido se sumara al ARGUMENTO del ruido, en los
+      // dos campos. Su intención era buena —que el fluido no fuera un no-op—
+      // pero su mecanismo resultó ser la causa de las olas: sumar al argumento
+      // multiplica el gradiente del ruido y pliega el dominio.
+      //
+      // El fluido sigue teniendo que llegar, y se comprueba igual de fuerte;
+      // lo que cambia es POR DÓNDE. Ahora mueve el punto de muestreo, que
+      // arrastra a los dos campos a la vez —brillo y color— porque los dos se
+      // evalúan en `fp`. Se exige que las dos puertas viejas estén cerradas y
+      // que la nueva esté abierta con amplitud útil.
+      /if\(uHasFluid > 0\.5\) q \+= vec2\(-gFlow\.y, gFlow\.x\) \* 0\.0;/u.test(n3ShaderCode) &&
       (() => {
-        const m = n3ShaderCode.match(/if\(uHasFluid > 0\.5\) q \+= gFlow \* ([0-9.]+);/u);
-        return m != null && Number.parseFloat(m[1]!) > 0.05;
-      })() &&
-      // y lo mismo para el campo del COLOR, que mira el mismo fluido girado un
-      // cuarto de vuelta: apagarlo deja el color quieto mientras el brillo se
-      // mueve, y eso se lee como dos capas distintas.
-      (() => {
-        const m = n3ShaderCode.match(
-          /if\(uHasFluid > 0\.5\) q \+= vec2\(-gFlow\.y, gFlow\.x\) \* ([0-9.]+);/u,
-        );
+        const m = n3ShaderCode.match(/if\(uHasFluid > 0\.5\) fp \+= gFlow \* ([0-9.]+);/u);
         return m != null && Number.parseFloat(m[1]!) > 0.05;
       })() &&
       // …y el factor tiene que SATURAR de verdad: con 1,0 la función existe y
@@ -29935,11 +29941,16 @@ assert(
         // r12: el muestreo se nombra (fs0) porque el orbe necesita la MISMA
         // coordenada dos veces — para leer la textura y para restarla.
         const m = n3ShaderCode.match(
-          /vec2 fs0 = fr \* ([0-9.]+) \+ 0\.5;/u,
+          /vec2 fs0 = fr \* ([0-9.]+) \+ 0\.5 \+ fofs;/u,
         );
         if (m == null) return false;
         const k = Number.parseFloat(m[1]!);
-        return k > 0 && 0.5 + k < 0.98 && 0.5 - k > 0.02;
+        // r17 · la ventana YA no está centrada: cada capa mira otra parte del
+        // fluido, así que el borde hay que medirlo con el desplazamiento sumado.
+        const d = n3ShaderCode.match(/sin\(uSeed \* 2\.3999\)\) \* ([0-9.]+);/u);
+        if (d == null) return false;
+        const o = Number.parseFloat(d[1]!);
+        return k > 0 && o > 0 && 0.5 + k + o < 0.98 && 0.5 - k - o > 0.02;
       })() &&
       // …y con las coordenadas CRUDAS, no con las del líquido
       /vec2 fr = vec2\(fc\*uv\.x - fs\*uv\.y, fs\*uv\.x \+ fc\*uv\.y\);/u.test(n3ShaderCode) &&
@@ -29960,8 +29971,7 @@ assert(
       n3cFluido.includes("bilerp(uSource, coord, uSourceTexel)") &&
       n3cFluido.includes("bilerp(uVelocity, vUv, uTexelSize)") &&
       !/texture2D\(uSource, coord\)/u.test(n3cFluido) &&
-      n3ShaderCode.includes("vec2 mst = fs0 / uFluidTexel - 0.5;") &&
-      n3ShaderCode.includes("mix(mix(ma, mb, mf.x), mix(mc, md, mf.x), mf.y)") &&
+      n3ShaderCode.includes("vec2 mst2 = (fs0 + mo * uFluidTexel * 0.85) / uFluidTexel - 0.5;") &&
       !/vec3 fl = texture2D\(uFluid, fs0\)/u.test(n3ShaderCode) &&
       // ── N3C r12 · LA TEXTURA GUARDA COORDENADAS, NO UN RASTRO ────────────
       // Éste es el defecto que el founder describió once rondas seguidas —«los
@@ -29984,8 +29994,139 @@ assert(
       // casi iguales, que se queda con todo el error y nada de la señal. Cerca
       // de cero la media precisión da resolución RELATIVA: ~0,1 %.
       n3ShaderCode.includes("vec2 fw = fl.xy * 7.0;") &&
-      n3cFluido.includes("gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }") &&
-      n3cFluido.includes("vec3 d = vec3(r.xy - paso, r.z);") &&
+      n3cFluido.includes("gl_FragColor = vec4(0.0); }") &&
+      n3cFluido.includes("vec4 d = vec4(r.xy - paso, r.zw - paso);") &&
+      // ── N3C r17 · EL RELEVO DE DOS FASES ─────────────────────────────────
+      // Un mapa de flujo SIEMPRE termina plegándose: la velocidad se advecta a
+      // sí misma y forma choques, y el mapa los acumula hasta que dos téxeles
+      // vecinos vienen de puntos cruzados. Ese pliegue es el filo, y el filo es
+      // la ola que el founder ve. No hay parámetro que lo evite, sólo
+      // retrasarlo — por eso ninguna de las diez cosas que probé lo mató.
+      //
+      // Se llevan DOS mapas desfasados medio ciclo. Cada uno vuelve a cero
+      // cuando su peso vale CERO, así el reinicio no se ve, y ninguno vive más
+      // de un ciclo. Un mapa joven no alcanza a plegarse.
+      //
+      // Los pesos son triangulares y complementarios: SUMAN 1 en todo momento.
+      // Si no sumaran 1, el orbe latiría con el ciclo.
+      // ── N3C r17 · EL UMBRAL DE PLIEGUE, QUE ES LA CAUSA DE LAS OLAS ───────
+      //
+      // Deformar el dominio evalúa el ruido en `p + a·(q-0.5)`; su jacobiana es
+      // `I + a·∇q`, y cuando `a·|∇q|` llega a 1 el mapa se PLIEGA: la textura
+      // se comprime contra una línea y aparece una CÁUSTICA — un filamento
+      // brillante con borde filoso. Eso era la ola.
+      //
+      // El founder la vio dieciséis rondas seguidas y ninguna palanca del
+      // solver la tocó, porque NO ESTABA EN EL FLUIDO. Se destapó pintando el
+      // mapa de crestas acumulado: con fluido, filamentos; sin fluido, moteado
+      // uniforme. La diferencia era el `× 1.55` que sólo se aplicaba con el
+      // fluido encendido, y que ponía la deformación tres veces por encima del
+      // umbral.
+      //
+      // Con |∇q| ≈ 5 el umbral está en a ≈ 0,20. Se exige margen: 0,26 con la
+      // voz al máximo deja el producto en 1,3 — no, por eso el tope es 0,24.
+      (() => {
+        const m = n3ShaderCode.match(/float amount = mix\(([0-9.]+), ([0-9.]+), drive\);/u);
+        if (m == null) return false;
+        const reposo = Number.parseFloat(m[1]!);
+        const hablando = Number.parseFloat(m[2]!);
+        return reposo > 0.05 && hablando > reposo && hablando <= 0.24;
+      })() &&
+      // …y el fluido NO se suma al argumento del ruido: ahí multiplicaría el
+      // gradiente. Entra moviendo el punto de muestreo, cuyo gradiente es el
+      // del propio fluido — suave y acotado.
+      /if\(uHasFluid > 0\.5\) q \+= gFlow \* 0\.0;/u.test(n3ShaderCode) &&
+      (() => {
+        const m = n3ShaderCode.match(/if\(uHasFluid > 0\.5\) fp \+= gFlow \* ([0-9.]+);/u);
+        if (m == null) return false;
+        const g = Number.parseFloat(m[1]!);
+        // medido: 0,24 pliega (crestas 0,126), 0,16 no (0,088 contra 0,077 de suelo)
+        return g > 0 && g <= 0.18;
+      })() &&
+      // …y el desplazamiento se lee FILTRADO, que baja su gradiente por
+      // construcción en vez de por calibración.
+      n3ShaderCode.includes("for(int mj = 0; mj < 4; mj++){") &&
+      // ── N3C r17 · LA IDENTIDAD DE UNA CAPA NO ES SU MATERIA ───────────────
+      // La rotación del fluido y el desplazamiento del campo colgaban de
+      // `uMat`, y `orbPresentationMaterial` fuerza CRISTAL en las cinco: uMat
+      // valía 6 en todas, así que los cinco orbes dibujaban EXACTAMENTE el
+      // mismo campo con el mismo pliegue en el mismo sitio. Se veía de un
+      // vistazo en una captura y ninguna métrica lo delataba, porque todas
+      // miraban un orbe a la vez.
+      //
+      // Una materia cambia; una capa no. La identidad va por `uSeed`, y además
+      // cada capa mira OTRA PARTE de la textura: rotar alrededor del centro
+      // deja el centro quieto, así que sin el desplazamiento las cinco
+      // seguirían compartiendo el punto central.
+      // ── N3C r17 · LOS AGITADORES ORBITAN, Y SE COMPRUEBA LA TRAYECTORIA ──
+      //
+      // Aquí estaba una de las «capas que pasan». Cada agitador tenía DOS
+      // frecuencias, una por eje, así que su trayectoria era una Lissajous —y
+      // dos de las cinco salían DEGENERADAS: razones 2,61 y 3,89, o sea casi
+      // segmentos. Uno barría horizontal y el otro vertical, y un agitador que
+      // viaja en línea recta empujando de costado carva una capa de cizalla con
+      // borde recto. Se veía pintando el mapa: una banda horizontal y una
+      // vertical, ambas rectas. Un fluido no dibuja rectas.
+      //
+      // No alcanza con pinchar el texto: se mide LA FORMA. Cada agitador tiene
+      // que recorrer los dos ejes de manera comparable (una órbita), no uno
+      // mucho más que el otro (un segmento), y tiene que moverse de verdad.
+      (() => {
+        const muestras = 240;
+        for (let i = 0; i < ORB_FLUID_STIRRERS; i += 1) {
+          let minX = 1, maxX = 0, minY = 1, maxY = 0;
+          for (let k = 0; k < muestras; k += 1) {
+            const sp = orbFluidSplats({
+              time: (k * 40) / muestras,
+              voice: 0,
+              wave: 0,
+              dtSeconds: 1 / 60,
+            })[i];
+            if (sp == null) return false;
+            minX = Math.min(minX, sp.x); maxX = Math.max(maxX, sp.x);
+            minY = Math.min(minY, sp.y); maxY = Math.max(maxY, sp.y);
+          }
+          const anchoX = maxX - minX;
+          const anchoY = maxY - minY;
+          // se mueve de verdad en los dos ejes
+          if (anchoX < 0.08 || anchoY < 0.08) return false;
+          // y su recorrido es comparable en ambos: una órbita, no un segmento
+          const razon = Math.max(anchoX, anchoY) / Math.min(anchoX, anchoY);
+          if (razon > 1.9) return false;
+        }
+        return true;
+      })() &&
+      n3ShaderCode.includes("float fa = uSeed * 1.2566;") &&
+      n3ShaderCode.includes("fp += vec2(uSeed * 0.37, uSeed * 0.23);") &&
+      !/float fa = uMat \*/u.test(n3ShaderCode) &&
+      n3LiveCode.includes("seed: slot.index,") &&
+      n3cSpecimenCode.includes("seed: Math.max(0, ORB_KINDS.indexOf(kind)),") &&
+      n3ShaderCode.includes("m4 += mix(mix(ma, mb, mf2.x), mix(mc, md, mf2.x), mf2.y) * 0.25;") &&
+      // …y el mapa es MÁS GRUESO que la velocidad: un mapa fino tiene gradiente
+      // fino, y el gradiente es lo que pliega. 24 contra 128.
+      ORB_FLUID_DYE_SIZE * 4 <= ORB_FLUID_SIM_SIZE &&
+      ORB_FLUID_CYCLE_SECONDS > 0.8 &&
+      ORB_FLUID_CYCLE_SECONDS < 8 &&
+      n3cFluido.includes("d.xy = mix(d.xy, vec2(0.0), uZero.x);") &&
+      n3cFluido.includes("d.zw = mix(d.zw, vec2(0.0), uZero.y);") &&
+      n3cFluido.includes("fase = (fase + total / ORB_FLUID_CYCLE_SECONDS) % 1;") &&
+      n3ShaderCode.includes("float wA = 1.0 - abs(2.0 * uFluidPhase - 1.0);") &&
+      n3ShaderCode.includes("float wB = 1.0 - abs(2.0 * faseB - 1.0);") &&
+      n3ShaderCode.includes("vec3 fl = vec3(m4.xy * wA + m4.zw * wB, 0.0);") &&
+      // y los pesos suman 1 SIEMPRE — se comprueba, no se afirma
+      (() => {
+        for (let i = 0; i <= 200; i += 1) {
+          const f = i / 200;
+          const wA = 1 - Math.abs(2 * f - 1);
+          const b = (f + 0.5) % 1;
+          const wB = 1 - Math.abs(2 * b - 1);
+          if (Math.abs(wA + wB - 1) > 1e-9) return false;
+          // y cada peso vale 0 justo donde su fase se reinicia
+          if (f === 0 && wA !== 0) return false;
+          if (Math.abs(f - 0.5) < 1e-9 && wB !== 0) return false;
+        }
+        return true;
+      })() &&
       /uniform float uDt, uDissipation, uRelax, uDiffuse;/u.test(n3cFluido) &&
       ORB_FLUID_MAP_RELAX > 0.02 &&
       ORB_FLUID_MAP_RELAX < 1 &&
@@ -30002,7 +30143,6 @@ assert(
       //   mapa 128 → base 5,2 · pico  7,4   ← igual a la velocidad
       // y el flujo no se movió (0,0127 → 0,0126). O sea: los 5× de resolución
       // no compraban NADA de movimiento, sólo artefacto.
-      ORB_FLUID_DYE_SIZE <= ORB_FLUID_SIM_SIZE &&
       // …y la viscosidad, con los dos topes: con 0 el filo se conserva
       // (pico 8,7), con 1 el flujo se disuelve en una mancha.
       ORB_FLUID_MAP_DIFFUSE > 0 &&
