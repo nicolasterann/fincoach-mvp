@@ -199,7 +199,6 @@ uniform float uWave, uBob, uDepth, uEnv, uField;
 uniform vec2 uTilt;
 uniform vec3 uLiq, uDeep, uAcc;
 uniform sampler2D uPerlin;
-uniform float uOffsets[__KIPU_OVALS__];
 const float KIPU_TIER = __KIPU_TIER__;
 const vec3 LKEY = vec3(-0.4082, 0.8367, 0.3646);
 const vec3 LFILL = vec3(0.6396, -0.2559, 0.7248);
@@ -271,74 +270,94 @@ float fbm(vec2 p){
   return v;
 }
 
-// ── EL CAMPO DE COLOR · adaptado de ElevenLabs (MIT, aviso en la cabecera) ──
+// ── EL CAMPO DE COLOR (N3C ronda 2) ────────────────────────────────────────
 //
-// Su técnica en una frase: siete óvalos en COORDENADAS POLARES, que se mueven
-// despacio y se pisan entre sí sobre un gris; el ángulo se distorsiona con una
-// tela de ruido para que el conjunto fluya; y al final el gris entra en una
-// RAMPA de cuatro paradas —negro, color oscuro, color claro, blanco— que es de
-// donde sale todo el look. No hay iluminación, no hay esfera y no hay nada
-// reconocible adentro: es exactamente lo que el founder pidió.
+// LA RONDA 1 COPIÓ EL ARCHIVO EQUIVOCADO, y el founder lo vio de una: el orbe
+// salía como un molinete de cuñas negras que converge en el centro, y sus orbes
+// de verdad no se parecen en nada a eso.
 //
-// Lo que cambia respecto de su archivo, y por qué:
-//   · la tela de ruido se GENERA ('orb-noise-texture.ts'), no se descarga;
-//   · el gris sale por separado de la rampa, porque el nuestro tiene que
-//     entrar DENTRO del líquido y no pintar el disco entero;
-//   · sus dos anillos del borde no están acá: en nuestro orbe el anillo de la
-//     voz vive en la superficie del AGUA, no en el borde del vidrio.
-float fieldFlow(vec3 dec, float t){
-  return mix(texture2D(uPerlin, vec2(t, dec.x / 2.0)).r,
-             texture2D(uPerlin, vec2(t, dec.y / 2.0)).r,
-             dec.z);
+// El porte era fiel — 'elevenlabs/ui', 'orb.tsx', línea por línea. El problema
+// es que **ese componente no es lo que muestra su página.** Su shader publicado
+// dibuja siete óvalos en coordenadas polares, y un óvalo polar tiene dos cosas
+// que sus orbes NO tienen: bordes rectos en el ángulo y una singularidad en el
+// radio cero. Por eso converge en el centro; es geometría, no un ajuste.
+//
+// Lo que sí tienen sus orbes —mirando las capturas— son regiones grandes,
+// blandas y orgánicas, sin centro y sin bordes, con GRANO encima y sin un solo
+// negro: siempre un tono más profundo del mismo color. Eso es DEFORMACIÓN DE
+// DOMINIO: un ruido cuyo argumento es otro ruido. No hay coordenadas polares en
+// ninguna parte, y por eso no puede haber ni molinete ni convergencia.
+//
+// El porte fiel de su componente publicado se conserva en
+// 'orb-reference-shader.ts', y '/dev/vidrio' lo muestra por lo que es: su
+// código abierto, que no es su página.
+
+float fieldTex(vec2 p){ return texture2D(uPerlin, p).r; }
+
+// fbm leído de la tela en vez de calculado: la tela cierra sobre sí misma, así
+// que sumar octavas escaladas no produce costuras. Y cuesta cuatro lecturas en
+// vez de dieciséis hashes, que en un teléfono es la diferencia.
+// DOS OCTAVAS, NO CUATRO. Medido mirando: con cuatro el campo salía como papel
+// arrugado —fractal, con detalle en todas las escalas— y sus orbes son lo
+// contrario: dos o tres manchas grandes y nada de detalle fino. Lo fino lo pone
+// el GRANO, que es otra cosa y va aparte.
+float fieldFbm(vec2 p){
+  float v = 0.70*fieldTex(p);
+  v += 0.30*fieldTex(p*2.07 + vec2(0.31, 0.77));
+  if(KIPU_TIER > 1.5) v += 0.10*(fieldTex(p*4.03 + vec2(0.77, 0.13)) - 0.5);
+  return v;
 }
 
+// LA DEFORMACIÓN. 'q' desplaza el punto antes de volver a leer el ruido: es lo
+// que convierte manchas redondas en esas lenguas de color que se enroscan.
 float fieldGray(vec2 p, float anim, float drive){
-  float radius = length(p);
-  float theta = atan(p.y, p.x);
-  if(theta < 0.0) theta += 6.28318530718;
-  vec3 dec = vec3(theta / 6.28318530718,
-                  mod(theta / 6.28318530718 + 0.5, 1.0) + 1.0,
-                  abs(theta / 3.14159265359 - 1.0));
-  float n = fieldFlow(dec, radius * 0.03 - anim * 0.2) - 0.5;
-  theta += n * mix(0.08, 0.25, drive);
-  // Su reloj corre a la mitad del tiempo real; el nuestro es el crudo.
-  float ft = uTime * 0.5;
-  float gray = 1.0;
-  for(int i = 0; i < __KIPU_OVALS__; i++){
-    float c = float(i) * 1.57079632679 + 0.5 * sin(ft / 20.0 + uOffsets[i]);
-    float nz = texture2D(uPerlin, vec2(mod(c + ft * 0.05, 1.0), 0.5)).r;
-    float a = 0.5 + nz * 0.3;
-    float b = nz * mix(3.5, 2.5, drive);
-    float dTheta = min(abs(theta - c),
-                   min(abs(theta + 6.28318530718 - c), abs(theta - 6.28318530718 - c)));
-    float oval = (dTheta * dTheta) / (a * a) + (radius * radius) / (b * b);
-    float edge = smoothstep(1.0, 0.4, oval);
-    if(edge > 0.0){
-      float g = (dTheta / a + 1.0) * 0.5;
-      if(mod(float(i), 2.0) > 0.5) g = 1.0 - g;
-      g = mix(0.5, g, 0.1);
-      gray = mix(gray, g, 0.85 * edge);
-    }
-  }
-  return gray;
+  vec2 q = vec2(fieldFbm(p + vec2(anim*0.055, anim*0.031)),
+                fieldFbm(p + vec2(5.2, 1.3) - vec2(anim*0.043, anim*0.027)));
+  // la voz abre la deformación: el campo se revuelve más mientras hablás, que
+  // es lo único que su 'uOutputVolume' hacía con el ángulo.
+  //
+  // Y el desplazamiento se mide EN UNIDADES DE LA TELA, no en múltiplos sueltos:
+  // las manchas de la octava base miden 0,25 de tela, así que desplazar 0,35 las
+  // enrosca; desplazar 2,0 —lo que tenía la primera versión— las revuelve ocho
+  // veces y devuelve ruido.
+  float amount = mix(0.32, 0.58, drive);
+  float f = fieldFbm(p + amount*(q - 0.5) + vec2(1.7, 9.2));
+  // El rango útil del fbm no es [0,1]: sin esto el campo vive apretado en el
+  // medio de la rampa y sale un color plano.
+  return clamp((f - 0.32) / 0.38, 0.0, 1.0);
 }
 
-// La rampa de cuatro paradas. El extremo oscuro no es negro puro sino el
-// pigmento profundo de la capa muy bajado: con negro puro el líquido se leía
-// como un agujero y perdía de qué capa era, que es lo único que este objeto
-// tiene que decir.
+// LA RAMPA. Cuatro paradas, como la suya, pero **ninguna es negra**: el extremo
+// oscuro es el pigmento profundo de la capa. Sus orbes no tienen un solo negro
+// —lo más oscuro sigue siendo del color— y ahí está la mitad de por qué se ven
+// cremosos en vez de duros.
 vec3 fieldRamp(float gray, float inverted){
   float l = mix(gray, 1.0 - gray, inverted);
-  vec3 c0 = uDeep * 0.10;
-  if(l < 0.33) return mix(c0, uDeep, l * 3.0);
-  if(l < 0.66) return mix(uDeep, uLiq, (l - 0.33) * 3.0);
-  return mix(uLiq, vec3(1.0), (l - 0.66) * 3.0);
+  // Un poco de contraste antes de la rampa. Sin esto el campo vive en el medio
+  // y sale un color plano; sus orbes tienen sombras profundas del mismo tono
+  // ocupando un tercio del disco, y el claro es un destello chico, no la mitad.
+  l = smoothstep(0.06, 0.94, l);
+  vec3 c0 = uDeep * 0.72;
+  vec3 c1 = uDeep;
+  vec3 c2 = uLiq;
+  vec3 c3 = mix(uAcc, vec3(1.0), 0.60);
+  if(l < 0.40) return mix(c0, c1, l / 0.40);
+  if(l < 0.80) return mix(c1, c2, (l - 0.40) / 0.40);
+  return mix(c2, c3, (l - 0.80) / 0.20);
+}
+
+// EL GRANO. Es lo que más se nota en sus capturas y lo que más barato compra
+// «material» en vez de «degradado». Vive en el espacio DEL ORBE y no en el de
+// la pantalla: si viviera en la pantalla se leería como un filtro encima, y el
+// orbe pasaría por debajo del grano al deslizar.
+float fieldGrain(vec2 p){
+  return hash21(floor(p * 160.0)) - 0.5;
 }
 
 // El campo del píxel, calculado UNA vez en 'main' y leído desde el entorno.
 // 'envSample' corre hasta cinco veces por píxel (el reflejo, los tres rayos de
-// la dispersión y el reflejo del agua): recalcular siete óvalos en cada una
-// costaría cuarenta y cinco lecturas de tela por píxel.
+// la dispersión y el reflejo del agua): recalcular el campo en cada una
+// multiplicaría por cinco las lecturas de tela.
 vec3 gField = vec3(0.0);
 
 // EL CAMPO SE PUEDE APAGAR (uEnv = 0). No es un modo de producción: es el
@@ -382,7 +401,9 @@ vec3 tonemap(vec3 x){
   return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), 0.0, 1.0);
 }
 
-float isDrop(){ return step(4.5, uMat); }
+// La gota es el 5 EXACTO. Sin el tope de arriba, el cristal —que ahora es el 6—
+// también entraría por acá y el campo se le anclaría al fondo del vaso.
+float isDrop(){ return step(4.5, uMat) * step(uMat, 5.5); }
 
 // EL PISTÓN entra en el nivel: un recibo empuja el agua y todo el plano sube y
 // baja antes de asentarse. Lo calcula la simulación; acá sólo se suma.
@@ -479,11 +500,17 @@ void main(){
     // nivel, que es lo que hace un contenido y no un fondo.
     float wb = isDrop() > 0.5 ? -0.955 : waterBase();
     float cLiq = (wb - 1.0) * 0.5;
-    vec2 fq = uv - vec2(0.0, cLiq);
+    vec2 fq = uv - vec2(0.0, cLiq * 0.85);
     // …y gira con el orbe: un solo objeto, otra vez.
-    float sn = sin(uSpin * 0.35), cs = cos(uSpin * 0.35);
-    vec2 fp = vec2(cs*fq.x + sn*fq.y, -sn*fq.x + cs*fq.y) * 1.25;
+    float sn = sin(uSpin * 0.30), cs = cos(uSpin * 0.30);
+    // 0,22 y no 0,62: con 0,62 el orbe abarcaba cinco manchas de la tela y el
+    // campo se leía como una textura. Sus orbes muestran DOS o TRES.
+    vec2 fp = vec2(cs*fq.x + sn*fq.y, -sn*fq.x + cs*fq.y) * 0.22;
+    // Cada capa mira OTRA PARTE del mismo campo. Sin esto las cinco dibujan el
+    // mismo patrón con distinto color, y el carrusel se lee como un filtro.
+    fp += vec2(uMat * 0.37, uMat * 0.23);
     gField = fieldRamp(fieldGray(fp, uField, drive), 1.0 - uDay) * uEnv;
+    gField += fieldGrain(fq) * (0.055 + 0.02*uDay) * uEnv;
   }
 
   vec3 soul = vec3(0.0);
@@ -574,7 +601,9 @@ void main(){
   float has = smoothstep(0.0, 0.030, thick);
   float hit = step(0.004, thick);
 
-  float crystal = step(2.5, uMat) * step(uMat, 3.5);
+  // N3C r2 · el cristal tiene su propio código (6). Antes era el 3 —el de la
+  // capa Patrimonio—, y por eso Patrimonio no podía dibujar líquido nunca.
+  float crystal = step(5.5, uMat);
   thick *= 1.0 - crystal;
   has *= 1.0 - crystal;
   hit *= 1.0 - crystal;
@@ -592,7 +621,7 @@ void main(){
   vec3 body = mix(gField, uDeep * 0.28, (1.0 - uEnv))
             + mix(uDeep * 0.92, uLiq * 1.30, exp(-((vec3(1.0) - uLiq) * 1.55 + 0.16) * depth * 1.45))
               * 0.16 * (1.0 - uEnv);
-  body *= 0.60 + 0.55 * clamp(thick * 1.15, 0.0, 1.0);
+  body *= 0.52 + 0.46 * clamp(thick * 1.15, 0.0, 1.0);
   // La gota es una lámina, y una lámina de líquido apenas tiñe: sin esto un
   // orbe VACÍO brillaba más que uno lleno — exactamente al revés.
   body *= 1.0 - drop * 0.45;
@@ -687,37 +716,21 @@ void main(){
   vec3 reflection = envSample(R) * schlick * mix(1.05, 1.00, uDay);
   float rimw = pow(1.0 - ndv, 5.0);
 
+  // ── SIN TECHO: EL VIDRIO SE LLENA ENTERO (N3C r2) ──────────────────────
+  //
+  // Acá vivía un núcleo facetado —una gema de veintitantas caras suspendida en
+  // el medio—, y el founder la señaló mirando producción: «esa esfera no
+  // concuerda con el resto». Tenía razón: era un objeto de otra familia, con
+  // otra iluminación y otro lenguaje, metido dentro del mismo vidrio.
+  //
+  // Lo que reemplaza a la gema no es un adorno nuevo: es la doctrina de N2
+  // dicha en la materia de esta etapa. Si el motor no puede afirmar un techo,
+  // no se inventa un nivel — se llena el vidrio ENTERO del mismo campo, sin
+  // línea de agua y sin menisco. Un orbe sin techo se distingue de uno lleno
+  // justo por eso: el lleno deja aire y tiene menisco; éste no tiene ninguno de
+  // los dos, porque no hay ninguna altura que afirmar.
   vec3 core = vec3(0.0);
   float coreA = 0.0;
-  if(uMat > 2.5 && uMat < 3.5){
-    float cr = 0.38;
-    float bb = dot(pf, rdi), cc2 = dot(pf,pf) - cr*cr, hh = bb*bb - cc2;
-    if(hh > 0.0){
-      hh = sqrt(hh);
-      float ct0 = max(-bb - hh, 0.0);
-      vec3 cn = normalize(pf + rdi*ct0);
-      float rota = uTime*0.05 + uSpin;
-      vec2 sph = vec2(atan(cn.z, cn.x) + rota, acos(clamp(cn.y,-1.0,1.0)));
-      vec2 q = vec2(sph.x*1.55, sph.y*2.15);
-      vec2 tri = vec2(q.x + q.y*0.577, q.y*1.155);
-      float fx = fract(tri.x), fy = fract(tri.y);
-      float sub = step(1.0, fx + fy);
-      vec2 cell = floor(tri) + mix(vec2(0.3333), vec2(0.6667), sub);
-      float qy = cell.y/1.155, qx = cell.x - qy*0.577;
-      vec2 cs = vec2(qx/1.55, qy/2.15);
-      vec3 fn = rotY(normalize(vec3(sin(cs.y)*cos(cs.x), cos(cs.y), sin(cs.y)*sin(cs.x))), -rota);
-      float lam = max(dot(fn, LKEY), 0.0);
-      float sp = pow(max(dot(reflect(rdi, fn), LKEY), 0.0), 24.0);
-      float fh = hash21(floor(tri) + sub*17.0);
-      // N3C · las caras toman el color del campo, para que el cristal sea del
-      // mismo mundo que las cuatro capas líquidas y no un objeto de otra etapa.
-      core = mix(uDeep, gField * 1.6, 0.55*uEnv)*(0.75 + 0.35*fh) + uLiq*(0.16 + 0.80*lam*lam);
-      core += vec3(0.94,0.98,1.0) * sp * 0.85;
-      float cfres = pow(1.0 - max(dot(cn, -rdi), 0.0), 2.4);
-      core += uAcc * cfres * 0.75;
-      coreA = clamp(0.88 + cfres*0.28, 0.0, 1.0);
-    }
-  }
 
   // ── EL VIDRIO VACÍO, CON DISPERSIÓN ────────────────────────────────────────
   //
@@ -758,6 +771,10 @@ void main(){
   // líquido y el orbe se leía al revés: el aire pesaba más que el agua.
   empty = empty * mix(0.72, 0.62, uDay)
         + mix(uAcc, vec3(1.0), 0.42) * 0.050 * pow(1.0 - ndv, 1.6);
+  // …y cuando no hay techo, ese vidrio vacío ES el campo, entero.
+  // 1,02 y no 1,30: medido, con ganancia el extremo claro de la rampa recorta
+  // y el cristal sale con un agujero blanco en el medio.
+  empty = mix(empty, gField * 1.02, crystal * 0.86);
 
   // El borde es el ACENTO de la capa, y nada más. Intenté sumarle aquí la
   // dispersión otra vez y salió mal, medido: el término era 'sR - sB', o sea la
@@ -772,6 +789,9 @@ void main(){
            + reflection * (1.0 - has*0.62);
   float alpha = clamp(has*(0.42 + 0.56*clamp(thick*1.25,0.0,1.0)) + coreA*0.90
                       + (1.0 - has)*mix(0.23, 0.30, uDay)
+                      // sin techo el vidrio está LLENO del campo, así que tapa
+                      // como un cuerpo y no como un vaso vacío
+                      + crystal*0.52
                       + fres*0.30 + rimw*0.62
                       + clamp(schlick*1.15, 0.0, 0.85) + 0.02, 0.0, 1.0);
   // EN CLARO EL VIDRIO SE APAGA, y no es un gusto: el lienzo va PREMULTIPLICADO
@@ -866,7 +886,6 @@ interface ProgramBundle {
     env: WebGLUniformLocation | null;
     field: WebGLUniformLocation | null;
     perlin: WebGLUniformLocation | null;
-    offsets: WebGLUniformLocation | null;
     tilt: WebGLUniformLocation | null;
     liquid: WebGLUniformLocation | null;
     deep: WebGLUniformLocation | null;
@@ -881,10 +900,7 @@ function linkTierProgram(
   vertex: WebGLShader,
   tier: RenderTier,
 ): ProgramBundle | null {
-  const source = FRAGMENT_SOURCE
-    .replace("__KIPU_TIER__", `${tier}.0`)
-    .split("__KIPU_OVALS__")
-    .join(`${ORB_FIELD_OVALS}`);
+  const source = FRAGMENT_SOURCE.replace("__KIPU_TIER__", `${tier}.0`);
   const fragment = compileShader(gl, gl.FRAGMENT_SHADER, source);
   if (!fragment) return null;
   const program = gl.createProgram();
@@ -923,7 +939,6 @@ function linkTierProgram(
       env: uniform("uEnv"),
       field: uniform("uField"),
       perlin: uniform("uPerlin"),
-      offsets: uniform("uOffsets[0]"),
       tilt: uniform("uTilt"),
       liquid: uniform("uLiq"),
       deep: uniform("uDeep"),
@@ -1103,16 +1118,16 @@ export function createOrbRenderer(
     if (reference) gl.deleteProgram(reference.program);
     return null;
   }
-  const offsets = orbSeededAngles(ORB_NOISE_SEED, ORB_FIELD_OVALS);
   for (const bundle of programs) {
     gl.useProgram(bundle.program);
     gl.uniform1i(bundle.locations.perlin, 0);
-    gl.uniform1fv(bundle.locations.offsets, offsets);
   }
   if (reference) {
+    // Los siete desfasajes son de SU componente, no del nuestro: nuestro campo
+    // ya no tiene óvalos que desfasar.
     gl.useProgram(reference.program);
     gl.uniform1i(reference.perlin, 0);
-    gl.uniform1fv(reference.offsets, offsets);
+    gl.uniform1fv(reference.offsets, orbSeededAngles(ORB_NOISE_SEED, ORB_FIELD_OVALS));
   }
 
   let cssWidth = 1;

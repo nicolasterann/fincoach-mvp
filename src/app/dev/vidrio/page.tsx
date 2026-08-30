@@ -78,13 +78,22 @@ export default async function VidrioPage({
 
       {show("comparacion") && (
         <section className="kipu-sistema-section">
-          <h2>G6 — su orbe y el nuestro, lado a lado</h2>
+          <h2>G6 — su código abierto y el nuestro, lado a lado</h2>
           <p className="kipu-sistema-note">
             Mismo lienzo, mismo contexto WebGL, mismo reloj y el mismo diámetro
-            en píxeles. El primero es el <b>porte fiel del shader de ElevenLabs</b>{" "}
-            con sus colores de fábrica; el segundo, el mismo porte con los
-            nuestros; el tercero es <b>el nuestro</b>, que lleva su campo de
-            color adentro del líquido y deja aire arriba.
+            en píxeles. Los dos primeros son el <b>porte fiel de{" "}
+            <code>elevenlabs/ui · orb.tsx</code></b> —su componente publicado—
+            con sus colores y con los nuestros; el tercero es <b>el nuestro</b>.
+          </p>
+          <p className="kipu-sistema-note">
+            <b>Cuidado con leer esto como «su orbe».</b> El founder trajo
+            capturas de la web de ElevenLabs y no se parecen a su propio
+            componente: el publicado dibuja siete óvalos en coordenadas polares
+            —un molinete que converge en el centro— y los de su página son
+            manchas blandas con grano, sin centro y sin bordes. <b>Su código
+            abierto no es lo que muestra su página.</b> El porte se conserva
+            porque es lo único suyo que se puede ejecutar y comparar; el
+            objetivo real son las capturas.
           </p>
           <OrbCompareSpecimen
             size={220}
@@ -260,11 +269,17 @@ export default async function VidrioPage({
 
       {show("materias") && (
         <section className="kipu-sistema-section">
-          <h2>Las cinco materias, del mismo mundo</h2>
+          <h2>Las cinco capas, del mismo mundo</h2>
           <p className="kipu-sistema-note">
             Misma física, misma luz, misma exposición. Lo único que cambia es el
-            pigmento. Patrimonio es el único que cambia de materia, y no por
-            gusto: sin techo declarado el motor no puede afirmarle un nivel.
+            pigmento — <b>las cinco</b>, Patrimonio incluido.
+          </p>
+          <p className="kipu-sistema-note">
+            Hasta N3C r2 Patrimonio no podía: su código de capa era el mismo
+            número que el shader lee como «cristal», así que dibujaba una bola
+            de cristal aunque el texto dijera <i>«36% de tu meta»</i>. El
+            cristal dejó de tomarle prestada la identidad a una capa y tiene el
+            suyo. Es un <b>estado</b>, como la gota, no una capa.
           </p>
           <div className="kipu-sistema-row">
             {ORB_KINDS.map((kind: OrbKind) => (
@@ -275,7 +290,28 @@ export default async function VidrioPage({
                   level={0.62}
                   matter={orbMatter(kind)}
                   size={186}
-                  label={orbMatter(kind) === "cristal" ? "cristal" : "62%"}
+                  label="62%"
+                />
+              </div>
+            ))}
+          </div>
+          <p className="kipu-sistema-note">
+            Y la otra mitad de la doctrina, la que faltaba: <b>sin techo
+            declarado no se inventa un nivel — cambia la materia.</b> El vidrio
+            se llena entero del mismo campo, sin línea de agua y sin menisco. Un
+            orbe lleno deja aire y tiene menisco; éste no tiene ninguno de los
+            dos, porque no hay ninguna altura que afirmar.
+          </p>
+          <div className="kipu-sistema-row">
+            {ORB_KINDS.map((kind: OrbKind) => (
+              <div key={kind} className="kipu-sistema-slot" data-slot-shape="orbe">
+                <p className="kipu-sistema-slot__name">{kind} · sin techo</p>
+                <OrbSpecimen
+                  kind={kind}
+                  level={null}
+                  fill="nucleo"
+                  size={186}
+                  label="cristal"
                 />
               </div>
             ))}

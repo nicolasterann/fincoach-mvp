@@ -590,6 +590,26 @@ export const ORB_MATERIAL: Record<OrbKind, number> = {
 /** La materia del vacío deliberado. No es una capa: es un ESTADO del vidrio. */
 export const ORB_MATERIAL_GOTA = 5;
 
+/**
+ * N3C ronda 2 · EL CRISTAL ES UN ESTADO, Y AHORA TIENE SU PROPIO NÚMERO.
+ *
+ * El founder lo vio en producción: Patrimonio decía «36% de tu meta» y dibujaba
+ * una bola de cristal con un núcleo facetado. El texto afirmaba un nivel y la
+ * materia decía que no había ninguno.
+ *
+ * La causa estaba acá, y era una COLISIÓN DE CÓDIGOS. N3B escribió la doctrina
+ * correcta —«el cristal aparece cuando falta el techo, en cualquiera de las
+ * cinco, y desaparece en cuanto el techo se declara»— y la codificó devolviendo
+ * `ORB_MATERIAL.patrimonio` para el caso sin techo. Pero ése es TAMBIÉN el
+ * número de la capa Patrimonio, y el shader lee ese número como cristal. Así
+ * que «Patrimonio» y «sin techo» eran indistinguibles: la capa entera quedó
+ * condenada a cristal, con techo o sin él.
+ *
+ * El cristal deja de tomar prestada la identidad de una capa. Es un estado del
+ * vidrio, como la gota, y lleva su propio código.
+ */
+export const ORB_MATERIAL_CRISTAL = 6;
+
 export function orbMaterialCode(input: {
   kind: OrbKind;
   matter: OrbMatter;
@@ -598,9 +618,10 @@ export function orbMaterialCode(input: {
   // Un cero LEÍDO es una gota, y gana sobre todo lo demás: es lo único que
   // distingue «miré y no hay nada» de «hay poco».
   if (input.fill === "gota") return ORB_MATERIAL_GOTA;
-  // Sin techo honesto, cristal: la doctrina de N2.
+  // Sin techo honesto, cristal: la doctrina de N2 — y con SU número, no con el
+  // de una capa. Devolver el de Patrimonio era lo que la volvía inalcanzable.
   if (input.matter === "cristal" || input.fill === "nucleo") {
-    return ORB_MATERIAL.patrimonio;
+    return ORB_MATERIAL_CRISTAL;
   }
   return ORB_MATERIAL[input.kind];
 }

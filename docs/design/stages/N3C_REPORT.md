@@ -335,3 +335,149 @@ del archivo de referencia). Todos miran ahora el **código** y no el archivo.
   comparar nuestro orbe contra sí mismo.
 - Si mañana se quiere el look de ellos **sin** nivel ni aire, ya está: es
   `variant: "referencia"` en `OrbCompareSpecimen`.
+
+---
+
+## Ronda 2 — el founder miró producción
+
+Dos hallazgos suyos, y los dos eran reales. El segundo lo estaba **sujetando el
+propio gate**.
+
+### Hallazgo 1 · «No se parece en nada al que ellos tienen en su página»
+
+Trajo capturas de la web de ElevenLabs. Puestas al lado de lo que produce su
+componente publicado, **no son el mismo objeto**:
+
+| | su componente (`elevenlabs/ui · orb.tsx`) | su página |
+|---|---|---|
+| estructura | siete óvalos en coordenadas **polares** | ninguna: manchas blandas |
+| centro | singularidad — todo converge en el radio cero | no hay centro |
+| bordes | rectos en el ángulo (un molinete) | no hay bordes |
+| negros | cuñas negras entre óvalos | ningún negro: el oscuro es del color |
+| textura | lisa | **grano** visible |
+
+**El porte de la ronda 1 era fiel — al archivo equivocado.** No fue un error de
+transcripción: verifiqué línea por línea, y la ronda 1 se cerró contra ese
+archivo porque el spec lo nombraba como la fuente. Lo que nadie comprobó, yo
+incluido, es que ese componente sea lo que su marketing muestra. No lo es.
+
+Un óvalo polar tiene por construcción las dos cosas que sus orbes no tienen —
+borde recto en el ángulo y singularidad en el radio cero — así que el molinete
+no era un ajuste mal elegido: era la técnica. **Ninguna cantidad de tuneo lo
+iba a acercar.**
+
+**Lo que reemplaza a los óvalos: deformación de dominio.** Un ruido cuyo
+argumento es otro ruido. No hay coordenadas polares en ninguna parte, así que no
+puede haber ni molinete ni convergencia; y produce justo lo que se ve en sus
+capturas: regiones grandes, blandas, enroscadas. Encima, **grano**, que es lo que
+más barato compra «material» en vez de «degradado». La rampa sigue siendo de
+cuatro paradas pero **ninguna es negra**: el extremo oscuro es el pigmento
+profundo de la capa, como en las suyas.
+
+Tres correcciones que salieron de mirar, no de suponer:
+
+| medida | por qué |
+|---|---|
+| 4 octavas → **2** | con cuatro el campo salía como papel arrugado: detalle en todas las escalas. Sus orbes tienen dos o tres manchas y nada de detalle fino — lo fino lo pone el grano, que va aparte |
+| desplazamiento 2,0 → **0,32–0,58** | las manchas de la octava base miden 0,25 de tela; desplazar 2,0 las revuelve ocho veces y devuelve ruido |
+| escala 0,62 → **0,22** | con 0,62 el orbe abarcaba cinco manchas y se leía como textura; los suyos muestran dos o tres |
+
+El porte fiel se **conserva** en `orb-reference-shader.ts` y `/dev/vidrio` lo
+muestra por lo que es —su código abierto, que no es su página—, con esa
+advertencia escrita en la hoja. Es lo único suyo que se puede ejecutar y comparar.
+
+### Hallazgo 2 · «Patrimonio sigue mostrando esa esfera que no concuerda»
+
+Tenía razón dos veces, y la causa era una **colisión de códigos** en el
+contrato:
+
+```
+orbMaterialCode({ kind: "patrimonio", matter: "liquido", fill: "nivel" })  → 3
+orbMaterialCode({ kind: "reserva",    matter: "liquido", fill: "nucleo" }) → 3
+```
+
+`ORB_MATERIAL.patrimonio` vale 3, y N3B eligió **ese mismo número** para decir
+«sin techo, cristal». El shader lee el 3 como cristal
+(`step(2.5, uMat) * step(uMat, 3.5)`), así que **Patrimonio no podía dibujar
+líquido nunca** — ni con techo declarado. En producción decía «36% de tu meta»
+debajo de una bola de cristal: el texto afirmaba un nivel y la materia lo negaba.
+
+N3B había escrito la doctrina correcta —*«el cristal aparece cuando falta el
+techo, en cualquiera de las cinco, y desaparece en cuanto el techo se
+declara»*— y el código sólo cumplía la primera mitad.
+
+**Y el gate lo estaba congelando.** El pin de N3-4 decía, literalmente:
+
+```js
+orbMaterialCode({ kind, matter: "liquido", fill: "nucleo" }) === ORB_MATERIAL.patrimonio
+```
+
+Es decir: exigía la colisión. Es la **trampa 9 del spec**, palabra por palabra —
+*«un pin de cadena puede CONGELAR un defecto»*— y esta vez el pin no era de
+cadena sino de conducta, lo que lo hace peor: parecía que estaba comprobando la
+doctrina y estaba comprobando el bug.
+
+Arreglo: el cristal deja de tomarle prestada la identidad a una capa y tiene su
+propio código (`ORB_MATERIAL_CRISTAL = 6`), como ya lo tenía la gota. Es un
+**estado**, no una capa. El pin se re-ancló a la conducta completa, incluida la
+mitad que faltaba: **ninguna capa con techo declarado puede caer en la materia
+del cristal.**
+
+**Y la esfera facetada murió.** Ahí vivía una gema de veintitantas caras
+suspendida en el vidrio: un objeto de otra familia, con otra iluminación, dentro
+del mismo orbe. La reemplaza la doctrina dicha en la materia de esta etapa: sin
+techo, el vidrio se llena **entero** del mismo campo, sin línea de agua y sin
+menisco. Un orbe lleno deja aire y tiene menisco; uno sin techo no tiene
+ninguno de los dos, porque no hay ninguna altura que afirmar.
+
+Evidencia: `docs/design/evidence/N3C-materias.png` — arriba las cinco capas
+líquidas (Patrimonio incluido, por fin), abajo las cinco sin techo.
+
+### Los números de la ronda 2
+
+```
+npm run lint    → 0 errores (8 warnings preexistentes, ajenos)
+npm run build   → exit 0
+capture gate    → 889/889
+mutación        → 48/48 mueren con su nombre (43 + 5 nuevas)
+```
+
+Las aserciones siguen siendo **889**: la ronda 2 no agregó, **re-ancló**. Tres
+pines cambiaron y los tres se declaran:
+
+| pin | antes | ahora | por qué |
+|---|---|---|---|
+| N3-4 | `orbMaterialCode(nucleo) === ORB_MATERIAL.patrimonio` | `=== ORB_MATERIAL_CRISTAL`, **más** «ninguna capa con techo cae en cristal» | el viejo exigía la colisión |
+| N3-4 | la línea literal `step(2.5, uMat) * step(uMat, 3.5)` | el cristal se lee por su número propio | la línea literal **era** el defecto |
+| N3C-5 | el bucle de siete óvalos | el campo **no es polar** y **sí** es deformación de dominio, con el grano cableado | el bucle era la técnica equivocada |
+
+Cinco mutaciones nuevas, todas mueren con nombre — entre ellas la que **repone
+la colisión exacta** que el founder vio, y la que deja el grano calculado pero
+sin sumar.
+
+### El peso, otra vez
+
+| | base | ronda 1 | ronda 2 |
+|---|---|---|---|
+| `/app` comprimido | 65,7 KB | 69,7 KB | **70,5 KB** |
+| `.next/static/chunks` | 1392 KB | 1416 KB | **1428 KB** |
+
+Total de N3C sobre el santuario: **+4,8 KB comprimidos**, cero dependencias.
+
+### Lo que sigue sin poder verificarse acá
+
+El lienzo del santuario quedó **vacío** al medirlo (cero píxeles pintados): el
+panel de este entorno está oculto, `requestAnimationFrame` no corre, y el buffer
+se limpia al redimensionar sin que nadie lo vuelva a dibujar. Lo que se ve en
+`/dev/shell-preview` es el orbe de CSS de reserva, no el lienzo. **No es un
+defecto del shader** —las probetas dibujan sincrónicamente y prueban el
+material— pero significa que el santuario compuesto sólo se juzga en hardware.
+El proxy honesto es `/dev/vidrio?hoja=profundidad`, que usa la MISMA función de
+colocación y el MISMO renderer, y sí dibuja.
+
+Queda anotada, otra vez y ahora con más peso, la observación de la ronda 1:
+`measure()` de `LiveOrb` redimensiona el buffer y no fuerza un dibujo. Con el
+bucle vivo no se nota; con el bucle pausado deja el lienzo en blanco. Sigue
+siendo conducta preexistente de N2/N3 y sigue fuera del alcance de una etapa de
+presentación — pero es la causa de que este entorno no pueda verificar el
+santuario, y merece su propia etapa.

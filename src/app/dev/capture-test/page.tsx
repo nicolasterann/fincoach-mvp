@@ -70,6 +70,7 @@ import {
   orbMatter,
   ORB_MATERIAL,
   ORB_MATERIAL_GOTA,
+  ORB_MATERIAL_CRISTAL,
   orbMaterialCode,
   orbMaxRadius,
   orbTargetReached,
@@ -28847,11 +28848,13 @@ assert(
         (kind) =>
           orbMaterialCode({ kind, matter: "cristal", fill: "gota" }) === ORB_MATERIAL_GOTA,
       ) &&
-      // sin techo declarado, cristal — en cualquiera de las cinco
+      // sin techo declarado, cristal — en cualquiera de las cinco, y con el
+      // número DEL CRISTAL. N3C r2 · re-anclado: pedía el de Patrimonio, y ésa
+      // era la colisión que dejaba a Patrimonio sin poder dibujar líquido.
       ORB_KINDS.every(
         (kind) =>
           orbMaterialCode({ kind, matter: "liquido", fill: "nucleo" }) ===
-          ORB_MATERIAL.patrimonio,
+          ORB_MATERIAL_CRISTAL,
       ) &&
       // y con techo, el pigmento de SU capa: las cinco distintas entre sí
       new Set(
@@ -29181,7 +29184,16 @@ assert(
       // MIRANDO los píxeles de `/dev/sistema` — el salto vertical de Patrimonio
       // valía 151 como el de las capas líquidas, o sea que dibujaba un nivel que
       // el motor no afirma.
-      n3ShaderCode.includes("float crystal = step(2.5, uMat) * step(uMat, 3.5);") &&
+      // ── N3C r2 · RE-ANCLADO, y el motivo importa ────────────────────────
+      // El pin viejo exigía la LÍNEA LITERAL `step(2.5, uMat) * step(uMat,
+      // 3.5)`, y esa línea ERA el defecto: 3 es también el código de la capa
+      // Patrimonio, así que el shader leía «Patrimonio» como «cristal» y la
+      // capa no podía dibujar líquido ni con techo declarado. El founder lo vio
+      // en producción — «36% de tu meta» debajo de una bola de cristal.
+      // Es la trampa 9 del spec, literal: un pin de cadena CONGELA el defecto.
+      // Ahora se pincha la conducta: el cristal es un estado con número propio,
+      // el shader lo lee por ese número, y ninguna capa lo comparte.
+      /float crystal = step\(5\.5, uMat\);/u.test(n3ShaderCode) &&
       /thick \*= 1\.0 - crystal;/u.test(n3ShaderCode) &&
       /has \*= 1\.0 - crystal;/u.test(n3ShaderCode) &&
       /surfaceSeen \*= 1\.0 - crystal;/u.test(n3ShaderCode) &&
@@ -29195,16 +29207,42 @@ assert(
       ORB_KINDS.every(
         (kind) =>
           orbMaterialCode({ kind, matter: "liquido", fill: "nucleo" }) ===
-          ORB_MATERIAL.patrimonio,
+          ORB_MATERIAL_CRISTAL,
       ) &&
       orbMaterialCode({ kind: "saldo", matter: "cristal", fill: "nivel" }) ===
-        ORB_MATERIAL.patrimonio &&
+        ORB_MATERIAL_CRISTAL &&
+      // ── Y LA MITAD QUE FALTABA: CON TECHO, LÍQUIDO. EN LAS CINCO ──────────
+      // N3B escribió la doctrina —«el cristal aparece cuando falta el techo, en
+      // cualquiera de las cinco, y desaparece en cuanto el techo se declara»— y
+      // el código sólo cumplía la primera mitad. Patrimonio con techo seguía
+      // dando cristal porque compartía número con él. Acá se exige la segunda:
+      // ninguna capa con techo declarado puede caer en la materia del cristal.
+      ORB_KINDS.every(
+        (kind) =>
+          orbMaterialCode({ kind, matter: "liquido", fill: "nivel" }) !==
+          ORB_MATERIAL_CRISTAL,
+      ) &&
+      // …y el cristal no le pide el número prestado a NINGUNA capa, que es de
+      // donde salía la colisión
+      // (que el cristal tampoco choque con la gota lo prueba el compilador:
+      // son literales distintos y TypeScript rechaza la comparación)
+      !ORB_KINDS.some((kind) => ORB_MATERIAL[kind] === ORB_MATERIAL_CRISTAL) &&
+      // la gota tampoco se contagia: el shader la lee por su número EXACTO, y
+      // sin el tope de arriba el cristal entraría por su puerta
+      /float isDrop\(\)\{ return step\(4\.5, uMat\) \* step\(uMat, 5\.5\); \}/u
+        .test(n3ShaderCode) &&
       // …y que quien dibuja la pida, en vez de traer su propia copia
       n3LiveCode.includes("orbMaterialCode({") &&
       !/orb\.matter === "cristal" \|\| orb\.fill === "nucleo"/u.test(n3LiveCode),
     JSON.stringify({
       salteaSinDato: n3LiveCode.includes('if (orb.fill === "sin-dato") continue;'),
-      cristalSinAgua: n3ShaderCode.includes("float crystal = step(2.5, uMat)"),
+      cristalSinAgua: /float crystal = step\(5\.5, uMat\);/u.test(n3ShaderCode),
+      patrimonioConTecho: orbMaterialCode({
+        kind: "patrimonio",
+        matter: "liquido",
+        fill: "nivel",
+      }),
+      sinTecho: ORB_MATERIAL_CRISTAL,
     }),
   );
 
@@ -29504,12 +29542,35 @@ assert(
       // paradas, que es de donde sale el look ──
       n3ShaderCode.includes("float fieldGray(") &&
       n3ShaderCode.includes("vec3 fieldRamp(") &&
-      n3ShaderCode.includes("float fieldFlow(") &&
-      // el shader trae el marcador y el renderer lo reemplaza al enlazar, así
-      // que la cuenta de óvalos tiene UN dueño y no dos números que derivan
-      n3ShaderCode.includes("for(int i = 0; i < __KIPU_OVALS__; i++)") &&
-      n3ShaderCode.includes('.split("__KIPU_OVALS__")') &&
+      // `fieldFlow` era la lectura de tela de SU técnica polar; la nuestra lee
+      // por `fieldTex`, y el porte fiel conserva la suya.
+      n3ShaderCode.includes("float fieldTex(") &&
+      n3cReferenceCode.includes("float flow(vec3 decomposed") &&
+      // ── N3C r2 · RE-ANCLADO: los óvalos polares se fueron ────────────────
+      // El pin exigía el bucle de siete óvalos, que es la técnica de su
+      // componente PUBLICADO — y ese componente no es lo que muestra su página.
+      // El founder lo vio de una: nuestro orbe salía como un molinete que
+      // converge en el centro, y los suyos no tienen ni centro ni bordes.
+      // Ahora se pincha lo que la etapa necesita de verdad: que el campo NO sea
+      // polar (ni ángulo, ni radio, ni óvalos) y que sea deformación de dominio.
+      !/atan\(fp|theta|distTheta|drawOval/u.test(
+        n3ShaderCode.slice(
+          n3ShaderCode.indexOf("float fieldGray("),
+          n3ShaderCode.indexOf("vec3 fieldRamp("),
+        ),
+      ) &&
+      n3ShaderCode.includes("float fieldFbm(") &&
+      n3ShaderCode.includes("float fieldGrain(") &&
+      // …y el CABLE del grano: existir no alcanza, tiene que SUMARSE al campo.
+      // Es lo que más se nota en sus capturas y lo primero que se cae si
+      // alguien "limpia" una línea que parece decorativa.
+      n3ShaderCode.includes("gField += fieldGrain(") &&
+      // la deformación es un ruido cuyo ARGUMENTO es otro ruido: sin esto son
+      // manchas redondas, que es lo que se ve cuando alguien la corta
+      /fieldFbm\(p \+ amount\*\(q - 0\.5\)/u.test(n3ShaderCode) &&
+      // los siete óvalos sobreviven SÓLO en el porte fiel, que es de ellos
       ORB_FIELD_OVALS === 7 &&
+      n3cReferenceCode.includes("for (int i = 0; i < 7; i++)") &&
       orbSeededAngles(ORB_NOISE_SEED, ORB_FIELD_OVALS).length === ORB_FIELD_OVALS &&
       // el campo entra en el líquido, no encima del vidrio: `body` ES el campo
       n3ShaderCode.includes("vec3 body = mix(gField,") &&

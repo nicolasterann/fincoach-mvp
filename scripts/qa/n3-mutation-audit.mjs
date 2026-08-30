@@ -367,6 +367,49 @@ const mutations = [
     from: "            material: orbMaterialCode({\n              kind: slot.kind,\n              matter: orbMatter(slot.kind),\n              fill: slot.fill ?? \"nivel\",\n            }),",
     to: "            material: slot.fill === \"gota\" ? 5 : 0,",
   },
+  // ── N3C ronda 2 · lo que el founder vio en producción ─────────────────────
+  //
+  // Dos defectos que el gate de la ronda 1 no sólo dejó pasar: uno de ellos lo
+  // estaba SUJETANDO en su sitio. El pin de N3-4 exigía que «sin techo» pidiera
+  // el código de la capa Patrimonio — que es exactamente la colisión que dejaba
+  // a Patrimonio sin poder dibujar líquido. Trampa 9 del spec, literal.
+  {
+    name: "N3-4",
+    result:
+      "vuelve la COLISIÓN: el cristal le pide prestado el número a la capa Patrimonio, y Patrimonio no puede dibujar líquido ni con techo declarado",
+    file: CONTRACT,
+    from: "    return ORB_MATERIAL_CRISTAL;",
+    to: "    return ORB_MATERIAL.patrimonio;",
+  },
+  {
+    name: "N3-4",
+    result: "el shader vuelve a leer el número de una CAPA como cristal, que es la otra mitad de la misma colisión",
+    file: SHADER,
+    from: "  float crystal = step(5.5, uMat);",
+    to: "  float crystal = step(2.5, uMat) * step(uMat, 3.5);",
+  },
+  {
+    name: "N3-4",
+    result: "la gota pierde su tope y se traga al cristal: un orbe sin techo se dibuja como una gota en el fondo",
+    file: SHADER,
+    from: "float isDrop(){ return step(4.5, uMat) * step(uMat, 5.5); }",
+    to: "float isDrop(){ return step(4.5, uMat); }",
+  },
+  {
+    name: "N3C-5",
+    result:
+      "muere la deformación de dominio: el campo vuelve a ser manchas redondas, que es lo que hace que NO se parezca al de ellos",
+    file: SHADER,
+    from: "  float f = fieldFbm(p + amount*(q - 0.5) + vec2(1.7, 9.2));",
+    to: "  float f = fieldFbm(p + vec2(1.7, 9.2));",
+  },
+  {
+    name: "N3C-5",
+    result: "CABLE · el grano se calcula y no se suma: el campo pierde lo que más lo hace parecer material",
+    file: SHADER,
+    from: "    gField += fieldGrain(fq) * (0.055 + 0.02*uDay) * uEnv;",
+    to: "",
+  },
 ];
 
 function runGate() {
