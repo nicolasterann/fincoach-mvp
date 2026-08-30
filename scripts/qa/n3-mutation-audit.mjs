@@ -502,7 +502,7 @@ const mutations = [
     name: "N3C-8",
     result: "el fluido no se disipa: el empuje se acumula para siempre y el orbe termina hirviendo",
     file: FLUID,
-    from: "export const ORB_FLUID_VELOCITY_DISSIPATION = 0.055;",
+    from: "export const ORB_FLUID_VELOCITY_DISSIPATION = 0.13;",
     to: "export const ORB_FLUID_VELOCITY_DISSIPATION = 0;",
   },
   {
@@ -517,8 +517,8 @@ const mutations = [
     name: "N3C-5",
     result: "el shader deja de leer el fluido y vuelve al ruido aunque el solver este corriendo",
     file: SHADER,
-    from: "  if(uHasFluid > 0.5) q += gFlow * 0.55;",
-    to: "  if(uHasFluid > 0.5) q += gFlow * 0.0;",
+    from: "  if(uHasFluid > 0.5) q += gFlow * 0.30;",
+    to: "  if(uHasFluid > 0.5) q += gFlow * 0.00;",
   },
   {
     name: "N3C-5",
@@ -532,8 +532,16 @@ const mutations = [
     name: "N3C-5",
     result: "muere el paso de saturacion: el mapeo tonal desatura y el color pasa de 0,91 a 0,50 — la mitad del de ellos",
     file: SHADER,
-    from: "), 1.42) * uEnv;",
+    from: "), 1.24) * uEnv;",
     to: "), 1.0) * uEnv;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "se borra el GUARD del interruptor: el fluido se enciende en produccion aunque la constante diga que no, y apagado deja de ser distinguible de roto",
+    file: FLUID,
+    from: "  if (!ORB_FLUID_ENABLED && !forzar) return null;",
+    to: "  if (false) return null;",
   },
   {
     name: "N3C-8",
@@ -555,7 +563,7 @@ const mutations = [
     name: "N3C-5",
     result: "el fluido vuelve a SUSTITUIR el desplazamiento propio en vez de sumarle: el movimiento de fondo queda atado a la simulacion",
     file: SHADER,
-    from: "  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.42;",
+    from: "  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.24;",
     to: "  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.0;",
   },
   {

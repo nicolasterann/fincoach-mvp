@@ -30,6 +30,31 @@
 // CUÁNTA FUERZA se empuja el fluido, sí — y es donde vive la conducta que el
 // founder juzga.
 
+/**
+ * ── EL FLUIDO ESTÁ APAGADO EN PRODUCCIÓN ───────────────────────────────────
+ *
+ * Y no porque no funcione: porque **el founder no puede seguir siendo el banco
+ * de pruebas.** Tres despliegues seguidos le llegaron con algo roto —rayas,
+ * cortes, vibración— y cada uno lo descubrió él, en su teléfono, con la app de
+ * verdad. El estado que él prefirió es el anterior al fluido, y ése es el que
+ * tiene que estar en producción mientras esto no esté resuelto.
+ *
+ * Lo que se apaga es SÓLO el fluido. El campo, la rampa, el grano, la
+ * saturación y la deformación propia siguen exactamente como estaban — y todo
+ * eso él ya lo dio por bueno («en textura ya estamos ahí»).
+ *
+ * El solver NO se borra. Sigue entero, con sus pines y sus mutaciones, y se
+ * enciende cambiando esta línea a `true`. `/dev/vidrio?hoja=fluido` lo muestra
+ * encendido para poder seguir trabajándolo sin que producción sea el ensayo.
+ *
+ * Lo que falta para encenderlo, dicho con nombre: el titileo. Medido, el cambio
+ * por cuadro es el 23 % del cambio en medio segundo cuando en un flujo debería
+ * ser ~5 %. Mi instrumento dejó de servir para afinarlo —el cambio por píxel es
+ * más chico que un paso de 8 bits, así que mide redondeo— y afinar a ciegas es
+ * exactamente lo que le costó tres despliegues rotos.
+ */
+export const ORB_FLUID_ENABLED = false;
+
 /** Lado de la rejilla de velocidad. Cuadrada: el orbe también lo es. */
 export const ORB_FLUID_SIM_SIZE = 128;
 
@@ -41,7 +66,12 @@ export const ORB_FLUID_DYE_SIZE = 192;
  * es el degradado honesto para un teléfono que no puede con texturas de coma
  * flotante, y el orbe vuelve a su deformación de ruido.
  */
-export const ORB_FLUID_ITERATIONS: Record<1 | 2 | 3, number> = { 1: 0, 2: 8, 3: 14 };
+// MÁS ITERACIONES DE PRESIÓN. Una proyección que no converge deja divergencia
+// residual, y una divergencia residual comprime y expande el rastro cada
+// cuadro: eso se ve como VIBRAR. Medido: el cambio por cuadro era el 30 % del
+// cambio en medio segundo, o sea que el campo se sacudía y volvía en vez de
+// avanzar.
+export const ORB_FLUID_ITERATIONS: Record<1 | 2 | 3, number> = { 1: 0, 2: 12, 3: 22 };
 
 /**
  * Cuánto se frena el fluido por segundo.
@@ -57,11 +87,17 @@ export const ORB_FLUID_ITERATIONS: Record<1 | 2 | 3, number> = { 1: 0, 2: 8, 3: 
  * Con una disipación baja el fluido CONSERVA su energía, los remolinos se
  * rompen entre sí y el campo no vuelve a pasar dos veces por el mismo estado.
  */
-export const ORB_FLUID_VELOCITY_DISSIPATION = 0.055;
+export const ORB_FLUID_VELOCITY_DISSIPATION = 0.13;
 /** Y cuánto se desvanece el rastro. Más lento que la velocidad: deja estela. */
-export const ORB_FLUID_DYE_DISSIPATION = 0.045;
+// 0,10 y no 0,045: con la disipación muy baja el rastro desarrolla frentes
+// AFILADOS —un fluido sin difusión los produce solo— y esos frentes son los
+// cortes duros que aparecían cada tanto. Un poco de disipación los suaviza
+// sin quitarle estela.
+export const ORB_FLUID_DYE_DISSIPATION = 0.10;
 /** La vorticidad: cuánto se enrosca. Es lo que hace que «bordee la esfera». */
-export const ORB_FLUID_CURL = 34;
+// 20 y no 34: la vorticidad alta afila los remolinos hasta el pixel de la
+// rejilla, y ahí es donde el campo empieza a vibrar en vez de fluir.
+export const ORB_FLUID_CURL = 20;
 
 /**
  * Una salpicadura. **Las dos mitades viven en unidades distintas y por eso van
@@ -422,7 +458,8 @@ function link(gl: Gl, vert: WebGLShader, fragSrc: string): WebGLProgram | null {
  * orbe sigue con su deformación de ruido — peor, y verdadero. Nunca se finge
  * un fluido que no corrió.
  */
-export function createOrbFluid(gl: Gl): OrbFluid | null {
+export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
+  if (!ORB_FLUID_ENABLED && !forzar) return null;
   const isGl2 = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
   let internal: number;
   let type: number;

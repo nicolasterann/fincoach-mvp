@@ -67,6 +67,10 @@ function ensureRenderer(): OrbRenderer | null {
     sharedCanvas = document.createElement("canvas");
     sharedRenderer = createOrbRenderer(sharedCanvas, {
       referenceFragmentSource: ORB_REFERENCE_FRAGMENT_SOURCE,
+      // N3C r10 · La mesa de luz enciende el fluido aunque producción lo tenga
+      // apagado. Ése es el punto de apagarlo: seguir trabajándolo acá, y no en
+      // el teléfono del founder.
+      forceFluid: true,
     });
     if (!sharedRenderer) {
       sharedFailed = true;

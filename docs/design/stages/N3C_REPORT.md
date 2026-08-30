@@ -1123,3 +1123,86 @@ fue un umbral con un solo lado. En la 9 fue mirar la magnitud cuando el problema
 estaba en el muestreo. Las dos veces el error fue **corregir lo que ya tenía en
 la cabeza en vez de medir dónde estaba el defecto**. El detector de rayas existe
 ahora precisamente para no volver a discutirlo a ojo.
+
+---
+
+## Ronda 10 — apago el fluido en producción
+
+**No es un ajuste más. Es admitir dónde se estaba probando.**
+
+Tres despliegues seguidos le llegaron rotos al founder: rayas, cortes duros,
+vibración. Los tres los descubrió él, en su teléfono, con la app de verdad. Eso
+no es un problema del solver: es que **producción se volvió el banco de
+pruebas**, y él el instrumento de medición.
+
+### Lo medido antes de decidir
+
+La ronda 9 arregló el bandeado (rampa lineal en vez de `smoothstep` por tramo)
+y bajó el titileo de 0,298 a 0,227 — pero los saltos duros EMPEORARON
+(media 1,03 % → 1,29 %, máximo 1,80 % → 4,35 %).
+
+Entonces medí **dónde** vibra, y ahí se cayó el instrumento:
+
+| medida | valor | qué dice |
+|---|---|---|
+| titileo p95 / mediana | 1,8 | uniforme, no concentrado en frentes |
+| estructura fina | 0,057 | espacialmente liso |
+| **cambio por cuadro (mediana)** | **0,00075** | **un paso de 8 bits es 0,0039** |
+
+El cambio por píxel entre cuadros es **cinco veces más chico que el escalón más
+chico que la pantalla puede representar**. Mi métrica de titileo estaba midiendo
+redondeo, no el defecto. Es decir: **ya no tengo instrumento para afinar esto**,
+y afinar a ciegas es exactamente lo que costó los tres despliegues.
+
+### La decisión
+
+`ORB_FLUID_ENABLED = false`. Producción vuelve al estado que el founder
+prefirió — el campo con su propia deformación, la rampa, el grano, la
+saturación, todo lo que él ya dio por bueno («en textura ya estamos ahí»).
+
+Lo que NO pasa:
+
+- **el solver no se borra.** Queda entero, con sus pines y sus mutaciones.
+- **se enciende cambiando una línea**, `ORB_FLUID_ENABLED = true`.
+- **`/dev/vidrio` lo tiene encendido** (`forceFluid: true` en el specimen
+  compartido), así el trabajo sigue sin que el teléfono del founder sea el
+  ensayo.
+
+### El pin
+
+El gate exige que apagarlo sea una decisión DECLARADA y que la mesa de luz
+pueda encenderla: la constante existe con valor booleano explícito, el guard
+está en `createOrbFluid`, y el cable del shader pasa `options.forceFluid`. Sin
+eso, «apagado» sería indistinguible de «roto».
+
+### Método (la lección que queda)
+
+**Una métrica que mide por debajo del cuanto de la señal no mide nada.** El
+0,227 parecía un número que se podía perseguir; era ruido de cuantización. La
+señal de que algo andaba mal estuvo ahí antes: mejoraba el titileo y empeoraban
+los saltos, que es la firma de estar optimizando un artefacto.
+
+Gate 891/891 · lint 0 errores.
+
+### Incidente de método: dos auditorías a la vez dejaron un mutante VIVO
+
+Corrí la auditoría de mutación dos veces en paralelo. Cada corrida muta un
+archivo, mide y lo restaura — y las dos se pisaron: una restauró sobre lo que la
+otra había mutado, y quedó **un mutante vivo en el árbol de trabajo**,
+`wealthTargetFrom` devolviendo `100_000` donde debe devolver `null`. Es decir: el
+orbe de Patrimonio habría mostrado un nivel INVENTADO para quien no declaró
+techo — exactamente el defecto que ese pin existe para matar.
+
+Lo agarró el gate al re-correrlo (890/891). Si hubiera commiteado confiando en
+que «la auditoría pasó», eso se despachaba.
+
+Dos reglas que quedan:
+
+1. **La auditoría de mutación no es concurrente consigo misma.** Muta archivos
+   reales del árbol; dos corridas comparten el mismo estado.
+2. **Después de mutar, el gate se re-corre en limpio antes de commitear.** Una
+   auditoría que restaura mal es indistinguible de una que restaura bien si sólo
+   se lee su última línea.
+
+Cierre de ronda: gate **891/891** · mutación **70 muertas, 0 fallas**,
+restauración 891/891 · lint 0 errores · build verde.

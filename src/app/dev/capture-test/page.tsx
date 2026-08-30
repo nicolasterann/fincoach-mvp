@@ -29874,11 +29874,21 @@ assert(
       // Sin texturas de coma flotante no hay fluido, y el orbe vuelve a su
       // deformación de ruido. Nunca se finge un fluido que no corrió.
       n3cFluido.includes("export function createOrbFluid") &&
+      // ── N3C r10 · EL INTERRUPTOR DE PRODUCCIÓN, y su condición ───────────
+      // El fluido está APAGADO en producción: tres despliegues seguidos le
+      // llegaron rotos al founder y el estado que él prefirió es el anterior.
+      // El solver no se borra —sigue entero, con sus pines— y se enciende
+      // cambiando una línea. Lo que el gate exige es que apagarlo sea UNA
+      // decisión declarada y que la mesa de luz pueda encenderlo, para que
+      // producción deje de ser el ensayo.
+      /export const ORB_FLUID_ENABLED = (true|false);/u.test(n3cFluido) &&
+      n3cFluido.includes("if (!ORB_FLUID_ENABLED && !forzar) return null;") &&
+
       /return null;/u.test(n3cFluido) &&
       ORB_FLUID_ITERATIONS[1] === 0 &&
       ORB_FLUID_ITERATIONS[2] < ORB_FLUID_ITERATIONS[3] &&
       // ── EL CABLE, en las tres puntas ──
-      n3ShaderCode.includes("createOrbFluid(gl)") &&
+      n3ShaderCode.includes("createOrbFluid(gl, options.forceFluid === true)") &&
       n3ShaderCode.includes("orbFluidSplats({") &&
       n3ShaderCode.includes("ORB_FLUID_ITERATIONS[frame.tier]") &&
       n3ShaderCode.includes("uniform float uHasFluid;") &&

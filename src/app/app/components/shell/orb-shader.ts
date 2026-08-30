@@ -405,7 +405,7 @@ float fieldGray(vec2 p, float anim, float drive){
   // fluido aporta lo orgánico y la respuesta a la voz.
   vec2 q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),
                 fieldFbm(p + vec2(5.2, 1.3) - vec2(anim*0.061, anim*0.074)));
-  if(uHasFluid > 0.5) q += gFlow * 0.55;
+  if(uHasFluid > 0.5) q += gFlow * 0.30;
   // la voz abre la deformación: el campo se revuelve más mientras hablás, que
   // es lo único que su 'uOutputVolume' hacía con el ángulo.
   //
@@ -441,7 +441,7 @@ float fieldHue(vec2 p, float anim){
   // del líquido y aun así no respiran al unísono.
   vec2 q = vec2(fieldFbm(p + vec2(2.9, 7.4) - vec2(anim*0.047, anim*0.068)),
                 fieldFbm(p + vec2(8.1, 0.6) + vec2(anim*0.072, -anim*0.039)));
-  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.42;
+  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.24;
   float h = fieldFbm(p + 0.30*(q - 0.5) + vec2(6.3, 2.1));
   return clamp((h - 0.34) / 0.34, 0.0, 1.0);
 }
@@ -483,12 +483,21 @@ vec3 fieldRamp(float gray, float hue, float inverted){
   // el claro alto deja de irse al blanco: el blanco no tiene tono, y era otra
   // vía por la que se perdía saturación
   vec3 c3 = mix(mid, vec3(1.0), 0.08);
-  // interpolación suavizada en cada tramo: sin esto la unión entre paradas es
-  // un quiebre de pendiente, y un quiebre de pendiente se VE como un borde
-  if(l < 0.38){ float t = l / 0.38; return mix(c0, c1, t*t*(3.0-2.0*t)); }
-  if(l < 0.78){ float t = (l - 0.38) / 0.40; return mix(c1, c2, t*t*(3.0-2.0*t)); }
-  float t = (l - 0.78) / 0.22;
-  return mix(c2, c3, t*t*(3.0-2.0*t));
+  // ── INTERPOLACIÓN LINEAL, y el porqué importa ──────────────────────────
+  //
+  // Acá tenía 'smoothstep' POR TRAMO, y fue un error mío: smoothstep tiene
+  // pendiente CERO en sus dos extremos, así que cada parada se convertía en una
+  // MESETA y todo el cambio se concentraba en el medio del tramo. Medido: la
+  // pendiente va de 0,2 en los bordes a 3,95 en el centro. Eso es posterizar —
+  // zonas planas separadas por saltos rápidos— y de ahí salían los bordes
+  // dentados; con el fluido cruzándolos, las bandas SALTAN de una a otra, que
+  // es el titileo.
+  //
+  // Lineal, las paradas se reparten parejo: pendiente constante, sin mesetas y
+  // sin saltos. Es lo que hace su 'colorRamp', y no por casualidad.
+  if(l < 0.34) return mix(c0, c1, l / 0.34);
+  if(l < 0.67) return mix(c1, c2, (l - 0.34) / 0.33);
+  return mix(c2, c3, (l - 0.67) / 0.33);
 }
 
 // EL GRANO. Es lo que más se nota en sus capturas y lo que más barato compra
@@ -696,7 +705,7 @@ void main(){
     // Cada capa mira OTRA PARTE del mismo campo. Sin esto las cinco dibujan el
     // mismo patrón con distinto color, y el carrusel se lee como un filtro.
     fp += vec2(uMat * 0.37, uMat * 0.23);
-    gField = saturar(fieldRamp(fieldGray(fp, uField, drive), fieldHue(fp, uField), 1.0 - uDay), 1.42) * uEnv;
+    gField = saturar(fieldRamp(fieldGray(fp, uField, drive), fieldHue(fp, uField), 1.0 - uDay), 1.24) * uEnv;
     gField += fieldGrain(fq) * (0.030 + 0.012*uDay) * uEnv;
     // donde el fluido acaba de pasar queda un rastro más claro: es la estela,
     // y es lo que hace que se vea DE DÓNDE viene el movimiento
@@ -1211,6 +1220,12 @@ interface ReferenceBundle {
 
 export interface OrbRendererOptions {
   /**
+   * N3C r10 · Enciende el fluido aunque esté apagado en producción. Sólo lo usa
+   * la mesa de luz: es donde se sigue trabajando sin que el teléfono del
+   * founder sea el ensayo.
+   */
+  forceFluid?: boolean;
+  /**
    * N3C · SÓLO PARA LA MESA DE LUZ. La fuente GLSL del porte fiel del orbe de
    * ElevenLabs. Se INYECTA en vez de importarse para que el shader de la
    * comparación no viaje en el paquete del santuario: producción llama a
@@ -1297,7 +1312,7 @@ export function createOrbRenderer(
 
   // EL FLUIDO. Puede no existir —hay teléfonos sin texturas de coma flotante—
   // y en ese caso el orbe vuelve a su deformación de ruido. Nunca se finge.
-  const fluid: OrbFluid | null = createOrbFluid(gl);
+  const fluid: OrbFluid | null = createOrbFluid(gl, options.forceFluid === true);
 
   const noise = uploadNoise(gl);
   if (!noise) {
