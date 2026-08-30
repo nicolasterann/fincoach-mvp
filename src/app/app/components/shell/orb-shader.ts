@@ -395,13 +395,17 @@ float fieldGray(vec2 p, float anim, float drive){
   // empujás la perturbación se propaga sola. Eso no se fabrica con un seno.
   // Sin texturas de coma flotante no hay fluido y el campo vuelve al ruido:
   // peor, y verdadero.
-  vec2 q;
-  if(uHasFluid > 0.5){
-    q = 0.5 + gFlow;
-  } else {
-    q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),
-             fieldFbm(p + vec2(5.2, 1.3) - vec2(anim*0.061, anim*0.074)));
-  }
+  // EL FLUIDO SUMA, NO SUSTITUYE.
+  //
+  // Al pasar TODO el desplazamiento al fluido, el movimiento en reposo quedó
+  // atado a la velocidad de la simulación — y subirla hasta que se notara fue
+  // lo que rompió la imagen. Su propio shader hace las dos cosas: tiene ruido
+  // animado ('uNoiseSpeed', 'uFbmSpeed') Y el fluido encima. Acá igual: la
+  // deformación propia da el movimiento de fondo, calmo y sin artefactos, y el
+  // fluido aporta lo orgánico y la respuesta a la voz.
+  vec2 q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),
+                fieldFbm(p + vec2(5.2, 1.3) - vec2(anim*0.061, anim*0.074)));
+  if(uHasFluid > 0.5) q += gFlow * 0.55;
   // la voz abre la deformación: el campo se revuelve más mientras hablás, que
   // es lo único que su 'uOutputVolume' hacía con el ángulo.
   //
@@ -435,13 +439,9 @@ float fieldHue(vec2 p, float anim){
   // otro ritmo, para que el color y el brillo no respiren al unísono.
   // El color usa el MISMO fluido, girado un cuarto de vuelta: los dos vienen
   // del líquido y aun así no respiran al unísono.
-  vec2 q;
-  if(uHasFluid > 0.5){
-    q = 0.5 + vec2(-gFlow.y, gFlow.x) * 0.85;
-  } else {
-    q = vec2(fieldFbm(p + vec2(2.9, 7.4) - vec2(anim*0.047, anim*0.068)),
-             fieldFbm(p + vec2(8.1, 0.6) + vec2(anim*0.072, -anim*0.039)));
-  }
+  vec2 q = vec2(fieldFbm(p + vec2(2.9, 7.4) - vec2(anim*0.047, anim*0.068)),
+                fieldFbm(p + vec2(8.1, 0.6) + vec2(anim*0.072, -anim*0.039)));
+  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.42;
   float h = fieldFbm(p + 0.30*(q - 0.5) + vec2(6.3, 2.1));
   return clamp((h - 0.34) / 0.34, 0.0, 1.0);
 }
@@ -660,7 +660,9 @@ void main(){
     float cLiq = (wb - 1.0) * 0.5;
     vec2 fq = uv - vec2(0.0, cLiq * 0.85);
     // …y gira con el orbe: un solo objeto, otra vez.
-    float sn = sin(uSpin * 0.30), cs = cos(uSpin * 0.30);
+    // el gesto ya NO gira el campo: durante un deslizamiento uSpin salta y el
+    // giro brusco se lee como un corte. El orbe se mueve; su contenido no.
+    float sn = 0.0, cs = 1.0;
     // 0,22 y no 0,62: con 0,62 el orbe abarcaba cinco manchas de la tela y el
     // campo se leía como una textura. Sus orbes muestran DOS o TRES.
     // EL FLUIDO, UNA SOLA MUESTRA. Cada capa lo mira GIRADO 72 grados respecto
@@ -674,7 +676,7 @@ void main(){
       // Tope SUAVE en vez de recorte: un recorte pega el valor contra el
       // límite y ahí deja de variar — que es como se fabricó el patrón
       // trabado. Así siempre queda pendiente, por fuerte que sea el rastro.
-      vec2 fw = fl.xy * 11.0;
+      vec2 fw = fl.xy * 5.0;
       gFlow = fw / (1.0 + abs(fw) * 0.72);
       gFlowMag = clamp(fl.z * 3.0, 0.0, 1.0);
     }
@@ -682,8 +684,8 @@ void main(){
     // Cada capa mira OTRA PARTE del mismo campo. Sin esto las cinco dibujan el
     // mismo patrón con distinto color, y el carrusel se lee como un filtro.
     fp += vec2(uMat * 0.37, uMat * 0.23);
-    gField = saturar(fieldRamp(fieldGray(fp, uField, drive), fieldHue(fp, uField), 1.0 - uDay), 1.62) * uEnv;
-    gField += fieldGrain(fq) * (0.055 + 0.02*uDay) * uEnv;
+    gField = saturar(fieldRamp(fieldGray(fp, uField, drive), fieldHue(fp, uField), 1.0 - uDay), 1.42) * uEnv;
+    gField += fieldGrain(fq) * (0.030 + 0.012*uDay) * uEnv;
     // donde el fluido acaba de pasar queda un rastro más claro: es la estela,
     // y es lo que hace que se vea DE DÓNDE viene el movimiento
     gField += mix(uAcc, vec3(1.0), 0.35) * gFlowMag * 0.075 * uEnv;

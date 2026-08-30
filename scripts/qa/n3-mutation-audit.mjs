@@ -540,8 +540,23 @@ const mutations = [
     result:
       "vuelve el error de UNIDADES: la velocidad se inyecta en decimas y la adveccion la divide por 7680, asi que el fluido queda congelado",
     file: FLUID,
-    from: "export const ORB_FLUID_GRID = 5200;",
+    from: "export const ORB_FLUID_GRID = 190;",
     to: "export const ORB_FLUID_GRID = 1;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "la salpicadura se pasa del tope del solver: el recorte a ±1000 deja un salto duro donde empuja y la adveccion muestrea fuera del dominio — las rayas que el founder vio en produccion",
+    file: FLUID,
+    from: "export const ORB_FLUID_GRID = 190;",
+    to: "export const ORB_FLUID_GRID = 5200;",
+  },
+  {
+    name: "N3C-5",
+    result: "el fluido vuelve a SUSTITUIR el desplazamiento propio en vez de sumarle: el movimiento de fondo queda atado a la simulacion",
+    file: SHADER,
+    from: "  if(uHasFluid > 0.5) q += gFlow * 0.55;",
+    to: "  if(uHasFluid > 0.5) q = 0.5 + gFlow;",
   },
 ];
 

@@ -264,7 +264,7 @@ export function orbFieldSpeed(drive: number): number {
   // N3C r5 · con DEFORMACIÓN en vez de transporte, el reloj puede volver a
   // correr sin que se lea como velocidad: nada cruza el orbe. Lo que se nota
   // es que las manchas cambian de forma, y eso quiere ritmo.
-  return 1.10 + (1 - Math.pow(bounded - 1, 2)) * 2.20;
+  return 1.55 + (1 - Math.pow(bounded - 1, 2)) * 2.60;
 }
 
 /** Un paso del reloj del campo. Monótono: el campo nunca retrocede. */

@@ -92,10 +92,20 @@ export interface OrbFluidSplat {
 }
 
 /**
- * El puente entre las dos escalas. La advección divide por `SIM × 1/dt`, así que
- * una velocidad útil vive en los cientos. Es el número que faltaba.
+ * El puente entre las dos escalas — y el número que hay que respetar, porque
+ * pasarse ROMPE la imagen.
+ *
+ * El solver recorta la velocidad a **±1000** (lo hace el paso de vorticidad). Si
+ * la salpicadura inyecta más que eso, el recorte produce un salto duro justo
+ * donde se empujó: cortes visibles. Y la advección desplaza `dt × v × (1/128)`,
+ * así que una velocidad enorme muestrea FUERA del dominio, donde la textura
+ * repite el borde — y eso dibuja rayas rectas.
+ *
+ * Con 5200 inyectaba 5.720 y aparecieron las dos cosas a la vez. El demo
+ * clásico de fluidos inyecta del orden de 100–300, y ése es el rango sano: el
+ * fluido se desarrolla en segundos, sin recortes y sin muestrear fuera.
  */
-export const ORB_FLUID_GRID = 5200;
+export const ORB_FLUID_GRID = 190;
 
 /** Cuánto rastro deja cada empujón. Chico a propósito: ver arriba. */
 export const ORB_FLUID_TRAIL = 0.030;

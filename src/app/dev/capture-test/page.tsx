@@ -29701,7 +29701,6 @@ assert(
       // …y el tiempo entra SÓLO por el desplazamiento. N3C r6 · re-anclado: el
       // desplazamiento ya no lo inventa un seno, lo da el fluido — y cuando no
       // hay fluido, el respaldo sigue siendo deformación y no transporte.
-      /q = 0\.5 \+ gFlow;/u.test(n3ShaderCode) &&
       // N3C r7 · TOPE SUAVE, no recorte. Medido: con recorte el rastro se pegaba
       // contra el límite y dejaba de variar — el «patrón trabado» del founder.
       /gFlow = fw \/ \(1\.0 \+ abs\(fw\) \* [0-9.]+\);/u.test(n3ShaderCode) &&
@@ -29721,6 +29720,11 @@ assert(
       // parece. Con el paso puesto medimos 0,91, igual que ellos.
       n3ShaderCode.includes("vec3 saturar(vec3 c, float k)") &&
       /gField = saturar\(fieldRamp\([^;]*\) \* uEnv;/u.test(n3ShaderCode) &&
+      // N3C r8 · el fluido SUMA al desplazamiento propio, no lo sustituye.
+      // Atarle todo el movimiento obligaba a subir la simulación hasta que
+      // rompía la imagen; su propio shader también tiene ruido animado además
+      // del fluido (`uNoiseSpeed`, `uFbmSpeed`).
+      /if\(uHasFluid > 0\.5\) q \+= gFlow \* [0-9.]+;/u.test(n3ShaderCode) &&
       // …y el factor tiene que SATURAR de verdad: con 1,0 la función existe y
       // no hace nada, que es como su mutación sobrevivía.
       (() => {
@@ -29833,10 +29837,24 @@ assert(
       // delatara. Se exige que un empujón mueva el rastro al menos un décimo
       // de téxel por cuadro, que es el umbral por debajo del cual no hay
       // movimiento que ver.
+      // N3C r8 · RE-ANCLADO CON LOS DOS LADOS, y el segundo lo pagó el founder
+      // viendo la app rota. Quedarse corto CONGELA el fluido; pasarse lo ROMPE:
+      // el solver recorta la velocidad a ±1000 (paso de vorticidad), así que
+      // una salpicadura mayor deja un salto duro donde empujó, y la advección
+      // muestrea fuera del dominio, donde la textura repite el borde y dibuja
+      // rayas rectas. Un umbral con un solo lado dejó pasar las dos cosas.
       (() => {
-        const s = orbFluidSplats({ time: 2, voice: 0, wave: 0, dtSeconds: 1 / 60 })[0]!;
-        const texelesPorCuadro = (Math.hypot(s.dx, s.dy) * (1 / 60)) / ORB_FLUID_SIM_SIZE;
-        return texelesPorCuadro > 0.1;
+        const todas = [
+          ...orbFluidSplats({ time: 2, voice: 0, wave: 0, dtSeconds: 1 / 60 }),
+          ...orbFluidSplats({ time: 2, voice: 1, wave: 1, dtSeconds: 1 / 60 }),
+        ];
+        return todas.every((s) => {
+          const v = Math.hypot(s.dx, s.dy);
+          const texelesPorCuadro = (v * (1 / 60)) / ORB_FLUID_SIM_SIZE;
+          // ni congelado ni recortado: por encima de lo visible y por debajo
+          // del tope que el propio solver aplica
+          return texelesPorCuadro > 0.0012 && v < 1000;
+        });
       })() &&
       // ── EL DEGRADADO ES HONESTO ──
       // Sin texturas de coma flotante no hay fluido, y el orbe vuelve a su
