@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 // build no prueba nada: prueba que el código no compila, no que alguien estaba
 // mirando.
 
-const TOTAL = 883;
+const TOTAL = 889;
 const runner = ["scripts/qa/run-capture-gate.mjs"];
 
 const CONTRACT = "src/app/app/components/shell/shell-orb-contract.ts";
@@ -25,6 +25,8 @@ const SIM = "src/app/app/components/shell/orb-water-sim.ts";
 const SPECIMEN = "src/app/app/components/shell/OrbSpecimen.tsx";
 const PAYLOAD = "src/app/app/components/shell/shell-payload.ts";
 const SAVE_ACTIONS = "src/app/onboarding/save-actions.ts";
+const NOISE = "src/app/app/components/shell/orb-noise-texture.ts";
+const REFERENCE = "src/app/app/components/shell/orb-reference-shader.ts";
 
 const mutations = [
   // ── N3B · el vidrio y el agua ────────────────────────────────────────────
@@ -265,6 +267,105 @@ const mutations = [
     file: SHADER,
     from: "const float WAVE_AMP = 0.026;",
     to: "const float WAVE_AMP_BASE = 0.026;\n#define WAVE_AMP (WAVE_AMP_BASE * length(uTilt))",
+  },
+  // ── N3C · el orbe de ElevenLabs, con nuestro líquido ──────────────────────
+  //
+  // La etapa adopta el look de un tercero, y eso trae una familia de defectos
+  // que NO se ven mirando la pantalla: una textura descargada de un CDN ajeno
+  // funciona perfecto en el escritorio del que la escribe y se cae en el avión;
+  // un aviso de licencia borrado no cambia un píxel; una onda que está en la
+  // altura pero no en la normal se ve casi igual y no es una onda. Todo eso se
+  // repone acá y tiene que morir con nombre.
+  {
+    name: "N3C-1",
+    result: "la tela del campo se aplana: los siete óvalos salen del mismo tamaño y el campo pierde su variedad",
+    file: NOISE,
+    from: "  return Math.min(1, Math.max(0, value * 0.5 + 0.5));",
+    to: "  return 0.5;",
+  },
+  {
+    name: "N3C-1",
+    result: "CABLE · el shader deja de leer la tela que fabrica la función pura y lee un gris que nadie puede auditar",
+    file: SHADER,
+    from: "    orbNoiseTexture(ORB_NOISE_SIZE, ORB_NOISE_SEED),",
+    to: "    new Uint8Array(ORB_NOISE_SIZE * ORB_NOISE_SIZE).fill(128),",
+  },
+  {
+    name: "N3C-1",
+    result: "la tela deja de repetirse: aparece una costura recorriendo el orbe en cada vuelta del flujo",
+    file: SHADER,
+    from: "  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);",
+    to: "  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);",
+  },
+  {
+    name: "N3C-2",
+    result: "se borra el aviso de copyright MIT del porte fiel — no cambia un píxel, y es una infracción",
+    file: REFERENCE,
+    from: "//   MIT License · Copyright (c) 2025 ElevenLabs",
+    to: "//   (porte del componente de orbe)",
+  },
+  {
+    name: "N3C-3",
+    result: "vuelve el pecado del 'sheen' de N3B: la onda vive en la ALTURA y no en la NORMAL, así que no refleja distinto",
+    file: SHADER,
+    from: "  float rho = max(length(p.xz), 0.0004);\n  g += (p.xz / rho) * WAVE_AMP * VOICE_AMP * uVoice * VOICE_FREQ\n     * cos(rho * VOICE_FREQ - uTime * VOICE_SPEED);\n",
+    to: "",
+  },
+  {
+    name: "N3C-3",
+    result: "la onda deja de ser de la VOZ: el agua ondula igual estando callada, que es la textura animada que N3B mató",
+    file: SHADER,
+    from: "  w += WAVE_AMP * VOICE_AMP * uVoice",
+    to: "  w += WAVE_AMP * VOICE_AMP * (0.35 + uVoice)",
+  },
+  {
+    name: "N3C-4",
+    result: "el reloj del campo corre siempre igual: el orbe deja de acelerar cuando hablás",
+    file: SIM,
+    from: "  return 0.1 + (1 - Math.pow(bounded - 1, 2)) * 0.9;",
+    to: "  return 0.55;",
+  },
+  {
+    name: "N3C-4",
+    result: "CABLE · el orbe vivo acumula el reloj y no se lo pasa al lienzo: el campo queda congelado en producción",
+    file: LIVE,
+    from: "          field: fieldClock,",
+    to: "          field: 0,",
+  },
+  {
+    name: "N3C-5",
+    result: "vuelve el horizonte duro de N3B: el vidrio refleja otra vez una línea reconocible",
+    file: SHADER,
+    from: "                  smoothstep(-0.85, 0.85, h));",
+    to: "                  smoothstep(-0.012, 0.012, h));",
+  },
+  {
+    name: "N3C-5",
+    result: "el campo se va del líquido y el agua vuelve a ser pigmento: la etapa entera queda sin efecto",
+    file: SHADER,
+    from: "  vec3 body = mix(gField, uDeep * 0.28, (1.0 - uEnv))",
+    to: "  vec3 body = mix(uLiq * 0.9, uDeep * 0.28, (1.0 - uEnv))",
+  },
+  {
+    name: "N3C-6",
+    result: "el porte fiel deja de inyectarse y la mesa de luz compara nuestro orbe contra sí mismo — el instrumento que miente",
+    file: SPECIMEN,
+    from: "      referenceFragmentSource: ORB_REFERENCE_FRAGMENT_SOURCE,",
+    to: "      referenceFragmentSource: undefined,",
+  },
+  {
+    name: "N3C-6",
+    result: "el programa de referencia deja de depender de la inyección: el santuario compilaría un shader que nadie usa",
+    file: SHADER,
+    from: "  if (options.referenceFragmentSource) {",
+    to: "  if (options.referenceFragmentSource !== null) {",
+  },
+  {
+    name: "N3B-2",
+    result: "RE-ANCLADO · el tercer dibujante de la probeta deja de pedir la materia a la función pura y se la inventa",
+    file: SPECIMEN,
+    from: "            material: orbMaterialCode({\n              kind: slot.kind,\n              matter: orbMatter(slot.kind),\n              fill: slot.fill ?? \"nivel\",\n            }),",
+    to: "            material: slot.fill === \"gota\" ? 5 : 0,",
   },
 ];
 

@@ -27,8 +27,10 @@ import {
   type OrbMatter,
 } from "./shell-orb-contract";
 import {
+  advanceOrbField,
   advanceOrbWater,
   createOrbWaterState,
+  orbFieldDrive,
   orbWaveEnergy,
   type OrbWaterState,
 } from "./orb-water-sim";
@@ -495,6 +497,10 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
     // puro, y el gate lo integra dos segundos y le exige que oscile y se
     // aquiete. Acá sólo queda el estado.
     let water: OrbWaterState = createOrbWaterState(0);
+    // N3C · el reloj del campo de color, que acelera con la voz. Acumulado acá y
+    // avanzado por una función pura, igual que el agua: lo que sólo existe
+    // dentro del bucle no se puede ejecutar ni, por lo tanto, probar.
+    let fieldClock = 0;
     let lastPosition = readPosition.current();
 
     const releaseContextCount = () => {
@@ -721,6 +727,11 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
         frameDelta == null ? 1 / 60 : Math.max(0.001, frameDelta / 1_000),
       );
       const waveEnergy = orbWaveEnergy(water);
+      fieldClock = advanceOrbField(
+        fieldClock,
+        orbFieldDrive(animatedVoice, waveEnergy),
+        frameDelta == null ? 1 / 60 : Math.max(0.001, frameDelta / 1_000),
+      );
       const placements = orbFieldPlacements({
         count: input.orbs.length,
         position,
@@ -761,9 +772,12 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
           // Lo que está detrás se ve detrás: más chico, con menos contraste, y
           // por eso PASA por atrás en vez de intersecarse con un borde duro.
           depth: slot.depth,
-          // El santuario SIEMPRE se ilumina con el cuarto. El apagado existe
-          // sólo en la probeta, para poder demostrar que hay uno.
+          // El santuario SIEMPRE lleva el campo de color. El apagado existe
+          // sólo en la probeta, para poder fotografiar el antes y el después.
           env: 1,
+          // N3C · el reloj del campo. Uno solo para los cinco: es el mismo
+          // líquido en el mismo momento, no cinco animaciones sueltas.
+          field: fieldClock,
           // La materia la decide UNA función pura, que el gate ejecuta — y que
           // por fin vuelve a entregarle la GOTA al vidrio.
           material: orbMaterialCode({

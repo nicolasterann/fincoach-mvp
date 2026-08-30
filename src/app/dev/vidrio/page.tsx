@@ -1,5 +1,6 @@
 import Link from "next/link";
 import {
+  OrbCompareSpecimen,
   OrbFieldSpecimen,
   OrbSloshStrip,
   OrbSpecimen,
@@ -27,7 +28,15 @@ import {
 //
 // Todo lo que se ve lo pinta `createOrbRenderer`, el mismo del santuario.
 
-const SHEETS = ["vaso", "cuarto", "chapoteo", "materias", "profundidad"] as const;
+const SHEETS = [
+  "comparacion",
+  "vaso",
+  "campo",
+  "voz",
+  "chapoteo",
+  "materias",
+  "profundidad",
+] as const;
 type Sheet = (typeof SHEETS)[number];
 
 export default async function VidrioPage({
@@ -45,8 +54,8 @@ export default async function VidrioPage({
   return (
     <main className="kipu-sistema">
       <header className="kipu-sistema-head">
-        <p className="kipu-sistema-kicker">Dev · Bloque N3B</p>
-        <h1>El vidrio y el agua</h1>
+        <p className="kipu-sistema-kicker">Dev · Bloque N3C</p>
+        <h1>El orbe de ElevenLabs, con nuestro líquido</h1>
         <p className="kipu-sistema-lede">
           Una hoja por criterio, al tamaño en el que se juzga un material. Los
           pinta el mismo <code>createOrbRenderer</code> del santuario.
@@ -66,6 +75,45 @@ export default async function VidrioPage({
           ))}
         </nav>
       </header>
+
+      {show("comparacion") && (
+        <section className="kipu-sistema-section">
+          <h2>G6 — su orbe y el nuestro, lado a lado</h2>
+          <p className="kipu-sistema-note">
+            Mismo lienzo, mismo contexto WebGL, mismo reloj y el mismo diámetro
+            en píxeles. El primero es el <b>porte fiel del shader de ElevenLabs</b>{" "}
+            con sus colores de fábrica; el segundo, el mismo porte con los
+            nuestros; el tercero es <b>el nuestro</b>, que lleva su campo de
+            color adentro del líquido y deja aire arriba.
+          </p>
+          <OrbCompareSpecimen
+            size={220}
+            slots={[
+              { variant: "referencia", kind: "patrimonio" },
+              { variant: "referencia", kind: "saldo" },
+              { variant: "kipu", kind: "saldo", level: 0.6 },
+            ]}
+          />
+          <p className="kipu-sistema-note">
+            Y las cinco capas, suyo contra nuestro, para ver si el look aguanta
+            los cinco pigmentos y no sólo uno.
+          </p>
+          {ORB_KINDS.map((kind: OrbKind) => (
+            <div key={kind} className="kipu-sistema-matrix__band">
+              <p className="kipu-sistema-slot__name">{kind}</p>
+              <OrbCompareSpecimen
+                size={186}
+                slots={[
+                  { variant: "referencia", kind },
+                  { variant: "kipu", kind, level: 0.6 },
+                  { variant: "kipu", kind, level: 1 },
+                  { variant: "kipu", kind, level: 0, fill: "gota" },
+                ]}
+              />
+            </div>
+          ))}
+        </section>
+      )}
 
       {show("vaso") && (
         <section className="kipu-sistema-section">
@@ -100,35 +148,77 @@ export default async function VidrioPage({
         </section>
       )}
 
-      {show("cuarto") && (
+      {show("campo") && (
         <section className="kipu-sistema-section">
-          <h2>F3 — el vidrio refracta un ENTORNO</h2>
+          <h2>El campo de color reemplaza al cuarto</h2>
           <p className="kipu-sistema-note">
-            El mismo orbe, el mismo renderer, la misma exposición. A la izquierda,
-            la luz plana que tenía N3: un cielo sin horizonte y una luz sin
-            ventana. A la derecha, un cuarto: <b>línea de horizonte</b>, una{" "}
-            <b>ventana rectangular con su marco</b> y un suelo que devuelve luz.
-            Lo que hace que el ojo lea «vidrio» no es más brillo — es reflejar
-            cosas que se pueden reconocer.
+            El mismo orbe, el mismo renderer, la misma exposición. A la
+            izquierda, la luz plana y desnuda: pigmento y absorción, que es lo
+            que había debajo del cuarto de N3B. A la derecha, el <b>campo</b>:
+            siete óvalos en coordenadas polares que se mueven despacio y una
+            rampa de cuatro paradas. <b>Se fueron la ventana, el horizonte y el
+            marco</b> — no queda nada reconocible en el reflejo, que es lo que
+            el founder pidió.
           </p>
           <div className="kipu-sistema-row">
             <div className="kipu-sistema-slot" data-slot-shape="orbe">
-              <p className="kipu-sistema-slot__name">sin cuarto</p>
-              <OrbSpecimen kind="saldo" level={0.62} size={230} env={0} label="N3" />
+              <p className="kipu-sistema-slot__name">sin campo</p>
+              <OrbSpecimen kind="saldo" level={0.62} size={230} env={0} label="antes" />
             </div>
             <div className="kipu-sistema-slot" data-slot-shape="orbe">
-              <p className="kipu-sistema-slot__name">con cuarto</p>
-              <OrbSpecimen kind="saldo" level={0.62} size={230} env={1} label="N3B" />
+              <p className="kipu-sistema-slot__name">con campo</p>
+              <OrbSpecimen kind="saldo" level={0.62} size={230} env={1} label="N3C" />
             </div>
             <div className="kipu-sistema-slot" data-slot-shape="orbe">
-              <p className="kipu-sistema-slot__name">vacío · sin cuarto</p>
-              <OrbSpecimen kind="reserva" level={0} fill="gota" size={230} env={0} label="N3" />
+              <p className="kipu-sistema-slot__name">vacío · sin campo</p>
+              <OrbSpecimen kind="reserva" level={0} fill="gota" size={230} env={0} label="antes" />
             </div>
             <div className="kipu-sistema-slot" data-slot-shape="orbe">
-              <p className="kipu-sistema-slot__name">vacío · con cuarto</p>
-              <OrbSpecimen kind="reserva" level={0} fill="gota" size={230} env={1} label="N3B" />
+              <p className="kipu-sistema-slot__name">vacío · con campo</p>
+              <OrbSpecimen kind="reserva" level={0} fill="gota" size={230} env={1} label="N3C" />
             </div>
           </div>
+        </section>
+      )}
+
+      {show("voz") && (
+        <section className="kipu-sistema-section">
+          <h2>G8 — la onda de la voz vive en la superficie del agua</h2>
+          <p className="kipu-sistema-note">
+            Lo que más le gustó al founder de la referencia: «cómo se mueven las
+            ondas de adentro mientras habla». Acá la onda <b>no está pegada
+            encima</b>: es el mismo líquido que ya tiene masa, con un tren de
+            ondas concéntrico en la superficie y un menisco que se vuelve
+            irregular. Sin voz el término vale cero exacto y la superficie
+            vuelve a ser el espejo de N3B. El volumen es el de M5.
+          </p>
+          <div className="kipu-sistema-row">
+            {[0, 0.35, 0.75, 1].map((voice) => (
+              <div key={voice} className="kipu-sistema-slot" data-slot-shape="orbe">
+                <p className="kipu-sistema-slot__name">voz {voice}</p>
+                <OrbSpecimen
+                  kind="saldo"
+                  level={0.6}
+                  size={200}
+                  voice={voice}
+                  label={voice === 0 ? "callado" : `${Math.round(voice * 100)}%`}
+                />
+              </div>
+            ))}
+          </div>
+          <p className="kipu-sistema-note">
+            Y el mismo volumen en el suyo, que lo lleva a los anillos del borde
+            del disco:
+          </p>
+          <OrbCompareSpecimen
+            size={186}
+            slots={[
+              { variant: "referencia", kind: "saldo", voice: 0 },
+              { variant: "referencia", kind: "saldo", voice: 0.75 },
+              { variant: "kipu", kind: "saldo", level: 0.6, voice: 0 },
+              { variant: "kipu", kind: "saldo", level: 0.6, voice: 0.75 },
+            ]}
+          />
         </section>
       )}
 

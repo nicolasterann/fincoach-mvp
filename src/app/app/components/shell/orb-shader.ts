@@ -16,6 +16,62 @@
 // qué significan las cifras. Recibe una altura de TRAZO ya mapeada por
 // `orbWaterline` y la dibuja. La frontera entre dato y dibujo vive en el
 // contrato puro, donde el gate puede ejecutarla.
+//
+// ── N3C · EL CAMPO DE COLOR ES DE ELLOS ─────────────────────────────────────
+//
+// El founder puntuó N3B 4,5/10 y trajo la referencia: los orbes de ElevenLabs.
+// Leerles el código cambió el encuadre — su orbe NO es 3D: es un disco plano
+// pintado por un shader de fragmento, exactamente nuestra arquitectura. Lo que
+// lo hace lindo es el SHADER, no `three`. Así que acá se adopta su look sin
+// adoptar sus dependencias: cero paquetes nuevos, un solo lienzo, cinco orbes.
+//
+// Y con él muere la ventana de N3B. El founder lo dijo entero: «no cumple
+// ninguna función». Sus orbes no reflejan nada reconocible — son campos de
+// color abstractos en movimiento. Reflejar un cuarto era una respuesta correcta
+// a la pregunta equivocada, así que se van el horizonte, la ventana y el marco.
+//
+// Lo que NO es de ellos y esta etapa conserva: el agua. Su orbe es sólido; el
+// nuestro tiene nivel y aire. El campo vive DENTRO del líquido y por encima de
+// la línea de agua hay vidrio.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// `fieldGray`, `fieldRamp` y `fieldFlow` son una ADAPTACIÓN del fragment shader
+// de:
+//
+//   MIT License · Copyright (c) 2025 ElevenLabs
+//   https://github.com/elevenlabs/ui — apps/www/registry/elevenlabs-ui/ui/orb.tsx
+//
+//   Permission is hereby granted, free of charge, to any person obtaining a copy
+//   of this software and associated documentation files (the "Software"), to deal
+//   in the Software without restriction, including without limitation the rights
+//   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+//   copies of the Software, and to permit persons to whom the Software is
+//   furnished to do so, subject to the following conditions:
+//
+//   The above copyright notice and this permission notice shall be included in
+//   all copies or substantial portions of the Software.
+//
+//   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+//   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+//   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+//   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+//   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+//   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+//   SOFTWARE.
+//
+// El porte FIEL y sin adaptar —el que se pone al lado del nuestro para juzgar—
+// vive en `orb-reference-shader.ts`. Están duplicados a propósito: si el
+// «suyo» estuviera hecho con nuestras funciones, la comparación sería nuestra
+// contra nosotros mismos.
+// ─────────────────────────────────────────────────────────────────────────────
+
+import {
+  ORB_FIELD_OVALS,
+  ORB_NOISE_SEED,
+  ORB_NOISE_SIZE,
+  orbNoiseTexture,
+  orbSeededAngles,
+} from "./orb-noise-texture";
 
 export type OrbRgb = readonly [number, number, number];
 
@@ -48,8 +104,12 @@ export interface OrbDrawCall {
   /** N3B · El modo vertical del líquido. Un recibo lo empuja y el agua rebota. */
   bob: number;
   /**
-   * N3B · 1 = el cuarto (horizonte, ventana, suelo); 0 = la luz plana de N3.
-   * Existe para PROBAR F3, no para configurarlo: producción siempre manda 1.
+   * N3C · RE-ANCLADO. Era «1 = el cuarto (horizonte, ventana, suelo)», y el
+   * cuarto murió: el founder dijo que la ventana «no cumple ninguna función».
+   * Ahora es el CAMPO DE COLOR: 1 = el vidrio y el líquido llevan el campo
+   * abstracto en movimiento; 0 = la luz plana de N3, sin campo. Sigue siendo el
+   * instrumento del antes/después, sólo que del cambio de esta etapa.
+   * Producción siempre manda 1.
    */
   env: number;
   /**
@@ -58,9 +118,23 @@ export interface OrbDrawCall {
    */
   depth: number;
   material: number;
+  /**
+   * N3C · EL RELOJ DEL CAMPO DE COLOR. No es `time`: avanza más rápido cuando
+   * hay voz, igual que el `uAnimation` de ellos. Lo acumula quien dibuja con
+   * `orbFieldSpeed`, así que la velocidad es una función pura que el gate
+   * ejecuta y no un número perdido dentro del bucle de animación.
+   */
+  field: number;
   liquid: OrbRgb;
   deep: OrbRgb;
   accent: OrbRgb;
+  /**
+   * N3C · SÓLO PARA LA MESA DE LUZ. Dibuja este orbe con el porte fiel del
+   * shader de ElevenLabs en vez del nuestro, para poder mirarlos lado a lado en
+   * el mismo lienzo, con el mismo reloj y al mismo tamaño. En producción nadie
+   * lo enciende: el programa ni siquiera existe si no se inyecta su fuente.
+   */
+  reference?: boolean;
 }
 
 export interface OrbFrame {
@@ -121,26 +195,28 @@ const FRAGMENT_SOURCE = `
 precision highp float;
 varying vec2 vP;
 uniform float uTime, uLevel, uEnergy, uDay, uMat, uVoice, uPresence, uSpin;
-uniform float uWave, uBob, uDepth, uEnv;
+uniform float uWave, uBob, uDepth, uEnv, uField;
 uniform vec2 uTilt;
 uniform vec3 uLiq, uDeep, uAcc;
+uniform sampler2D uPerlin;
+uniform float uOffsets[__KIPU_OVALS__];
 const float KIPU_TIER = __KIPU_TIER__;
 const vec3 LKEY = vec3(-0.4082, 0.8367, 0.3646);
 const vec3 LFILL = vec3(0.6396, -0.2559, 0.7248);
 
-// ── EL CUARTO (N3B) ────────────────────────────────────────────────────────
+// ── SE FUE EL CUARTO (N3C) ─────────────────────────────────────────────────
 //
-// N3 ya tenía un entorno, y aun así el founder lo puntuó 4/10 y dijo «parece más
-// una caricatura que algo real o tech». La causa no era que faltara un entorno:
-// era que el entorno NO TENÍA FORMA. Era un degradado vertical más dos lóbulos
-// de potencia — es decir, un cielo sin horizonte y una luz sin ventana. Un
-// degradado reflejado se ve como plástico brillante porque no hay nada que
-// RECONOCER en el reflejo.
+// N3B llenó el reflejo de cosas reconocibles —horizonte, ventana con marco,
+// suelo— porque un degradado reflejado se lee como plástico. Era verdad a
+// medias, y el founder cerró la discusión mirando la referencia:
 //
-// Lo que hace que el ojo lea «vidrio» es reflejar COSAS: una línea de horizonte
-// nítida, un rectángulo de ventana con su marco, un suelo que devuelve luz. Son
-// bordes, y los bordes son la información. Eso es lo que tienen las gemas de
-// OPAL: no más brillo, más CUARTO.
+//   «La ventana no cumple ninguna función.»
+//
+// Sus orbes no reflejan ningún objeto: son campos de color abstractos en
+// movimiento, y se ven mejor. Así que la ventana, el horizonte y el marco se
+// van enteros. Lo que queda del entorno es lo mínimo que un vidrio necesita
+// para leerse como vidrio —una luz con dirección y su chispa— y encima de eso,
+// el CAMPO: color que se mueve, sin nada que reconocer.
 const vec3 ENV_SKY_HI = vec3(0.048, 0.062, 0.086);
 const vec3 ENV_SKY_LO = vec3(0.070, 0.086, 0.112);
 const vec3 ENV_FLOOR = vec3(0.010, 0.012, 0.017);
@@ -150,6 +226,20 @@ const vec3 ENV_FLOOR_DAY = vec3(0.118, 0.130, 0.154);
 const vec3 ENV_KEY = vec3(0.90, 0.945, 1.00);
 const vec3 ENV_FILL = vec3(0.34, 0.44, 0.62);
 const float WAVE_AMP = 0.026;
+// N3C · LA ONDA DE LA VOZ, en la superficie del agua. Es lo que más le gustó al
+// founder de la referencia —«cómo se mueven las ondas de adentro mientras
+// habla»— y por eso NO es un efecto pegado encima: es el mismo líquido que ya
+// tiene masa, con un tren de ondas radial que sale del centro. Sin voz vale
+// cero exacto y la superficie vuelve a ser el espejo de N3B.
+// Medido: con 2,35 la onda desplazaba la superficie 0,061 radios — 3,8 px en un
+// orbe de 124, por debajo del ruido de cualquier instrumento y, lo que importa,
+// por debajo de lo que se ve. Su anillo mueve el borde 0,2 radios; éste mueve
+// la superficie 0,10, que es la mitad y ya se lee. La frecuencia baja para que
+// sean ONDAS anchas y no un rizado: a 13 el tren no entraba entero en la elipse
+// de la superficie.
+const float VOICE_AMP = 3.85;
+const float VOICE_FREQ = 9.0;
+const float VOICE_SPEED = 5.4;
 const float CAM_PITCH = -0.30;
 // El menisco DE VERDAD es una película fina, no un bulto. N3 lo tenía en 0.078
 // —más alto que el piso del vaso entero— y por eso un orbe vacío dibujaba un
@@ -181,55 +271,97 @@ float fbm(vec2 p){
   return v;
 }
 
-// Un rectángulo redondeado en el plano tangente a una dirección. Es la ventana:
-// se proyecta gnomónicamente, así que se deforma con el ángulo igual que un
-// reflejo de verdad.
-float panelMask(vec3 d, vec3 axis, vec3 tanA, vec3 tanB, vec2 half_, float soft){
-  float z = dot(d, axis);
-  if(z <= 0.02) return 0.0;
-  vec2 q = vec2(dot(d, tanA), dot(d, tanB)) / z;
-  vec2 e = abs(q) - half_;
-  float sd = length(max(e, 0.0)) + min(max(e.x, e.y), 0.0);
-  return 1.0 - smoothstep(0.0, soft, sd);
+// ── EL CAMPO DE COLOR · adaptado de ElevenLabs (MIT, aviso en la cabecera) ──
+//
+// Su técnica en una frase: siete óvalos en COORDENADAS POLARES, que se mueven
+// despacio y se pisan entre sí sobre un gris; el ángulo se distorsiona con una
+// tela de ruido para que el conjunto fluya; y al final el gris entra en una
+// RAMPA de cuatro paradas —negro, color oscuro, color claro, blanco— que es de
+// donde sale todo el look. No hay iluminación, no hay esfera y no hay nada
+// reconocible adentro: es exactamente lo que el founder pidió.
+//
+// Lo que cambia respecto de su archivo, y por qué:
+//   · la tela de ruido se GENERA ('orb-noise-texture.ts'), no se descarga;
+//   · el gris sale por separado de la rampa, porque el nuestro tiene que
+//     entrar DENTRO del líquido y no pintar el disco entero;
+//   · sus dos anillos del borde no están acá: en nuestro orbe el anillo de la
+//     voz vive en la superficie del AGUA, no en el borde del vidrio.
+float fieldFlow(vec3 dec, float t){
+  return mix(texture2D(uPerlin, vec2(t, dec.x / 2.0)).r,
+             texture2D(uPerlin, vec2(t, dec.y / 2.0)).r,
+             dec.z);
 }
 
-// EL CUARTO SE PUEDE APAGAR (F3). No es un modo de producción: es el
-// instrumento con el que se demuestra que el vidrio refracta UN ENTORNO y no un
-// degradado. Con uEnv = 0 queda la iluminación plana que tenía N3 —un cielo sin
-// horizonte y una luz sin ventana—, así que las dos mitades del criterio se
-// pueden fotografiar lado a lado con el mismo renderer y la misma exposición.
-vec3 envSample(vec3 d){
-  // EL HORIZONTE ES UN BORDE, NO UN DEGRADADO. Es la mitad de por qué esto se
-  // lee como un cuarto: el suelo y el cielo son dos materiales distintos con una
-  // línea entre ellos, y esa línea es lo que se ve curvarse sobre el vidrio.
-  float h = d.y;
-  vec3 sky = mix(mix(ENV_SKY_LO, ENV_SKY_LO_DAY, uDay),
-                 mix(ENV_SKY_HI, ENV_SKY_HI_DAY, uDay),
-                 smoothstep(0.02, 0.75, h));
-  vec3 grd = mix(ENV_FLOOR, ENV_FLOOR_DAY, uDay) * (0.45 + 0.75*smoothstep(-1.0, 0.0, h));
-  float horizon = mix(smoothstep(-0.85, 0.85, h), smoothstep(-0.012, 0.012, h), uEnv);
-  vec3 base = mix(grd, sky, horizon);
-  // la pared iluminada justo encima del horizonte: la banda que delata que hay
-  // un piso y un techo, y no una esfera de color
-  base += ENV_KEY * (0.10 + 0.09*uDay) * exp(-abs(h - 0.05) * 26.0) * uEnv;
+float fieldGray(vec2 p, float anim, float drive){
+  float radius = length(p);
+  float theta = atan(p.y, p.x);
+  if(theta < 0.0) theta += 6.28318530718;
+  vec3 dec = vec3(theta / 6.28318530718,
+                  mod(theta / 6.28318530718 + 0.5, 1.0) + 1.0,
+                  abs(theta / 3.14159265359 - 1.0));
+  float n = fieldFlow(dec, radius * 0.03 - anim * 0.2) - 0.5;
+  theta += n * mix(0.08, 0.25, drive);
+  // Su reloj corre a la mitad del tiempo real; el nuestro es el crudo.
+  float ft = uTime * 0.5;
+  float gray = 1.0;
+  for(int i = 0; i < __KIPU_OVALS__; i++){
+    float c = float(i) * 1.57079632679 + 0.5 * sin(ft / 20.0 + uOffsets[i]);
+    float nz = texture2D(uPerlin, vec2(mod(c + ft * 0.05, 1.0), 0.5)).r;
+    float a = 0.5 + nz * 0.3;
+    float b = nz * mix(3.5, 2.5, drive);
+    float dTheta = min(abs(theta - c),
+                   min(abs(theta + 6.28318530718 - c), abs(theta - 6.28318530718 - c)));
+    float oval = (dTheta * dTheta) / (a * a) + (radius * radius) / (b * b);
+    float edge = smoothstep(1.0, 0.4, oval);
+    if(edge > 0.0){
+      float g = (dTheta / a + 1.0) * 0.5;
+      if(mod(float(i), 2.0) > 0.5) g = 1.0 - g;
+      g = mix(0.5, g, 0.1);
+      gray = mix(gray, g, 0.85 * edge);
+    }
+  }
+  return gray;
+}
 
-  // LA VENTANA. Un especular redondo es una bola de plástico; un rectángulo con
-  // marco es una ventana, y el ojo lo reconoce sin que nadie se lo explique.
-  vec3 tanA = normalize(cross(LKEY, vec3(0.0, 1.0, 0.0)));
-  vec3 tanB = cross(LKEY, tanA);
-  float pane = panelMask(d, LKEY, tanA, tanB, vec2(0.42, 0.26), 0.10);
-  // el marco: dos travesaños que parten el vidrio de la ventana en cuatro
-  float z = max(dot(d, LKEY), 0.0001);
-  vec2 q = vec2(dot(d, tanA), dot(d, tanB)) / z;
-  float mullion = (1.0 - smoothstep(0.010, 0.030, abs(q.x)))
-                + (1.0 - smoothstep(0.010, 0.030, abs(q.y)));
-  base += ENV_KEY * pane * (1.0 - clamp(mullion, 0.0, 1.0) * 0.85) * (1.25 + 0.55*uDay) * uEnv;
-  // sin cuarto queda el lóbulo suave de N3: una luz, ningún objeto
+// La rampa de cuatro paradas. El extremo oscuro no es negro puro sino el
+// pigmento profundo de la capa muy bajado: con negro puro el líquido se leía
+// como un agujero y perdía de qué capa era, que es lo único que este objeto
+// tiene que decir.
+vec3 fieldRamp(float gray, float inverted){
+  float l = mix(gray, 1.0 - gray, inverted);
+  vec3 c0 = uDeep * 0.10;
+  if(l < 0.33) return mix(c0, uDeep, l * 3.0);
+  if(l < 0.66) return mix(uDeep, uLiq, (l - 0.33) * 3.0);
+  return mix(uLiq, vec3(1.0), (l - 0.66) * 3.0);
+}
+
+// El campo del píxel, calculado UNA vez en 'main' y leído desde el entorno.
+// 'envSample' corre hasta cinco veces por píxel (el reflejo, los tres rayos de
+// la dispersión y el reflejo del agua): recalcular siete óvalos en cada una
+// costaría cuarenta y cinco lecturas de tela por píxel.
+vec3 gField = vec3(0.0);
+
+// EL CAMPO SE PUEDE APAGAR (uEnv = 0). No es un modo de producción: es el
+// instrumento del antes/después, con el MISMO renderer y la MISMA exposición.
+// Con 0 queda la luz plana y desnuda; con 1, el campo de color en movimiento.
+vec3 envSample(vec3 d){
+  // Un degradado vertical suave y NADA MÁS. Sin línea de horizonte, sin banda
+  // de pared, sin ventana y sin marco: si hubiera un borde reconocible acá,
+  // volvería a aparecer un cuarto reflejado en el vidrio.
+  float h = d.y;
+  vec3 base = mix(mix(ENV_SKY_LO, ENV_SKY_LO_DAY, uDay),
+                  mix(ENV_SKY_HI, ENV_SKY_HI_DAY, uDay),
+                  smoothstep(-0.85, 0.85, h));
+  // La luz: dos lóbulos suaves, que es lo que hacía la rama sin cuarto de N3B.
   base += ENV_KEY * (pow(max(dot(d, LKEY), 0.0), 14.0)*0.30
-                   + pow(max(dot(d, LKEY), 0.0), 2.6)*0.055) * (1.0 - uEnv);
+                   + pow(max(dot(d, LKEY), 0.0), 2.6)*0.055);
   // y su brillo pequeño y duro, que es el que hace la chispa en el borde
   base += ENV_KEY * pow(max(dot(d, LKEY), 0.0), 260.0) * 0.55;
   base += ENV_FILL * pow(max(dot(d, LFILL), 0.0), 5.0) * 0.10;
+  // EL CAMPO, dentro del vidrio. Entra como tinte del píxel y no como una
+  // dirección: lo que el ojo tiene que ver es color que se mueve, no una forma
+  // que se pueda reconocer y ubicar en un cuarto.
+  base += gField * (0.055 + 0.075 * smoothstep(-0.6, 0.8, h)) * uEnv;
   return base;
 }
 
@@ -283,6 +415,11 @@ float waterHeight(vec3 p, float detail){
     w += A*0.34*uWave*sin(dot(p.xz, WD2)*23.0 + uTime*3.1)
        * sin(dot(p.xz, WD1)*19.0 - uTime*2.4);
   }
+  // LA VOZ, EN LA SUPERFICIE. Un tren de ondas concéntrico que sale del centro
+  // del líquido: la misma superficie que ya refleja y refracta, moviéndose. Con
+  // uVoice = 0 este término es cero exacto — no hay onda de adorno.
+  w += WAVE_AMP * VOICE_AMP * uVoice
+     * sin(length(p.xz) * VOICE_FREQ - uTime * VOICE_SPEED);
   // EL MENISCO: una película fina que trepa la pared, y que se APAGA cuando
   // queda poca agua. Un charco no tiene menisco de vaso lleno.
   float wallR = sqrt(max(0.0, 1.0 - base*base));
@@ -308,6 +445,13 @@ vec3 waterNormal(vec3 p, float detail){
        * cos(dot(p.xz, WD2)*23.0 + uTime*3.1)
        * cos(dot(p.xz, WD1)*19.0 - uTime*2.4);
   }
+  // Y LA PENDIENTE DE LA ONDA DE LA VOZ. Sin esto la onda existiría en la altura
+  // pero no en la NORMAL, así que no reflejaría distinto — o sea, no se vería.
+  // Es la misma trampa que N3B pagó con el 'sheen': un relieve que no cambia
+  // cómo entra la luz no es un relieve, es un dibujo.
+  float rho = max(length(p.xz), 0.0004);
+  g += (p.xz / rho) * WAVE_AMP * VOICE_AMP * uVoice * VOICE_FREQ
+     * cos(rho * VOICE_FREQ - uTime * VOICE_SPEED);
   return normalize(vec3(-g.x, 1.0, -g.y));
 }
 
@@ -315,6 +459,32 @@ void main(){
   vec2 uv = vP;
   float r = length(uv);
   float rr = r*r;
+
+  // ── EL CAMPO DE COLOR DEL PÍXEL ──────────────────────────────────────────
+  //
+  // Se calcula antes que nada porque lo mira TODO: el líquido lo lleva adentro,
+  // el vidrio lo refracta y el halo lo hereda. Un solo objeto.
+  //
+  // 'drive' es su 'uInputVolume'/'uOutputVolume': la voz estira los óvalos y
+  // sube la distorsión del flujo, que es lo que en su orbe hace que las ondas
+  // «se muevan mientras habla». Le sumamos un poco de la agitación del líquido,
+  // porque un chapoteo también mueve el color.
+  float drive = clamp(uVoice * 0.9 + uWave * 0.25, 0.0, 1.0);
+  {
+    // EL CENTRO DEL CAMPO ES EL CENTRO DEL LÍQUIDO, no el del vidrio. Es la
+    // diferencia entre «su campo, recortado por una línea de agua» y «su campo,
+    // adentro del agua»: con el centro fijo, un orbe a medio llenar mostraba
+    // justo la parte donde los siete óvalos convergen —la menos linda— y el
+    // resto quedaba afuera. Anclado al líquido, el campo BAJA y SUBE con el
+    // nivel, que es lo que hace un contenido y no un fondo.
+    float wb = isDrop() > 0.5 ? -0.955 : waterBase();
+    float cLiq = (wb - 1.0) * 0.5;
+    vec2 fq = uv - vec2(0.0, cLiq);
+    // …y gira con el orbe: un solo objeto, otra vez.
+    float sn = sin(uSpin * 0.35), cs = cos(uSpin * 0.35);
+    vec2 fp = vec2(cs*fq.x + sn*fq.y, -sn*fq.x + cs*fq.y) * 1.25;
+    gField = fieldRamp(fieldGray(fp, uField, drive), 1.0 - uDay) * uEnv;
+  }
 
   vec3 soul = vec3(0.0);
   float soulA = 0.0;
@@ -330,9 +500,11 @@ void main(){
     float halo = pow(nearGlow, 1.7)*0.45 + pow(farGlow, 1.25)*0.55;
     halo *= smoothstep(0.965, 1.015, r);
     halo *= 0.80 + 0.34*max(dot(dir, LKEY.xy), 0.0);
-    vec3 sc = mix(uAcc, uLiq, 0.45);
-    soul = sc * halo * (0.21 + 0.30*uVoice);
-    soulA = clamp(halo*(0.105 + 0.20*uVoice) * mix(1.0, 0.50, uDay), 0.0, 1.0);
+    // N3C · el halo toma el color que el campo tiene AHORA, así que respira con
+    // él en vez de ser una capa aparte pegada al borde.
+    vec3 sc = mix(mix(uAcc, uLiq, 0.45), gField * 2.2, 0.45 * uEnv);
+    soul = sc * halo * (0.055 + 0.24*uVoice);
+    soulA = clamp(halo*(0.030 + 0.15*uVoice) * mix(1.0, 0.50, uDay), 0.0, 1.0);
   }
 
   float shadow = 0.0;
@@ -410,12 +582,18 @@ void main(){
   float depth = max(0.0, base - (qo.y + qd.y*(tA + tB)*0.5));
   vec3 hp = qo + qd*mix(tA, tB, 0.62);
 
-  vec3 sigma = (vec3(1.0) - uLiq) * 1.55 + 0.16;
-  vec3 Tl = exp(-sigma * depth * 1.45);
-  vec3 body = mix(uDeep * 0.92, uLiq * 1.30, Tl);
+  // ── EL LÍQUIDO ES EL CAMPO (N3C) ────────────────────────────────────────
+  //
+  // Hasta N3B el cuerpo era pigmento y absorción de Beer-Lambert: físicamente
+  // correcto y, según el founder, un 4,5. Lo que se ve mejor es el campo de
+  // ellos, y acá es lo que llena el vaso. La profundidad ya no decide el COLOR
+  // —lo decide el campo— pero sigue decidiendo el CUERPO: una columna gruesa de
+  // líquido pesa más que una lámina, y sin eso el agua deja de tener volumen.
+  vec3 body = mix(gField, uDeep * 0.28, (1.0 - uEnv))
+            + mix(uDeep * 0.92, uLiq * 1.30, exp(-((vec3(1.0) - uLiq) * 1.55 + 0.16) * depth * 1.45))
+              * 0.16 * (1.0 - uEnv);
   body *= 0.60 + 0.55 * clamp(thick * 1.15, 0.0, 1.0);
-  // La gota es una lámina, y una lámina de líquido apenas tiñe: sin esto la
-  // absorción de Beer-Lambert la devolvía casi con el pigmento puro, así que un
+  // La gota es una lámina, y una lámina de líquido apenas tiñe: sin esto un
   // orbe VACÍO brillaba más que uno lleno — exactamente al revés.
   body *= 1.0 - drop * 0.45;
 
@@ -444,7 +622,7 @@ void main(){
     float caus = clamp(1.0/max(jac, 0.11) - 1.0, 0.0, 4.0);
     // La cáustica es CONSECUENCIA de la superficie: si la superficie está
     // quieta, la luz no se concentra y no hay red. Antes brillaba igual.
-    body += mix(uAcc, vec3(1.0), 0.46) * caus * hit * onFloor * (0.10 + 0.30*uWave);
+    body += mix(uAcc, vec3(1.0), 0.46) * caus * hit * onFloor * (0.012 + 0.10*uWave);
   }
 
   // ── LA SUPERFICIE ES UNA INTERFAZ, NO UNA RAYA PINTADA ─────────────────────
@@ -465,13 +643,13 @@ void main(){
   // teñido por el pigmento de la capa, así que aporta el cuarto sin dejar de
   // ser AGUA DE ESA CAPA.
   vec3 wrefl = mix(envSample(reflect(rdn, wnv)), uLiq * 0.55, 0.24);
-  body = mix(body, wrefl, wfres * surfaceSeen * 0.60);
+  body = mix(body, wrefl, wfres * surfaceSeen * 0.20);
   // El destello duro del panel sobre el agua: es el que dice «esto está mojado».
   float wspec = pow(max(dot(reflect(rdn, wnv), LKEY), 0.0), 300.0);
   // Medido: con ganancia 2.0 el fondo del orbe vacío llegaba a [255,255,233]
   // —recortado— y eso es lo que se veía como una mancha sucia. Un destello que
   // satura deja de ser un destello: es un agujero blanco.
-  body += ENV_KEY * wspec * surfaceSeen * 0.95;
+  body += ENV_KEY * wspec * surfaceSeen * 0.32;
 
   // Y EL MENISCO, ahora como lo que es: la línea exacta donde el líquido toca el
   // vidrio. Fina, no una banda ancha del mismo material — que era la razón de
@@ -479,7 +657,14 @@ void main(){
   float rho = length(qSurf.xz);
   float ring = smoothstep(wallR*0.90, wallR*1.005, rho)
              * (1.0 - smoothstep(wallR*1.005, wallR*1.06, rho));
-  body += mix(uAcc, vec3(1.0), 0.55) * ring * surfaceSeen * 0.50;
+  // N3C · Y CUANDO HAY VOZ, EL BORDE DEL AGUA SE VUELVE IRREGULAR. Es el anillo
+  // ruidoso de su orbe, pero puesto donde en el nuestro tiene sentido: en la
+  // línea donde el líquido toca el vidrio, no en el borde del vidrio. Sin voz
+  // el factor es 1 exacto y el menisco es el mismo de N3B.
+  float ringAng = atan(qSurf.z, qSurf.x) * 0.15915494;
+  float ringNoise = texture2D(uPerlin, vec2(ringAng + uField * 0.35, 0.5)).r - 0.5;
+  ring *= 1.0 + uVoice * ringNoise * 2.2;
+  body += mix(uAcc, vec3(1.0), 0.55) * ring * surfaceSeen * (0.50 + 0.85*uVoice);
 
   if(KIPU_TIER > 2.5){
     float motes = 0.0;
@@ -494,12 +679,12 @@ void main(){
         motes += smoothstep(0.034, 0.004, length(cross(mp - pf, rdi)));
       }
     }
-    body += mix(uAcc, vec3(1.0), 0.45) * motes * 0.52 * hit;
+    body += mix(uAcc, vec3(1.0), 0.45) * motes * 0.13 * hit;
   }
 
   vec3 R = reflect(-V, N);
   float schlick = 0.04 + 0.96*pow(1.0 - ndv, 5.0);
-  vec3 reflection = envSample(R) * schlick * mix(2.35, 1.45, uDay);
+  vec3 reflection = envSample(R) * schlick * mix(1.05, 1.00, uDay);
   float rimw = pow(1.0 - ndv, 5.0);
 
   vec3 core = vec3(0.0);
@@ -524,7 +709,9 @@ void main(){
       float lam = max(dot(fn, LKEY), 0.0);
       float sp = pow(max(dot(reflect(rdi, fn), LKEY), 0.0), 24.0);
       float fh = hash21(floor(tri) + sub*17.0);
-      core = uDeep*(0.75 + 0.35*fh) + uLiq*(0.16 + 0.80*lam*lam);
+      // N3C · las caras toman el color del campo, para que el cristal sea del
+      // mismo mundo que las cuatro capas líquidas y no un objeto de otra etapa.
+      core = mix(uDeep, gField * 1.6, 0.55*uEnv)*(0.75 + 0.35*fh) + uLiq*(0.16 + 0.80*lam*lam);
       core += vec3(0.94,0.98,1.0) * sp * 0.85;
       float cfres = pow(1.0 - max(dot(cn, -rdi), 0.0), 2.4);
       core += uAcc * cfres * 0.75;
@@ -569,8 +756,8 @@ void main(){
   // ventana, horizonte y pared), así que la ganancia baja en la misma
   // proporción. Con la vieja, el vidrio vacío salía más brillante que el
   // líquido y el orbe se leía al revés: el aire pesaba más que el agua.
-  empty = empty * mix(1.30, 0.78, uDay)
-        + mix(uAcc, vec3(1.0), 0.42) * 0.070 * pow(1.0 - ndv, 1.6);
+  empty = empty * mix(0.72, 0.62, uDay)
+        + mix(uAcc, vec3(1.0), 0.42) * 0.050 * pow(1.0 - ndv, 1.6);
 
   // El borde es el ACENTO de la capa, y nada más. Intenté sumarle aquí la
   // dispersión otra vez y salió mal, medido: el término era 'sR - sB', o sea la
@@ -579,14 +766,21 @@ void main(){
   // así que teñía media esfera de rojo — [149,89,100] donde todo lo demás era
   // azul. La dispersión ya está donde corresponde: en 'empty', un canal por
   // índice. Sumarla dos veces no es más física, es un error de color.
-  vec3 rim = uAcc * (fres*0.50 + rimw*0.85);
+  vec3 rim = uAcc * (fres*0.26 + rimw*0.46) * mix(1.0, 1.75, uDay);
 
-  vec3 col = body*has + empty*(1.0 - has*0.74) + core*coreA + rim + reflection;
+  vec3 col = body*has + empty*(1.0 - has*0.985) + core*coreA + rim
+           + reflection * (1.0 - has*0.62);
   float alpha = clamp(has*(0.42 + 0.56*clamp(thick*1.25,0.0,1.0)) + coreA*0.90
-                      + (1.0 - has)*mix(0.23, 0.12, uDay)
+                      + (1.0 - has)*mix(0.23, 0.30, uDay)
                       + fres*0.30 + rimw*0.62
                       + clamp(schlick*1.15, 0.0, 0.85) + 0.02, 0.0, 1.0);
-  if(uDay > 0.5){ col *= 0.88; alpha = clamp(alpha*1.20, 0.0, 1.0); }
+  // EN CLARO EL VIDRIO SE APAGA, y no es un gusto: el lienzo va PREMULTIPLICADO
+  // y con mezcla aditiva, así que sobre una página blanca el aire del orbe
+  // sumaba luz hasta saturar — un orbe vacío se leía como una bola blanca y uno
+  // lleno perdía el nivel. Medido sobre la comparación de G6. Bajar el color y
+  // subir la opacidad es lo mismo que decir: en claro el vidrio TAPA la página
+  // en vez de sumarse a ella.
+  if(uDay > 0.5){ col *= 0.66; alpha = clamp(alpha*1.34, 0.0, 1.0); }
 
   // ── PROFUNDIDAD ENTRE ORBES (F7) ───────────────────────────────────────────
   //
@@ -619,6 +813,26 @@ void main(){
 type Gl = WebGLRenderingContext | WebGL2RenderingContext;
 type RenderTier = 1 | 2 | 3;
 
+/**
+ * N3C · EL RELOJ DEL PORTE FIEL, tal como lo lleva su `useFrame`:
+ *
+ *     uTime      += delta * 0.5
+ *     speed       = 0.1 + (1 - (out - 1)^2) * 0.9
+ *     uAnimation += delta * speed
+ *
+ * Su suavizado exponencial de la velocidad se resuelve en el punto fijo: la
+ * comparación se mira en régimen, no en el primer segundo.
+ */
+export function orbReferenceClock(time: number, outputVolume: number): {
+  time: number;
+  animation: number;
+} {
+  const out = Math.min(1, Math.max(0, outputVolume));
+  const speed = 0.1 + (1 - Math.pow(out - 1, 2)) * 0.9;
+  const scaled = time * 0.5;
+  return { time: scaled, animation: scaled * speed };
+}
+
 function compileShader(gl: Gl, type: number, source: string): WebGLShader | null {
   const shader = gl.createShader(type);
   if (!shader) return null;
@@ -650,6 +864,9 @@ interface ProgramBundle {
     bob: WebGLUniformLocation | null;
     depth: WebGLUniformLocation | null;
     env: WebGLUniformLocation | null;
+    field: WebGLUniformLocation | null;
+    perlin: WebGLUniformLocation | null;
+    offsets: WebGLUniformLocation | null;
     tilt: WebGLUniformLocation | null;
     liquid: WebGLUniformLocation | null;
     deep: WebGLUniformLocation | null;
@@ -664,7 +881,10 @@ function linkTierProgram(
   vertex: WebGLShader,
   tier: RenderTier,
 ): ProgramBundle | null {
-  const source = FRAGMENT_SOURCE.replace("__KIPU_TIER__", `${tier}.0`);
+  const source = FRAGMENT_SOURCE
+    .replace("__KIPU_TIER__", `${tier}.0`)
+    .split("__KIPU_OVALS__")
+    .join(`${ORB_FIELD_OVALS}`);
   const fragment = compileShader(gl, gl.FRAGMENT_SHADER, source);
   if (!fragment) return null;
   const program = gl.createProgram();
@@ -701,6 +921,9 @@ function linkTierProgram(
       bob: uniform("uBob"),
       depth: uniform("uDepth"),
       env: uniform("uEnv"),
+      field: uniform("uField"),
+      perlin: uniform("uPerlin"),
+      offsets: uniform("uOffsets[0]"),
       tilt: uniform("uTilt"),
       liquid: uniform("uLiq"),
       deep: uniform("uDeep"),
@@ -738,7 +961,69 @@ function acquireContext(canvas: HTMLCanvasElement): { gl: Gl; version: 1 | 2 } |
   return null;
 }
 
-export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null {
+/**
+ * N3C · LA TELA, SUBIDA UNA VEZ.
+ *
+ * `LUMINANCE` de un byte porque el shader lee un solo canal, `REPEAT` porque el
+ * flujo la desplaza sin techo, y 256 —potencia de dos— porque WebGL1 sólo
+ * repite texturas POT. Y `LINEAR` sin mipmaps: con mipmaps, las lecturas de las
+ * franjas angulares saltarían de nivel y el campo temblaría.
+ */
+function uploadNoise(gl: Gl): WebGLTexture | null {
+  const texture = gl.createTexture();
+  if (!texture) return null;
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.LUMINANCE,
+    ORB_NOISE_SIZE,
+    ORB_NOISE_SIZE,
+    0,
+    gl.LUMINANCE,
+    gl.UNSIGNED_BYTE,
+    orbNoiseTexture(ORB_NOISE_SIZE, ORB_NOISE_SEED),
+  );
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  return texture;
+}
+
+interface ReferenceBundle {
+  program: WebGLProgram;
+  canvas: WebGLUniformLocation | null;
+  center: WebGLUniformLocation | null;
+  span: WebGLUniformLocation | null;
+  time: WebGLUniformLocation | null;
+  animation: WebGLUniformLocation | null;
+  inverted: WebGLUniformLocation | null;
+  offsets: WebGLUniformLocation | null;
+  color1: WebGLUniformLocation | null;
+  color2: WebGLUniformLocation | null;
+  input: WebGLUniformLocation | null;
+  output: WebGLUniformLocation | null;
+  opacity: WebGLUniformLocation | null;
+  perlin: WebGLUniformLocation | null;
+}
+
+export interface OrbRendererOptions {
+  /**
+   * N3C · SÓLO PARA LA MESA DE LUZ. La fuente GLSL del porte fiel del orbe de
+   * ElevenLabs. Se INYECTA en vez de importarse para que el shader de la
+   * comparación no viaje en el paquete del santuario: producción llama a
+   * `createOrbRenderer` sin opciones y el programa no llega a existir.
+   */
+  referenceFragmentSource?: string;
+}
+
+export function createOrbRenderer(
+  canvas: HTMLCanvasElement,
+  options: OrbRendererOptions = {},
+): OrbRenderer | null {
   const acquired = acquireContext(canvas);
   if (!acquired) return null;
   const { gl, version } = acquired;
@@ -758,6 +1043,41 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
     }
     programs.push(bundle);
   }
+  let reference: ReferenceBundle | null = null;
+  if (options.referenceFragmentSource) {
+    const fragment = compileShader(gl, gl.FRAGMENT_SHADER, options.referenceFragmentSource);
+    const program = fragment ? gl.createProgram() : null;
+    if (fragment && program) {
+      gl.attachShader(program, vertex);
+      gl.attachShader(program, fragment);
+      gl.bindAttribLocation(program, 0, "aQuad");
+      gl.linkProgram(program);
+      gl.deleteShader(fragment);
+      if (gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        const at = (name: string) => gl.getUniformLocation(program, name);
+        reference = {
+          program,
+          canvas: at("uCanvas"),
+          center: at("uCenter"),
+          span: at("uSpan"),
+          time: at("uTime"),
+          animation: at("uAnimation"),
+          inverted: at("uInverted"),
+          offsets: at("uOffsets[0]"),
+          color1: at("uColor1"),
+          color2: at("uColor2"),
+          input: at("uInputVolume"),
+          output: at("uOutputVolume"),
+          opacity: at("uOpacity"),
+          perlin: at("uPerlin"),
+        };
+      } else {
+        gl.deleteProgram(program);
+      }
+    } else if (fragment) {
+      gl.deleteShader(fragment);
+    }
+  }
   gl.deleteShader(vertex);
 
   const buffer = gl.createBuffer();
@@ -775,6 +1095,25 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+  const noise = uploadNoise(gl);
+  if (!noise) {
+    gl.deleteBuffer(buffer);
+    for (const compiled of programs) gl.deleteProgram(compiled.program);
+    if (reference) gl.deleteProgram(reference.program);
+    return null;
+  }
+  const offsets = orbSeededAngles(ORB_NOISE_SEED, ORB_FIELD_OVALS);
+  for (const bundle of programs) {
+    gl.useProgram(bundle.program);
+    gl.uniform1i(bundle.locations.perlin, 0);
+    gl.uniform1fv(bundle.locations.offsets, offsets);
+  }
+  if (reference) {
+    gl.useProgram(reference.program);
+    gl.uniform1i(reference.perlin, 0);
+    gl.uniform1fv(reference.offsets, offsets);
+  }
 
   let cssWidth = 1;
   let cssHeight = 1;
@@ -799,19 +1138,43 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
       const bundle = programs[frame.tier - 1];
       if (!bundle) return;
       const { locations } = bundle;
-      gl.useProgram(bundle.program);
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
-      gl.uniform2f(locations.canvas, cssWidth, cssHeight);
-      gl.uniform1f(locations.time, frame.time);
-      gl.uniform1f(locations.day, frame.day);
       // Atrás primero: las vecinas quedan DEBAJO de la activa, así que al
       // solaparse durante el gesto la que mirás nunca queda tapada.
       const ordered = [...frame.orbs]
         .filter((orb) => orb.presence > 0.002 && orb.radius > 0.5)
         .sort((a, b) => b.presence - a.presence);
+      // El porte fiel de ellos: mismo lienzo, mismo contexto, mismo reloj. Si
+      // nadie inyectó su fuente, estas llamadas no dibujan nada — no hay una
+      // segunda versión silenciosa de nuestro orbe.
+      if (reference) {
+        gl.useProgram(reference.program);
+        gl.uniform2f(reference.canvas, cssWidth, cssHeight);
+        gl.uniform1f(reference.opacity, 1);
+        gl.uniform1f(reference.inverted, frame.day > 0.5 ? 0 : 1);
+        for (let i = ordered.length - 1; i >= 0; i -= 1) {
+          const orb = ordered[i]!;
+          if (!orb.reference) continue;
+          const clock = orbReferenceClock(frame.time, orb.energy);
+          gl.uniform2f(reference.center, orb.centerX, orb.centerY);
+          gl.uniform1f(reference.span, orb.radius * ORB_SPAN);
+          gl.uniform1f(reference.time, clock.time);
+          gl.uniform1f(reference.animation, clock.animation);
+          gl.uniform1f(reference.input, orb.voice);
+          gl.uniform1f(reference.output, orb.energy);
+          gl.uniform3fv(reference.color1, orb.deep);
+          gl.uniform3fv(reference.color2, orb.liquid);
+          gl.drawArrays(gl.TRIANGLES, 0, 6);
+        }
+      }
+      gl.useProgram(bundle.program);
+      gl.uniform2f(locations.canvas, cssWidth, cssHeight);
+      gl.uniform1f(locations.time, frame.time);
+      gl.uniform1f(locations.day, frame.day);
       for (let i = ordered.length - 1; i >= 0; i -= 1) {
         const orb = ordered[i]!;
+        if (orb.reference) continue;
         gl.uniform2f(locations.center, orb.centerX, orb.centerY);
         gl.uniform1f(locations.span, orb.radius * ORB_SPAN);
         gl.uniform1f(locations.level, orb.waterline);
@@ -824,6 +1187,7 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
         gl.uniform1f(locations.bob, orb.bob);
         gl.uniform1f(locations.depth, orb.depth);
         gl.uniform1f(locations.env, orb.env);
+        gl.uniform1f(locations.field, orb.field);
         gl.uniform2f(locations.tilt, orb.tiltX, orb.tiltZ);
         gl.uniform3fv(locations.liquid, orb.liquid);
         gl.uniform3fv(locations.deep, orb.deep);
@@ -835,7 +1199,9 @@ export function createOrbRenderer(canvas: HTMLCanvasElement): OrbRenderer | null
       if (disposed) return;
       disposed = true;
       gl.deleteBuffer(buffer);
+      gl.deleteTexture(noise);
       for (const compiled of programs) gl.deleteProgram(compiled.program);
+      if (reference) gl.deleteProgram(reference.program);
     },
   };
 }

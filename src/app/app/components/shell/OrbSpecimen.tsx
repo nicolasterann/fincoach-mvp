@@ -7,6 +7,7 @@ import {
   type OrbRenderer,
   type OrbRgb,
 } from "./orb-shader";
+import { ORB_REFERENCE_FRAGMENT_SOURCE } from "./orb-reference-shader";
 import {
   ORB_KINDS,
   orbFieldPlacements,
@@ -20,6 +21,8 @@ import {
 import {
   advanceOrbWater,
   createOrbWaterState,
+  orbFieldDrive,
+  orbFieldSpeed,
   orbWaveEnergy,
   type OrbWaterState,
 } from "./orb-water-sim";
@@ -51,6 +54,28 @@ let sharedCanvas: HTMLCanvasElement | null = null;
 let sharedRenderer: OrbRenderer | null = null;
 let sharedFailed = false;
 
+// N3C · Y EL PORTE FIEL DEL ORBE DE ELLOS ENTRA POR ACÁ.
+//
+// Se INYECTA en el renderer en vez de importarse desde `orb-shader.ts`, y eso
+// no es una preferencia de estilo: `orb-shader.ts` viaja en el paquete del
+// santuario y `OrbSpecimen` no. Con la inyección, el shader de la comparación
+// existe sólo en las páginas de dev. En producción `createOrbRenderer` se llama
+// sin opciones y el programa no llega a compilarse.
+function ensureRenderer(): OrbRenderer | null {
+  if (sharedFailed) return null;
+  if (!sharedCanvas) {
+    sharedCanvas = document.createElement("canvas");
+    sharedRenderer = createOrbRenderer(sharedCanvas, {
+      referenceFragmentSource: ORB_REFERENCE_FRAGMENT_SOURCE,
+    });
+    if (!sharedRenderer) {
+      sharedFailed = true;
+      return null;
+    }
+  }
+  return sharedRenderer;
+}
+
 function paint(
   target: HTMLCanvasElement,
   width: number,
@@ -59,17 +84,9 @@ function paint(
   day: number,
   time: number,
 ): 1 | 2 | null {
-  if (sharedFailed) return null;
-  if (!sharedCanvas) {
-    sharedCanvas = document.createElement("canvas");
-    sharedRenderer = createOrbRenderer(sharedCanvas);
-    if (!sharedRenderer) {
-      sharedFailed = true;
-      return null;
-    }
-  }
-  const renderer = sharedRenderer;
-  if (!renderer) return null;
+  const renderer = ensureRenderer();
+  if (!renderer || !sharedCanvas) return null;
+  const source = sharedCanvas;
   const info = renderer.resize(width, height, window.devicePixelRatio || 1);
   renderer.draw({ time, day, tier: 3, orbs });
   target.width = info.width;
@@ -77,8 +94,33 @@ function paint(
   const ctx = target.getContext("2d");
   if (!ctx) return null;
   ctx.clearRect(0, 0, target.width, target.height);
-  ctx.drawImage(sharedCanvas, 0, 0);
+  ctx.drawImage(source, 0, 0);
   return info.glVersion;
+}
+
+/**
+ * N3C · LA PROBETA TIENE QUE SEGUIR AL TEMA.
+ *
+ * Estas probetas pintan UN cuadro y se quedan quietas —es lo que las hace
+ * medibles—, así que un cambio de tema no las tocaba: la página quedaba con
+ * orbes del tema anterior y la comparación pasaba a mentir sin avisar. Lo
+ * descubrí midiendo: el porte fiel daba el MISMO histograma en claro y en
+ * oscuro, que es imposible si `uInverted` llega.
+ *
+ * Es el mismo `MutationObserver` sobre `data-*` del documento que usa su
+ * componente para lo mismo.
+ */
+function useThemeTick(): number {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const observer = new MutationObserver(() => setTick((value) => value + 1));
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => observer.disconnect();
+  }, []);
+  return tick;
 }
 
 function readCssColor(element: HTMLElement, token: string): OrbRgb {
@@ -111,6 +153,7 @@ export function OrbSpecimen({
   wave = 0,
   bob = 0,
   env = 1,
+  voice = 0,
   label,
 }: {
   kind: OrbKind;
@@ -124,12 +167,15 @@ export function OrbSpecimen({
   /** N3B · la energía del chapoteo, para fotografiar el agua quieta y la agitada. */
   wave?: number;
   bob?: number;
-  /** N3B · 0 apaga el cuarto. Es el instrumento de F3. */
+  /** N3C · 0 apaga el campo de color. Es el instrumento del antes/después. */
   env?: number;
+  /** N3C · el volumen de M5, para fotografiar la onda de la voz sobre el agua. */
+  voice?: number;
   label?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  const themeTick = useThemeTick();
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -147,7 +193,7 @@ export function OrbSpecimen({
           presence: 1,
           waterline: orbWaterline(level),
           energy: 0,
-          voice: 0,
+          voice,
           tiltX: tilt,
           tiltZ: 0,
           spin: 0,
@@ -155,6 +201,9 @@ export function OrbSpecimen({
           bob,
           depth: 0,
           env,
+          // Un cuadro fijo, pero con el MISMO reloj que el santuario: la
+          // velocidad sale de `orbFieldSpeed`, no de un número escrito acá.
+          field: time * orbFieldSpeed(orbFieldDrive(voice, wave)),
           material: orbMaterialCode({ kind, matter, fill }),
           liquid: readCssColor(canvas, `--kipu-liquid-${kind}`),
           deep: readCssColor(canvas, `--kipu-deep-${kind}`),
@@ -170,7 +219,7 @@ export function OrbSpecimen({
     }
     canvas.dataset.glVersion = String(glVersion);
     canvas.dataset.drawn = "1";
-  }, [kind, level, matter, fill, size, time, tilt, wave, bob, env]);
+  }, [kind, level, matter, fill, size, time, tilt, wave, bob, env, voice, themeTick]);
 
   return (
     <figure className="kipu-orb-specimen" data-orb-kind={kind}>
@@ -210,6 +259,7 @@ export function OrbFieldSpecimen({
   label?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const themeTick = useThemeTick();
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -243,6 +293,7 @@ export function OrbFieldSpecimen({
           bob: 0,
           depth: slot.depth,
           env: 1,
+          field: 0,
           material: orbMaterialCode({ kind, matter, fill: "nivel" }),
           liquid: readCssColor(canvas, `--kipu-liquid-${kind}`),
           deep: readCssColor(canvas, `--kipu-deep-${kind}`),
@@ -256,7 +307,7 @@ export function OrbFieldSpecimen({
     canvas.dataset.drawn = "1";
     canvas.dataset.presences = placements.map((p) => p.presence.toFixed(3)).join(",");
     canvas.dataset.depths = placements.map((p) => p.depth.toFixed(3)).join(",");
-  }, [position, levels, width, height]);
+  }, [position, levels, width, height, themeTick]);
 
   return (
     <figure className="kipu-orb-specimen" data-field-position={position}>
@@ -356,5 +407,127 @@ export function OrbSloshStrip({
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * N3C · LA COMPARACIÓN QUE DECIDE LA ETAPA (G6).
+ *
+ * Su orbe y el nuestro, EN EL MISMO LIENZO: el mismo contexto WebGL, el mismo
+ * reloj, el mismo diámetro en píxeles y las mismas dos parejas de color. Es la
+ * única forma honesta de responder la pregunta de la etapa —«¿igualamos el
+ * look?»— porque cualquier diferencia de tamaño, de exposición o de momento
+ * decidiría la respuesta antes que el ojo.
+ *
+ * `variant: "referencia"` dibuja con el porte fiel de su shader; `"kipu"`, con
+ * el nuestro. La única asimetría es la que la etapa existe para mostrar: el
+ * suyo es sólido y el nuestro tiene nivel y aire.
+ */
+export function OrbCompareSpecimen({
+  slots,
+  size = 200,
+  gap = 18,
+  animate = true,
+  time = 6.5,
+}: {
+  slots: readonly {
+    variant: "referencia" | "kipu";
+    kind: OrbKind;
+    level?: number | null;
+    fill?: OrbFill;
+    voice?: number;
+    energy?: number;
+  }[];
+  size?: number;
+  gap?: number;
+  animate?: boolean;
+  time?: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const themeTick = useThemeTick();
+  // El bucle de animación tiene que leer las viñetas VIGENTES sin volver a
+  // suscribirse en cada render. La ref se sincroniza en un efecto y no durante
+  // el render: tocarla mientras React renderiza es leer estado a mitad de una
+  // pasada que puede reintentarse.
+  const slotsRef = useRef(slots);
+  useEffect(() => {
+    slotsRef.current = slots;
+  }, [slots]);
+
+  const width = slots.length * size + Math.max(0, slots.length - 1) * gap;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    let raf = 0;
+    let stopped = false;
+    const startedAt = performance.now();
+
+    const frame = (clock: number) => {
+      const theme = document.documentElement.dataset.theme ?? "dark";
+      const now = animate ? time + (clock - startedAt) / 1_000 : time;
+      const glVersion = paint(
+        canvas,
+        width,
+        size,
+        slotsRef.current.map((slot, index) => {
+          const voice = slot.voice ?? 0;
+          const energy = slot.energy ?? 0.3;
+          return {
+            centerX: index * (size + gap) + size / 2,
+            centerY: size / 2,
+            radius: size / 2 / 1.62,
+            presence: 1,
+            waterline: orbWaterline(slot.level ?? null),
+            energy,
+            voice,
+            tiltX: 0,
+            tiltZ: 0,
+            spin: 0,
+            wave: 0,
+            bob: 0,
+            depth: 0,
+            env: 1,
+            field: now * orbFieldSpeed(orbFieldDrive(voice, 0)),
+            material: orbMaterialCode({
+              kind: slot.kind,
+              matter: orbMatter(slot.kind),
+              fill: slot.fill ?? "nivel",
+            }),
+            liquid: readCssColor(canvas, `--kipu-liquid-${slot.kind}`),
+            deep: readCssColor(canvas, `--kipu-deep-${slot.kind}`),
+            accent: readCssColor(canvas, `--layer-${slot.kind}`),
+            reference: slot.variant === "referencia",
+          };
+        }),
+        theme === "light" ? 1 : 0,
+        now,
+      );
+      if (glVersion == null) {
+        setFailure("sin contexto WebGL");
+        return;
+      }
+      canvas.dataset.glVersion = String(glVersion);
+      canvas.dataset.drawn = "1";
+      if (animate && !stopped) raf = requestAnimationFrame(frame);
+    };
+
+    frame(startedAt);
+    return () => {
+      stopped = true;
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [width, size, gap, animate, time, themeTick]);
+
+  return (
+    <figure className="kipu-orb-compare">
+      <canvas
+        ref={canvasRef}
+        data-orb-compare={slots.map((slot) => slot.variant).join("+")}
+        style={{ width, height: size, maxWidth: "100%" }}
+      />
+      {failure && <figcaption>{failure}</figcaption>}
+    </figure>
   );
 }

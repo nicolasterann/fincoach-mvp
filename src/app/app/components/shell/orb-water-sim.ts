@@ -232,3 +232,40 @@ export function orbWaterAtRest(state: OrbWaterState, target: number): boolean {
     Math.abs(state.waterline - target) < 0.001
   );
 }
+
+// ── N3C · EL RELOJ DEL CAMPO DE COLOR ──────────────────────────────────────
+//
+// El campo de ellos no corre con el reloj de pared: corre con su propio reloj,
+// que ACELERA cuando hay voz. Es la mitad de por qué el orbe parece escuchar —
+// no cambia de color, cambia de ritmo.
+//
+// Vive acá, puro, por la misma razón que el resto de este archivo: lo que sólo
+// existe dentro de un `requestAnimationFrame` no se puede ejecutar, y entonces
+// «se mueve más rápido cuando hablás» es una afirmación de fe. Acá el gate lo
+// integra y le exige que un minuto hablando avance más que un minuto callado.
+
+/** La velocidad del campo, en unidades de reloj por segundo. */
+export function orbFieldSpeed(drive: number): number {
+  const bounded = Math.min(1, Math.max(0, Number.isFinite(drive) ? drive : 0));
+  // La misma curva de su componente: `0.1 + (1 - (v - 1)^2) * 0.9`. Sin voz el
+  // campo no se congela —se mueve despacio—, que es lo que hace que el orbe
+  // esté vivo en reposo.
+  return 0.1 + (1 - Math.pow(bounded - 1, 2)) * 0.9;
+}
+
+/** Un paso del reloj del campo. Monótono: el campo nunca retrocede. */
+export function advanceOrbField(current: number, drive: number, dtSeconds: number): number {
+  const dt = Math.min(1 / 30, Math.max(0, Number.isFinite(dtSeconds) ? dtSeconds : 1 / 60));
+  const base = Number.isFinite(current) ? current : 0;
+  return base + dt * orbFieldSpeed(drive);
+}
+
+/**
+ * CUÁNTO EMPUJA EL CAMPO: la voz manda y el chapoteo acompaña. Es el mismo
+ * número que el shader arma para estirar los óvalos, escrito una sola vez.
+ */
+export function orbFieldDrive(voice: number, wave: number): number {
+  const v = Number.isFinite(voice) ? voice : 0;
+  const w = Number.isFinite(wave) ? wave : 0;
+  return Math.min(1, Math.max(0, v * 0.9 + w * 0.25));
+}

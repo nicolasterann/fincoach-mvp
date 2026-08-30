@@ -80,12 +80,24 @@ import {
   wealthTargetFrom,
 } from "@/app/app/components/shell/shell-orb-contract";
 import {
+  advanceOrbField,
   advanceOrbWater,
   BOB_LIMIT,
   createOrbWaterState,
+  orbFieldDrive,
+  orbFieldSpeed,
   orbWaveEnergy,
   TILT_LIMIT,
 } from "@/app/app/components/shell/orb-water-sim";
+import {
+  ORB_FIELD_OVALS,
+  ORB_NOISE_SEED,
+  ORB_NOISE_SIZE,
+  orbNoiseAt,
+  orbNoiseTexture,
+  orbSeededAngles,
+} from "@/app/app/components/shell/orb-noise-texture";
+import { orbReferenceClock } from "@/app/app/components/shell/orb-shader";
 import {
   KIPU_STATE_KINDS,
   KIPU_STATE_SHAPES,
@@ -28859,7 +28871,15 @@ assert(
       // se conformaba con eso. Un pin que se conforma con cualquier sitio no
       // protege ninguno — y son los DOS dibujantes de la probeta los que
       // tienen que pedir la misma decisión, que es donde se perdió la gota.
-      (n1Code(n3Specimen).match(/orbMaterialCode\(\{/gu) ?? []).length === 2 &&
+      //
+      // N3C · RE-ANCLADO DE 2 A 3, y declarado. La probeta ganó un tercer
+      // dibujante —`OrbCompareSpecimen`, el que pone su orbe al lado del
+      // nuestro— y también pide la materia a la misma función pura. El pin
+      // sube con él: la regla no se relaja, se extiende al dibujante nuevo. Si
+      // mañana aparece un cuarto, este número tiene que volver a subir, que es
+      // exactamente lo que se quiere — un dibujante que no pide la decisión no
+      // pasa inadvertido.
+      (n1Code(n3Specimen).match(/orbMaterialCode\(\{/gu) ?? []).length === 3 &&
       (n3LiveCode.match(/orbMaterialCode\(\{/gu) ?? []).length === 1 &&
       !/const MATERIAL_BY_KIND/u.test(n3LiveCode) &&
       !/const MATERIAL_BY_KIND/u.test(n1Code(n3Specimen)) &&
@@ -29280,6 +29300,268 @@ assert(
         "onPointerDown={deviceTilt.armFromUserGesture}",
       ),
       olaSinGiroscopio: /const float WAVE_AMP = 0\.0[0-9]+;/u.test(n3ShaderCode),
+    }),
+  );
+
+  // ── Bloque N3C · El orbe de ElevenLabs, con nuestro líquido ────────────────
+  //
+  // Seis aserciones. Lo que se ve —si el nuestro se parece al suyo— lo juzga el
+  // founder en su teléfono y lo rinde la comparación de `/dev/vidrio?hoja=
+  // comparacion`: este gate no compone cuadros. Lo que SÍ se puede sujetar acá
+  // es todo lo que la etapa podía perder en silencio: que la tela se genere y no
+  // se pida, que el aviso de licencia siga en su sitio, que la onda de la voz
+  // esté en la GEOMETRÍA del agua y no pintada encima, que el reloj del campo
+  // sea una función pura con su cable, que el cuarto se haya ido de verdad, y
+  // que el shader de la comparación no viaje en el santuario.
+
+  const n3cNoise = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/orb-noise-texture.ts`,
+    "utf8",
+  );
+  const n3cReference = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/orb-reference-shader.ts`,
+    "utf8",
+  );
+  const n3cSim = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/orb-water-sim.ts`,
+    "utf8",
+  );
+  const n3cSpecimenCode = n1Code(n3Specimen);
+  // Sobre el CÓDIGO: la cabecera del porte fiel LISTA las tres traducciones de
+  // dialecto que hizo (`texture(` → `texture2D(`, el constructor de arreglos,
+  // el resto entero), así que un pin que exija su ausencia sobre el archivo
+  // entero se tropieza con la explicación de por qué no están. Tercera vez en
+  // esta etapa que pasa lo mismo, y siempre por el mismo motivo: el comentario
+  // que explica lo que se quitó contiene lo que se quitó.
+  const n3cReferenceCode = n1Code(n3cReference);
+
+  // N3C-1 · LA TELA SE FABRICA. NADIE LE PIDE UN ARCHIVO A UN TERCERO.
+  //
+  // Su componente descarga la textura de ruido de
+  // `storage.googleapis.com/eleven-public-cdn`. Tal cual, el santuario haría una
+  // petición a un dominio ajeno en CADA carga —con service worker y con página
+  // sin conexión de por medio—, y es lo más fácil de dejar pasar de toda la
+  // etapa: funciona perfecto en el escritorio del que la escribe.
+  const n3cTex = orbNoiseTexture();
+  const n3cTexAgain = orbNoiseTexture();
+  const n3cValues = Array.from(n3cTex, (byte) => byte / 255);
+  assert(
+    "N3C-1 · la tela del campo se GENERA, es determinista y cierra sobre sí misma; nadie descarga nada",
+    // ── determinista: dos llamadas, la misma tela ──
+    n3cTex.length === ORB_NOISE_SIZE * ORB_NOISE_SIZE &&
+      n3cTexAgain.length === n3cTex.length &&
+      n3cTex.every((byte, index) => byte === n3cTexAgain[index]) &&
+      // ── PERIÓDICA: el shader la recorre sin techo y con envoltura REPEAT, así
+      // que si la red no cerrara se vería una costura dando vueltas al orbe ──
+      [0, 37.5, 128, 200.25].every(
+        (x) =>
+          Math.abs(orbNoiseAt(x, 11) - orbNoiseAt(x + ORB_NOISE_SIZE, 11)) < 1e-9 &&
+          Math.abs(orbNoiseAt(11, x) - orbNoiseAt(11, x + ORB_NOISE_SIZE)) < 1e-9,
+      ) &&
+      // ── y con RECORRIDO de verdad: una tela plana deja los siete óvalos del
+      // mismo tamaño y el campo deja de tener variedad ──
+      Math.min(...n3cValues) < 0.3 &&
+      Math.max(...n3cValues) > 0.7 &&
+      Math.abs(n3cValues.reduce((a, b) => a + b, 0) / n3cValues.length - 0.5) < 0.02 &&
+      n3cValues.every((value) => Number.isFinite(value)) &&
+      // ── CERO DOMINIOS AJENOS. Ni el CDN de ellos ni ninguna descarga: los
+      // tres archivos que llevan su técnica no piden un solo byte a la red ──
+      // Sobre el CÓDIGO y no sobre el archivo: los comentarios citan la URL
+      // del CDN de ellos justamente para explicar por qué no se usa, y un pin
+      // que se tropieza con su propia explicación no protege nada.
+      ![n3ShaderCode, n1Code(n3cNoise), n1Code(n3cReference), n3Specimen].some((file) =>
+        /storage\.googleapis\.com|eleven-public-cdn|useTexture\(|fetch\(|new Image\(/u.test(file),
+      ) &&
+      // ── y el CABLE: el renderer la fabrica y la sube de verdad ──
+      n3ShaderCode.includes("orbNoiseTexture(ORB_NOISE_SIZE, ORB_NOISE_SEED)") &&
+      n3ShaderCode.includes("gl.texImage2D(") &&
+      n3ShaderCode.includes("gl.TEXTURE_WRAP_S, gl.REPEAT") &&
+      n3ShaderCode.includes("uniform sampler2D uPerlin;") &&
+      n3ShaderCode.includes("texture2D(uPerlin,"),
+    JSON.stringify({
+      lado: ORB_NOISE_SIZE,
+      min: +Math.min(...n3cValues).toFixed(3),
+      max: +Math.max(...n3cValues).toFixed(3),
+      media: +(n3cValues.reduce((a, b) => a + b, 0) / n3cValues.length).toFixed(3),
+    }),
+  );
+
+  // N3C-2 · LA LICENCIA NO ES UN DETALLE OPCIONAL.
+  //
+  // Su orbe es MIT, y la MIT exige conservar el aviso de copyright en cualquier
+  // copia o porción sustancial. Los tres archivos que llevan código suyo —el
+  // porte fiel, la adaptación del campo y el porte de su generador de números
+  // al azar— lo llevan en la cabecera. Un pin sobre esto porque es exactamente
+  // la clase de línea que un refactor futuro borra sin pensarlo.
+  assert(
+    "N3C-2 · el aviso de copyright MIT de ElevenLabs está en los tres archivos que portan o adaptan su código",
+    [n3Shader, n3cNoise, n3cReference].every(
+      (file) =>
+        file.includes("Copyright (c) 2025 ElevenLabs") &&
+        file.includes("Permission is hereby granted") &&
+        file.includes("THE SOFTWARE IS PROVIDED \"AS IS\"") &&
+        file.includes("elevenlabs/ui"),
+    ),
+    JSON.stringify({
+      shader: n3Shader.includes("Copyright (c) 2025 ElevenLabs"),
+      tela: n3cNoise.includes("Copyright (c) 2025 ElevenLabs"),
+      porteFiel: n3cReference.includes("Copyright (c) 2025 ElevenLabs"),
+    }),
+  );
+
+  // N3C-3 · LA ONDA DE LA VOZ VIVE EN LA SUPERFICIE DEL AGUA.
+  //
+  // Es lo que más le gustó al founder de la referencia, y la trampa es vieja:
+  // N3B ya pagó una vez por un 'sheen' —un brillo dibujado en el borde— que no
+  // era una superficie. Un relieve que no cambia la NORMAL no cambia cómo entra
+  // la luz, así que no se refleja distinto: es un dibujo, no una onda. Por eso
+  // el pin exige el término en las DOS funciones, con las mismas constantes.
+  const n3cVoiceHeight = /w \+= WAVE_AMP \* VOICE_AMP \* uVoice/u.test(n3ShaderCode);
+  const n3cVoiceNormal = /g \+= \(p\.xz \/ rho\) \* WAVE_AMP \* VOICE_AMP \* uVoice \* VOICE_FREQ/u
+    .test(n3ShaderCode);
+  assert(
+    "N3C-3 · la onda de la voz está en la ALTURA y en la NORMAL del agua, y sin voz vale cero exacto",
+    n3cVoiceHeight &&
+      n3cVoiceNormal &&
+      // las tres constantes existen y son las mismas para las dos mitades
+      /const float VOICE_AMP = [0-9.]+;/u.test(n3ShaderCode) &&
+      /const float VOICE_FREQ = [0-9.]+;/u.test(n3ShaderCode) &&
+      /const float VOICE_SPEED = [0-9.]+;/u.test(n3ShaderCode) &&
+      // ── SIN VOZ, CERO EXACTO: el término entero está multiplicado por uVoice,
+      // así que un orbe callado vuelve a tener la superficie espejo de N3B ──
+      !/VOICE_AMP \* \(0\.[0-9]+ \+/u.test(n3ShaderCode) &&
+      // el menisco se vuelve irregular con la voz, y con voz 0 el factor es 1
+      n3ShaderCode.includes("ring *= 1.0 + uVoice * ringNoise * 2.2;") &&
+      // ── y el VOLUMEN es el de M5, no uno inventado: lo que llega al lienzo
+      // sale del envolvente que alimenta el medidor real ──
+      n3LiveCode.includes("voice: isActive ? animatedVoice : 0,") &&
+      n3LiveCode.includes("advanceVoiceEnvelope(") &&
+      n3LiveCode.includes("voiceTarget(voice.state, voice.level)") &&
+      // el nivel de escucha sale del RMS del analizador, no de un reloj
+      voiceTarget("listening", 0.8) > voiceTarget("listening", 0.2) &&
+      voiceTarget("calm") < voiceTarget("listening", 0.5),
+    JSON.stringify({ altura: n3cVoiceHeight, normal: n3cVoiceNormal }),
+  );
+
+  // N3C-4 · EL RELOJ DEL CAMPO ES PURO, ACELERA CON LA VOZ, Y ESTÁ CABLEADO.
+  //
+  // Séptima aparición de la familia de agujeros del bloque: lo que sólo existe
+  // dentro de un `requestAnimationFrame` no se puede ejecutar, y entonces «se
+  // mueve más rápido cuando hablás» es una afirmación de fe. Acá el gate lo
+  // INTEGRA un minuto y le exige la diferencia.
+  const n3cIntegra = (drive: number) => {
+    let clock = 0;
+    for (let step = 0; step < 3_600; step += 1) clock = advanceOrbField(clock, drive, 1 / 60);
+    return clock;
+  };
+  const n3cCallado = n3cIntegra(0);
+  const n3cHablando = n3cIntegra(1);
+  assert(
+    "N3C-4 · el reloj del campo avanza siempre y avanza MÁS con voz; el orbe vivo lo acumula y se lo pasa al lienzo",
+    // en reposo el campo NO se congela: un orbe quieto sigue vivo
+    n3cCallado > 5 &&
+      // …y hablando corre mucho más
+      n3cHablando > n3cCallado * 5 &&
+      orbFieldSpeed(0) < orbFieldSpeed(0.5) &&
+      orbFieldSpeed(0.5) < orbFieldSpeed(1) &&
+      // monótono: el campo nunca retrocede, ni con un dt basura
+      advanceOrbField(10, 1, Number.NaN) > 10 &&
+      advanceOrbField(10, 1, -5) >= 10 &&
+      advanceOrbField(Number.NaN, 0.5, 1 / 60) > 0 &&
+      // el empuje es de la VOZ, y el chapoteo sólo acompaña
+      orbFieldDrive(0, 0) === 0 &&
+      orbFieldDrive(1, 0) > orbFieldDrive(0, 1) &&
+      orbFieldDrive(1, 1) === 1 &&
+      // ── EL CABLE, en las dos puntas ──
+      n3LiveCode.includes("advanceOrbField(") &&
+      n3LiveCode.includes("orbFieldDrive(animatedVoice, waveEnergy)") &&
+      n3LiveCode.includes("field: fieldClock,") &&
+      n3cSim.includes("export function orbFieldSpeed(") &&
+      // …y el shader lo recibe y lo usa para mover el campo
+      n3ShaderCode.includes("uField") &&
+      n3ShaderCode.includes("fieldGray(fp, uField, drive)") &&
+      n3ShaderCode.includes("field: number"),
+    JSON.stringify({
+      unMinutoCallado: +n3cCallado.toFixed(2),
+      unMinutoHablando: +n3cHablando.toFixed(2),
+    }),
+  );
+
+  // N3C-5 · SE FUE EL CUARTO, Y EN SU LUGAR ESTÁ EL CAMPO.
+  //
+  // El founder cerró la discusión de N3B: «la ventana no cumple ninguna
+  // función». Sus orbes no reflejan ningún objeto reconocible. Si la ventana, el
+  // horizonte o el marco volvieran por un merge, el reflejo volvería a tener
+  // COSAS adentro — que es justo lo que esta etapa fue a sacar.
+  assert(
+    "N3C-5 · no queda nada reconocible en el reflejo: se fueron ventana, marco y horizonte, y el campo ocupa su lugar",
+    // ── lo que TIENE que haber desaparecido ──
+    !n3ShaderCode.includes("panelMask") &&
+      !n3ShaderCode.includes("mullion") &&
+      !/smoothstep\(-0\.012, 0\.012, h\)/u.test(n3ShaderCode) &&
+      !/ENV_KEY \* pane/u.test(n3ShaderCode) &&
+      // ── y lo que ocupa su lugar: siete óvalos polares y la rampa de cuatro
+      // paradas, que es de donde sale el look ──
+      n3ShaderCode.includes("float fieldGray(") &&
+      n3ShaderCode.includes("vec3 fieldRamp(") &&
+      n3ShaderCode.includes("float fieldFlow(") &&
+      // el shader trae el marcador y el renderer lo reemplaza al enlazar, así
+      // que la cuenta de óvalos tiene UN dueño y no dos números que derivan
+      n3ShaderCode.includes("for(int i = 0; i < __KIPU_OVALS__; i++)") &&
+      n3ShaderCode.includes('.split("__KIPU_OVALS__")') &&
+      ORB_FIELD_OVALS === 7 &&
+      orbSeededAngles(ORB_NOISE_SEED, ORB_FIELD_OVALS).length === ORB_FIELD_OVALS &&
+      // el campo entra en el líquido, no encima del vidrio: `body` ES el campo
+      n3ShaderCode.includes("vec3 body = mix(gField,") &&
+      // …y se puede apagar para fotografiar el antes y el después
+      n3ShaderCode.includes("gField = fieldRamp(") &&
+      /gField = fieldRamp\([^;]*\) \* uEnv;/u.test(n3ShaderCode),
+    JSON.stringify({
+      ventana: n3ShaderCode.includes("panelMask"),
+      marco: n3ShaderCode.includes("mullion"),
+      campo: n3ShaderCode.includes("float fieldGray("),
+    }),
+  );
+
+  // N3C-6 · UN SOLO LIENZO, Y EL SHADER DE LA COMPARACIÓN NO VIAJA EN EL AVIÓN.
+  //
+  // Dos reglas en una. La primera es de N3 y no se relaja: los cinco orbes viven
+  // en un lienzo, y un `<Canvas>` por orbe toca el techo de contextos WebGL del
+  // navegador —ya nos pasó en `/dev/sistema`—. La segunda es de esta etapa: el
+  // porte fiel del shader de ellos existe para una página de dev, así que se
+  // INYECTA en el renderer en vez de importarse. Si `orb-shader.ts` lo
+  // importara, el paquete del santuario cargaría un shader que nadie va a usar.
+  assert(
+    "N3C-6 · el santuario no importa el shader de la comparación y el programa sólo existe si alguien lo inyecta",
+    // el archivo del santuario NO IMPORTA al de la mesa de luz. Sobre el
+    // código: el comentario de la cabecera nombra al otro archivo a propósito,
+    // para explicar por qué están duplicados.
+    !/from "\.\/orb-reference-shader"/u.test(n3ShaderCode) &&
+      !n3ShaderCode.includes("ORB_REFERENCE_FRAGMENT_SOURCE") &&
+      // …y quien sí lo conoce es la probeta, que es dev
+      n3cSpecimenCode.includes("ORB_REFERENCE_FRAGMENT_SOURCE") &&
+      n3cSpecimenCode.includes("referenceFragmentSource: ORB_REFERENCE_FRAGMENT_SOURCE") &&
+      // el programa nace SÓLO con la fuente inyectada, y sin ella no se dibuja
+      n3ShaderCode.includes("if (options.referenceFragmentSource) {") &&
+      n3ShaderCode.includes("if (!orb.reference) continue;") &&
+      n3ShaderCode.includes("if (reference) {") &&
+      // ── y el porte fiel está CONGELADO en dialecto: su shader es GLSL 3.00 y
+      // el nuestro habla ES 1.00, así que las tres traducciones tienen que estar
+      // y ninguna llamada de la 3.00 puede quedar viva ──
+      n3cReferenceCode.includes("texture2D(uPerlinTexture,") &&
+      !/[^2]texture\(uPerlinTexture,/u.test(n3cReferenceCode) &&
+      !n3cReferenceCode.includes("float[7](") &&
+      !/i % 2/u.test(n3cReferenceCode) &&
+      n3cReferenceCode.includes("mod(float(i), 2.0) > 0.5") &&
+      // el reloj del porte fiel es el de su `useFrame`, y es ejecutable
+      orbReferenceClock(10, 0.3).animation < orbReferenceClock(10, 1).animation &&
+      orbReferenceClock(10, 0).time === 5 &&
+      // ── LA REGLA DE N3, INTACTA: un lienzo para los cinco ──
+      (n3LiveCode.match(/createOrbRenderer\(/gu) ?? []).length === 1 &&
+      (n3cSpecimenCode.match(/createOrbRenderer\(/gu) ?? []).length === 1,
+    JSON.stringify({
+      santuarioImportaLaReferencia: /from "\.\/orb-reference-shader"/u.test(n3ShaderCode),
+      relojFiel: +orbReferenceClock(10, 0.3).animation.toFixed(3),
     }),
   );
 
