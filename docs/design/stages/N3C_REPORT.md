@@ -1248,3 +1248,96 @@ un solo lado deja pasar el otro — la regla que costó un despliegue roto en la
 ronda 8.
 
 Gate **891/891** · mutación **71 muertas, 0 fallas** · lint 0 errores · build verde.
+
+---
+
+## Ronda 12 — el original del que salió el suyo, y el defecto por fin nombrado
+
+El founder pidió dejar de adivinar: «alguna forma de descifrar su orbe exacto en
+lugar de estar en prueba y error». Aprobó dos caminos: (1) reconstruir sobre lo
+que se pueda leer de verdad, (3) medir su régimen al hablar.
+
+### Lo que se probó y NO sirve
+
+`@elevenlabs/convai-widget-embed@0.17.1` (MIT, © 2025 ElevenLabs) trae el orbe
+de **óvalos polares** — `uOffsets`, `uTime`, `uColor` — el mismo `orb.tsx` que
+porté en la ronda 1. `@elevenlabs/react` no trae shader. Instalar su agente en
+nuestro sitio NO da acceso al orbe de fluido. Descartado por medición.
+
+### El hallazgo
+
+Los diez uniformes que capturé de su página VIVA —`uCurl`, `uPressure`,
+`uDivergence`, `uVelocity`, `uSource`, `curl`, `vorticity`, `aspectRatio`,
+`dissipation`, `texelSize`— están **todos** en
+`PavelDoGreat/WebGL-Fluid-Simulation` (MIT, © 2017 Pavel Dobryakov). Hasta el
+`min(max(velocity, -1000.0), 1000.0)` que descubrí a los golpes en la ronda 8 es
+literal del original.
+
+**Su orbe deriva del mismo original que el nuestro.** Lo que el filtro del
+navegador no me dejó leer de ellos —los cuerpos de las fórmulas— está completo
+en un repo público. La atribución MIT quedó en la cabecera de `orb-fluid.ts`.
+
+Comparado el original contra nuestro solver: **el algoritmo ya era fiel** —
+mismos shaders, mismo orden, mismo `1 + dissipation*dt`, mismo `clear` a 0,8.
+
+### El defecto, medido por fin
+
+Con el instrumento nuevo (`window.__kipuOrbRepaint`, que llama al `draw` real
+sin depender de `requestAnimationFrame`, suspendido en este entorno) medí la
+**decorrelación**: cuánto se aleja la imagen de sí misma al pasar el tiempo.
+
+| retardo | nuestro ANTES | de ellos |
+|---|---|---|
+| 0,25 s | 0,0196 | 0,030 |
+| 1 s | 0,0251 | 0,075 |
+| 2 s | **0,0157** | — |
+
+El de ellos crece. **El nuestro era PLANO y a los 2 s bajaba** — la firma de un
+patrón que vuelve sobre sus pasos. Eso es exactamente «los colores se mueven en
+el mismo lugar», y son once rondas de queja convertidas en un número.
+
+La causa era estructural, no de parámetros: el fluido entregaba un **rastro
+acotado** (±0,3 por construcción), y un empujón acotado sólo puede SACUDIR un
+dibujo anclado. Nunca lo puede llevar.
+
+### El cambio
+
+La textura del fluido deja de guardar un rastro y pasa a guardar **coordenadas
+materiales**: cada punto guarda de dónde vino. El orbe lee esa coordenada y le
+resta la suya, y esa diferencia **crece**. Se relaja lento hacia la identidad
+(`ORB_FLUID_MAP_RELAX = 0,20`) para que no se deshilache en filamentos.
+
+Medido después:
+
+| retardo | 0,25 s | 0,5 s | 1 s | 2 s |
+|---|---|---|---|---|
+| antes | 0,0196 | — | 0,0251 | 0,0157 |
+| **ahora** | 0,0049 | 0,0078 | **0,0142** | **0,0246** |
+
+**La curva pasó a crecer, monótona.** Misma forma que la de ellos. El defecto
+estructural está muerto.
+
+### Lo que NO se logró, dicho sin adornos
+
+La amplitud sigue ~5× por debajo (1 s: 0,0142 contra 0,075). Probé tres knobs y
+**los tres empeoraron o no movieron nada**:
+
+| knob | probado | resultado a 1 s |
+|---|---|---|
+| freno del mapa 0,20 → 0,07 | más deriva | 0,0142 → 0,0125 |
+| ganancia 26 → 7 | zona lineal | 0,0159 → 0,0142 |
+| fuerza 190 → 620 | fluido más rápido | 0,0142 → 0,0099 |
+
+Tres knobs que empujan en la misma dirección y los tres empeoran significa que
+el cuello de botella está en otra parte — la sospecha es la geometría de los
+agitadores, que están contra-rotados para cancelar el arrastre y quizá se
+cancelan a sí mismos. **Paré de tocar ahí**, que es justo lo que prometí no
+volver a hacer a ciegas.
+
+### Producción intacta
+
+`ORB_FLUID_ENABLED` sigue en `false`. **Nada de esta ronda llega al teléfono del
+founder.** El trabajo vive en `/dev/vidrio`, que es donde él lo va a mirar antes
+de que se despliegue nada.
+
+Gate **891/891** · mutación **74 muertas, 0 fallas** · lint 0 errores · build verde.

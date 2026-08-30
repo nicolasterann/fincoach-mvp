@@ -1,5 +1,15 @@
 // Bloque N3C ronda 6 — EL FLUIDO. Lo que mueve el color de verdad.
 //
+// ── ATRIBUCIÓN (obligatoria, no decorativa) ──────────────────────────────────
+// El algoritmo y las constantes de este archivo derivan de
+//   WebGL-Fluid-Simulation — https://github.com/PavelDoGreat/WebGL-Fluid-Simulation
+//   MIT License · Copyright (c) 2017 Pavel Dobryakov
+// Verificado en la ronda 12: los diez uniformes que capturé del orbe VIVO de
+// ElevenLabs (uCurl, uPressure, uDivergence, uVelocity, uSource, curl,
+// vorticity, aspectRatio, dissipation, texelSize) están todos en ese repo. El
+// suyo deriva del mismo original que el nuestro. No hay que descifrar el de
+// ellos: hay que leer el original, que es público, completo y MIT.
+//
 // POR QUÉ EXISTE, Y POR QUÉ NINGÚN AJUSTE DE RUIDO PODÍA REEMPLAZARLO.
 //
 // Cinco rondas ajustando un campo de ruido y el founder dijo lo mismo las cinco
@@ -59,7 +69,7 @@ export const ORB_FLUID_ENABLED = false;
 export const ORB_FLUID_SIM_SIZE = 128;
 
 /** Lado de la rejilla del tinte, que es la que el orbe mira. */
-export const ORB_FLUID_DYE_SIZE = 192;
+export const ORB_FLUID_DYE_SIZE = 640;
 
 /**
  * Iteraciones de presión por escalón de calidad. El nivel 1 NO corre fluido:
@@ -71,7 +81,7 @@ export const ORB_FLUID_DYE_SIZE = 192;
 // cuadro: eso se ve como VIBRAR. Medido: el cambio por cuadro era el 30 % del
 // cambio en medio segundo, o sea que el campo se sacudía y volvía en vez de
 // avanzar.
-export const ORB_FLUID_ITERATIONS: Record<1 | 2 | 3, number> = { 1: 0, 2: 12, 3: 22 };
+export const ORB_FLUID_ITERATIONS: Record<1 | 2 | 3, number> = { 1: 0, 2: 12, 3: 20 };
 
 /**
  * Cuánto se frena el fluido por segundo.
@@ -87,17 +97,31 @@ export const ORB_FLUID_ITERATIONS: Record<1 | 2 | 3, number> = { 1: 0, 2: 12, 3:
  * Con una disipación baja el fluido CONSERVA su energía, los remolinos se
  * rompen entre sí y el campo no vuelve a pasar dos veces por el mismo estado.
  */
-export const ORB_FLUID_VELOCITY_DISSIPATION = 0.13;
+export const ORB_FLUID_VELOCITY_DISSIPATION = 0.2;
 /** Y cuánto se desvanece el rastro. Más lento que la velocidad: deja estela. */
 // 0,10 y no 0,045: con la disipación muy baja el rastro desarrolla frentes
 // AFILADOS —un fluido sin difusión los produce solo— y esos frentes son los
 // cortes duros que aparecían cada tanto. Un poco de disipación los suaviza
 // sin quitarle estela.
-export const ORB_FLUID_DYE_DISSIPATION = 0.10;
+export const ORB_FLUID_DYE_DISSIPATION = 1.0;
+
+/**
+ * N3C r12 · CADA CUÁNTO EL MAPA MATERIAL VUELVE A SU SITIO, por segundo.
+ *
+ * Éste es el número que decide la queja del founder —«nuestros colores se
+ * mueven en el mismo lugar, el de ellos fluye»— y ahora está MEDIDO. La curva
+ * de decorrelación de un orbe que fluye CRECE con el retardo; la del nuestro
+ * era plana y a los 2 s bajaba, que es la firma de un patrón que vuelve.
+ *
+ * Con 0 el mapa se aleja para siempre y a los pocos segundos el dibujo se
+ * deshilacha en filamentos. Con un valor alto vuelve a estar anclado y
+ * volvemos al defecto. Es el único freno, así que va con los dos topes puestos.
+ */
+export const ORB_FLUID_MAP_RELAX = 0.20;
 /** La vorticidad: cuánto se enrosca. Es lo que hace que «bordee la esfera». */
 // 20 y no 34: la vorticidad alta afila los remolinos hasta el pixel de la
 // rejilla, y ahí es donde el campo empieza a vibrar en vez de fluir.
-export const ORB_FLUID_CURL = 20;
+export const ORB_FLUID_CURL = 30;
 
 /**
  * Una salpicadura. **Las dos mitades viven en unidades distintas y por eso van
@@ -341,11 +365,23 @@ void main(){
 const ADVECT = `${HEAD}
 uniform sampler2D uVelocity, uSource;
 uniform vec2 uTexelSize;
-uniform float uDt, uDissipation;
+uniform float uDt, uDissipation, uRelax;
 void main(){
   vec2 coord = vUv - uDt * texture2D(uVelocity, vUv).xy * uTexelSize;
-  gl_FragColor = texture2D(uSource, coord) / (1.0 + uDissipation * uDt);
+  vec4 r = texture2D(uSource, coord) / (1.0 + uDissipation * uDt);
+  // N3C r12 · LA RELAJACIÓN HACIA LA IDENTIDAD.
+  // Con uRelax = 0 esto es la advección clásica del original MIT. Con uRelax > 0
+  // el mapa material vuelve LENTAMENTE a su sitio, lo que acota el filamentado
+  // sin volver a anclar el dibujo: el patrón se aleja de su pasado —que es lo
+  // que faltaba— pero no se deshilacha al infinito.
+  gl_FragColor = mix(r, vec4(vUv, 0.0, 1.0), clamp(uRelax * uDt, 0.0, 1.0));
 }`;
+
+// N3C r12 · EL MAPA MATERIAL EMPIEZA SIENDO LA IDENTIDAD: cada punto guarda su
+// propia coordenada. Advectado, cada punto guarda DE DÓNDE VINO, y esa
+// diferencia es un desplazamiento que crece — no un empujón acotado que vuelve.
+const IDENTITY = `${HEAD}
+void main(){ gl_FragColor = vec4(vUv, 0.0, 1.0); }`;
 
 const DIVERGENCE = `${HEAD}
 uniform sampler2D uVelocity;
@@ -526,6 +562,7 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
     pressure: link(gl, vert, PRESSURE),
     gradient: link(gl, vert, GRADIENT),
     clear: link(gl, vert, CLEAR),
+    identity: link(gl, vert, IDENTITY),
   };
   gl.deleteShader(vert);
   const todos = Object.values(progs);
@@ -578,6 +615,16 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
     gl.uniform1i(u(p, name), unit);
   };
 
+
+  // El mapa material nace siendo la IDENTIDAD: cada punto guarda su propia
+  // coordenada. Sin esto arranca en ceros y el orbe entero leería un
+  // desplazamiento gigante hacia la esquina.
+  for (const destino of [dye.read, dye.write]) {
+    usarPrograma(progs.identity, destino.texel);
+    blit(destino);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
   return {
     get texture() {
       return dye.read.tex;
@@ -597,23 +644,13 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
         blit(velocity.write);
         velocity.swap();
 
-        usarPrograma(progs.splat, dye.read.texel);
-        bindTex(progs.splat, "uTarget", 2, dye.read.tex);
-        gl.uniform2f(u(progs.splat, "uPoint"), s.x, s.y);
-        // el rastro guarda HACIA DÓNDE empujó: por eso el orbe puede leerlo
-        // como un desplazamiento y no como un color
-        // el rastro tiene que llevar SEÑAL: con 0,030 el desplazamiento que
-        // llegaba al orbe era casi cero y el patrón no se movía
-        // MEDIDO, y es el defecto que hacía el «patrón trabado»: con 0,115 el
-        // rastro llegaba a un régimen de ±10, muy por encima del tope que el
-        // orbe le aplica (±1,35). Pasado el tope, el desplazamiento es
-        // CONSTANTE en casi todo el disco — y un desplazamiento constante no
-        // mueve nada. Por eso quintuplicar la fuerza empeoraba las cosas.
-        // Con 0,0040 el rastro vive en ±0,3 y lo que el orbe ve es su VARIACIÓN.
-        gl.uniform3f(u(progs.splat, "uValue"), s.tx, s.ty, s.tz);
-        gl.uniform1f(u(progs.splat, "uRadius"), s.radius);
-        blit(dye.write);
-        dye.swap();
+        // N3C r12 · EL MAPA NO SE SALPICA.
+        // Antes acá se salpicaba un RASTRO en la misma textura, y el orbe leía
+        // ese rastro como desplazamiento. Ese rastro estaba acotado por
+        // construcción (±0,3), así que el dibujo sólo podía sacudirse dentro de
+        // un tope y VOLVER — la curva de decorrelación plana que midió el
+        // defecto. Ahora la textura guarda coordenadas materiales: se empuja la
+        // VELOCIDAD y el mapa se deja llevar. Salpicarlo lo corrompería.
       }
 
       usarPrograma(progs.curl, velocity.read.texel);
@@ -656,6 +693,7 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       gl.uniform2f(u(progs.advect, "uTexelSize"), velocity.read.texel[0], velocity.read.texel[1]);
       gl.uniform1f(u(progs.advect, "uDt"), dt);
       gl.uniform1f(u(progs.advect, "uDissipation"), ORB_FLUID_VELOCITY_DISSIPATION);
+      gl.uniform1f(u(progs.advect, "uRelax"), 0);
       bindTex(progs.advect, "uVelocity", 2, velocity.read.tex);
       bindTex(progs.advect, "uSource", 3, velocity.read.tex);
       blit(velocity.write);
@@ -664,7 +702,11 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       usarPrograma(progs.advect, dye.read.texel);
       gl.uniform2f(u(progs.advect, "uTexelSize"), velocity.read.texel[0], velocity.read.texel[1]);
       gl.uniform1f(u(progs.advect, "uDt"), dt);
-      gl.uniform1f(u(progs.advect, "uDissipation"), ORB_FLUID_DYE_DISSIPATION);
+      // El mapa material NO se disipa: una coordenada no se desvanece hacia cero,
+      // se relaja hacia su identidad. Disiparla arrastraría todo el orbe hacia
+      // la esquina inferior izquierda.
+      gl.uniform1f(u(progs.advect, "uDissipation"), 0);
+      gl.uniform1f(u(progs.advect, "uRelax"), ORB_FLUID_MAP_RELAX);
       bindTex(progs.advect, "uVelocity", 2, velocity.read.tex);
       bindTex(progs.advect, "uSource", 3, dye.read.tex);
       blit(dye.write);

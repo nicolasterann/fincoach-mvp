@@ -502,7 +502,7 @@ const mutations = [
     name: "N3C-8",
     result: "el fluido no se disipa: el empuje se acumula para siempre y el orbe termina hirviendo",
     file: FLUID,
-    from: "export const ORB_FLUID_VELOCITY_DISSIPATION = 0.13;",
+    from: "export const ORB_FLUID_VELOCITY_DISSIPATION = 0.2;",
     to: "export const ORB_FLUID_VELOCITY_DISSIPATION = 0;",
   },
   {
@@ -546,6 +546,30 @@ const mutations = [
   {
     name: "N3C-8",
     result:
+      "el mapa material vuelve a ser un RASTRO acotado: el dibujo se sacude y VUELVE — la curva de decorrelacion plana, el defecto de once rondas",
+    file: SHADER,
+    from: "      vec2 fw = (fl.xy - fs0) * 7.0;",
+    to: "      vec2 fw = fl.xy * 7.0;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "el mapa material deja de relajarse: se aleja para siempre y a los pocos segundos el dibujo se deshilacha en filamentos",
+    file: FLUID,
+    from: "export const ORB_FLUID_MAP_RELAX = 0.20;",
+    to: "export const ORB_FLUID_MAP_RELAX = 0;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "el mapa se DISIPA como si fuera tinte: una coordenada desvanecida hacia cero arrastra todo el orbe a la esquina",
+    file: FLUID,
+    from: '      gl.uniform1f(u(progs.advect, "uDissipation"), 0);',
+    to: '      gl.uniform1f(u(progs.advect, "uDissipation"), 1);',
+  },
+  {
+    name: "N3C-8",
+    result:
       "se borra el GUARD del interruptor: el fluido se enciende en produccion aunque la constante diga que no, y apagado deja de ser distinguible de roto",
     file: FLUID,
     from: "  if (!ORB_FLUID_ENABLED && !forzar) return null;",
@@ -579,8 +603,8 @@ const mutations = [
     result:
       "el orbe vuelve a muestrear el fluido FUERA de la textura: CLAMP_TO_EDGE repite la ultima fila y eso dibuja rayas verticales — las que el founder vio dos veces",
     file: SHADER,
-    from: "      vec3 fl = texture2D(uFluid, fr * 0.40 + 0.5).xyz;",
-    to: "      vec3 fl = texture2D(uFluid, fr * 0.75 + 0.5).xyz;",
+    from: "    vec2 fs0 = fr * 0.40 + 0.5;",
+    to: "    vec2 fs0 = fr * 0.75 + 0.5;",
   },
   {
     name: "N3C-8",

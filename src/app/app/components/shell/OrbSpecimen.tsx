@@ -115,7 +115,44 @@ function paint(
   if (!ctx) return null;
   ctx.clearRect(0, 0, target.width, target.height);
   ctx.drawImage(source, 0, 0);
+  ultimaPintada = { target, width, height, orbs, day };
   return info.glVersion;
+}
+
+/**
+ * N3C r12 · EL INSTRUMENTO QUE FALTABA: repintar SIN `requestAnimationFrame`.
+ *
+ * En este entorno el panel está oculto y el navegador suspende
+ * `requestAnimationFrame`, así que no se compone ningún cuadro y el movimiento
+ * del fluido es literalmente inobservable. Once rondas de esta etapa se pagaron
+ * ahí: yo no podía ver lo que entregaba, y el founder terminaba siendo el
+ * instrumento en producción.
+ *
+ * Esto NO simula nada. Llama al mismo `draw` real del mismo renderer real, que
+ * es el que avanza el fluido; sólo lo hace desde un temporizador en vez de
+ * desde el reloj de cuadros. Es dev: `OrbSpecimen` sólo lo importan las páginas
+ * de `/dev`.
+ */
+let ultimaPintada: {
+  target: HTMLCanvasElement;
+  width: number;
+  height: number;
+  orbs: OrbDrawCall[];
+  day: number;
+} | null = null;
+
+declare global {
+  interface Window {
+    __kipuOrbRepaint?: (time: number, voice?: number) => boolean;
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.__kipuOrbRepaint = (time: number, voice = 0) => {
+    if (!ultimaPintada) return false;
+    const { target, width, height, orbs, day } = ultimaPintada;
+    return paint(target, width, height, orbs, day, time, voice) !== null;
+  };
 }
 
 /**

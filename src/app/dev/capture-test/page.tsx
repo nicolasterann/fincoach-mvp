@@ -103,6 +103,7 @@ import {
 import { orbReferenceClock } from "@/app/app/components/shell/orb-shader";
 import {
   ORB_FLUID_ITERATIONS,
+  ORB_FLUID_MAP_RELAX,
   ORB_FLUID_SIM_SIZE,
   ORB_FLUID_VELOCITY_DISSIPATION,
   orbFluidPush,
@@ -29925,8 +29926,10 @@ assert(
       // `uv` vale como mucho 1 dentro del disco; con un factor ≤ 0,45 el
       // muestreo nunca toca el borde.
       (() => {
+        // r12: el muestreo se nombra (fs0) porque el orbe necesita la MISMA
+        // coordenada dos veces — para leer la textura y para restarla.
         const m = n3ShaderCode.match(
-          /texture2D\(uFluid, fr \* ([0-9.]+) \+ 0\.5\)/u,
+          /vec2 fs0 = fr \* ([0-9.]+) \+ 0\.5;/u,
         );
         if (m == null) return false;
         const k = Number.parseFloat(m[1]!);
@@ -29935,6 +29938,40 @@ assert(
       // …y con las coordenadas CRUDAS, no con las del líquido
       /vec2 fr = vec2\(fc\*uv\.x - fs\*uv\.y, fs\*uv\.x \+ fc\*uv\.y\);/u.test(n3ShaderCode) &&
       n3ShaderCode.includes("if(uHasFluid > 0.5){") &&
+      n3ShaderCode.includes("texture2D(uFluid, fs0)") &&
+      // ── N3C r12 · LA TEXTURA GUARDA COORDENADAS, NO UN RASTRO ────────────
+      // Éste es el defecto que el founder describió once rondas seguidas —«los
+      // colores se mueven en el mismo lugar»— y que sólo se pudo nombrar al
+      // medirlo: la curva de decorrelación era PLANA y a los 2 s bajaba, o sea
+      // el dibujo volvía sobre sus pasos. La causa era que el fluido entregaba
+      // un rastro ACOTADO (±0,3) y un empujón acotado sólo puede sacudir.
+      //
+      // Ahora la textura guarda la coordenada material de cada punto: el orbe
+      // lee DE DÓNDE VINO y resta. Ese desplazamiento crece, así que el dibujo
+      // se aleja de su pasado. Medido después del cambio, la curva pasó a
+      // CRECER: 0,0049 → 0,0078 → 0,0142 → 0,0246.
+      //
+      // Los dos topes del freno, porque un umbral de un lado deja pasar el
+      // otro: con 0 el mapa se deshilacha en filamentos, y alto vuelve a
+      // anclar el dibujo — que es el defecto original.
+      n3ShaderCode.includes("vec2 fw = (fl.xy - fs0)") &&
+      n3cFluido.includes("gl_FragColor = vec4(vUv, 0.0, 1.0); }") &&
+      /uniform float uDt, uDissipation, uRelax;/u.test(n3cFluido) &&
+      ORB_FLUID_MAP_RELAX > 0.02 &&
+      ORB_FLUID_MAP_RELAX < 1 &&
+      // …y el CABLEADO de las dos pasadas, que el gate no puede ejecutar
+      // porque no corre GPU: la velocidad se disipa y no se relaja; el mapa se
+      // relaja y NO se disipa. Disipar una coordenada la lleva a cero, y cero
+      // es la esquina inferior izquierda de la textura: el orbe entero se
+      // arrastraría hacia allá. Una mutación sobrevivió exactamente así.
+      n3cFluido.includes(
+        'gl.uniform1f(u(progs.advect, "uDissipation"), ORB_FLUID_VELOCITY_DISSIPATION);',
+      ) &&
+      n3cFluido.includes('gl.uniform1f(u(progs.advect, "uRelax"), 0);') &&
+      n3cFluido.includes('gl.uniform1f(u(progs.advect, "uDissipation"), 0);') &&
+      n3cFluido.includes(
+        'gl.uniform1f(u(progs.advect, "uRelax"), ORB_FLUID_MAP_RELAX);',
+      ) &&
       // …y el orbe vivo le pasa la voz de M5 y el chapoteo, no un número fijo
       n3LiveCode.includes("voice: animatedVoice,") &&
       n3LiveCode.includes("wave: waveEnergy,") &&

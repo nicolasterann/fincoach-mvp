@@ -693,13 +693,18 @@ void main(){
       // 'uv' vale como mucho 1 dentro del disco, así que con 0,40 el muestreo
       // vive en [0,10 · 0,90] y nunca toca el borde.
       vec2 fr = vec2(fc*uv.x - fs*uv.y, fs*uv.x + fc*uv.y);
-      vec3 fl = texture2D(uFluid, fr * 0.40 + 0.5).xyz;
+      vec2 fs0 = fr * 0.40 + 0.5;
+      vec3 fl = texture2D(uFluid, fs0).xyz;
       // Tope SUAVE en vez de recorte: un recorte pega el valor contra el
       // límite y ahí deja de variar — que es como se fabricó el patrón
       // trabado. Así siempre queda pendiente, por fuerte que sea el rastro.
-      vec2 fw = fl.xy * 5.0;
+      // N3C r12 · LA TEXTURA GUARDA COORDENADAS, NO UN RASTRO.
+      // fl.xy es DE DÓNDE VINO este punto. La diferencia contra dónde está es
+      // el desplazamiento acumulado por el fluido, y crece: por eso el dibujo
+      // se aleja de su pasado en vez de sacudirse y volver.
+      vec2 fw = (fl.xy - fs0) * 7.0;
       gFlow = fw / (1.0 + abs(fw) * 0.72);
-      gFlowMag = clamp(fl.z * 3.0, 0.0, 1.0);
+      gFlowMag = clamp(length(fw) * 0.55, 0.0, 1.0);
     }
     vec2 fp = vec2(cs*fq.x + sn*fq.y, -sn*fq.x + cs*fq.y) * 0.22;
     // Cada capa mira OTRA PARTE del mismo campo. Sin esto las cinco dibujan el
