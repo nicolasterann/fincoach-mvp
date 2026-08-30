@@ -1513,3 +1513,64 @@ mi métrica de flujo estaba midiendo el propio artefacto.
 
 Gate **891/891** · mutación **80 muertas, 0 fallas** · lint 0 errores · build verde.
 `ORB_FLUID_ENABLED = false`: producción intacta.
+
+---
+
+## Ronda 16 — el founder abrió su Chrome, y ahí aparecieron
+
+«Disminuyó la frecuencia, pero no desaparecieron.» Compartió la pantalla para
+que las midiera yo mismo, con cuadros de verdad. Fue la ronda que más enseñó.
+
+### Por qué él las veía y yo no
+
+Midiendo CADA cuadro en su Chrome: los eventos duran **32–67 ms**, o sea **uno o
+dos cuadros**, y ocurren cada ~10 s. **Mi instrumento muestreaba cada 200 ms** y
+se saltaba cinco de cada seis cuadros. Un destello de un cuadro simplemente no
+existía para mí — y «no existe en mi medición» se había vuelto «no existe».
+
+### Dos defectos que sólo se ven con cuadros reales
+
+**1 · Cinco pasos de fluido por cuadro.** Las cinco probetas comparten un
+renderer y **cada una avanzaba la simulación**. Medido: 5 pasos por cuadro con
+los cinco empujones repetidos casi en el mismo instante y sitio. El founder
+miraba una simulación **cinco veces más violenta** que la que yo medía. El
+comentario del código decía «un paso de fluido por cuadro» desde la r6:
+**una invariante escrita en un comentario y no aplicada por el código es una
+intención, no una invariante.**
+
+**2 · La física dependía del ritmo de cuadros.** Su Chrome corría a 30 fps; mi
+instrumento headless llamaba siempre con 1/60 exacto. A la mitad de cuadros el
+salto de advección es **el doble**, y ahí el mapa se pliega. **Un defecto que
+depende del ritmo de cuadros no se reproduce con un reloj fijo.** El paso ahora
+se parte en tramos de a lo sumo 1/60 (con la fuerza repartida, o se inyectaría
+`tramos` veces): el fluido se comporta igual a 30, 60 o 120.
+
+Resultado: de **20 % de las muestras con ola** a 7 eventos en 70 s.
+
+### Tres experimentos más, y el que sirvió
+
+| cambio | eventos / 70 s |
+|---|---|
+| recorte de velocidad del original (±1000) | 7 |
+| **sin tope** (1e5) | **19** — el tope hacía falta |
+| acotar el salto a un téxel (`if` por píxel) | **15** — el umbral dibuja su propio contorno |
+| **tope SUAVE** (`inversesqrt`) | **3** |
+| + vorticidad segura cerca de cero | 4 a 120 fps (equivalente) |
+
+Un recorte duro **aplana** lo que lo supera y le pone un borde; esa frontera es
+una línea que dura lo que dure el pico — 1–2 cuadros, exactamente lo medido. Y
+el intento de acotar por píxel repitió el pecado de la rampa: **un `if` por
+píxel crea una línea en su propio umbral.**
+
+La vorticidad segura (`force *= mag / (mag² + 0,02)` en vez de dividir por
+`mag + 0,0001`) se conserva porque dividir por una magnitud casi nula es un
+peligro numérico real, pero **no se le atribuye la mejora**: 4 contra 3 está
+dentro del ruido.
+
+### Estado
+
+De «90 % del tiempo con olas» a **3–4 destellos de 1–2 cuadros en 70 segundos**.
+No es cero y no se reporta como cero.
+
+Gate **891/891** · mutación **85 muertas, 0 fallas** · lint 0 errores · build verde.
+`ORB_FLUID_ENABLED = false`: producción intacta.

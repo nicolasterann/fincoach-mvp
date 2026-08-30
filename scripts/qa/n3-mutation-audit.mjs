@@ -619,6 +619,46 @@ const mutations = [
   {
     name: "N3C-8",
     result:
+      "vuelve UN PASO DE FLUIDO POR DIBUJO: cinco probetas comparten un renderer y la simulacion corre 5x mas violenta de lo que mide el gate",
+    file: SHADER,
+    from: "      if (fluid && frame.stepFluid !== false) {",
+    to: "      if (fluid) {",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "el paso deja de partirse: a 30 cuadros el salto de adveccion es el doble que a 60 y el mapa se pliega en filos — la fisica pasa a depender del telefono",
+    file: FLUID,
+    from: "      const tramos = Math.min(ORB_FLUID_MAX_SUBSTEPS, Math.max(1, Math.ceil(total * 60)));",
+    to: "      const tramos = 1;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "los tramos inyectan la fuerza ENTERA cada uno: el fluido recibe `tramos` veces la energia que pidio el calendario",
+    file: FLUID,
+    from: "              dx: sp.dx / tramos,",
+    to: "              dx: sp.dx,",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "vuelve el RECORTE duro de la velocidad: aplana lo que lo supera y le pone un borde — 7 eventos en 70 s en vez de 3",
+    file: FLUID,
+    from: "  vel *= inversesqrt(1.0 + (largo * largo) / 1000000.0);",
+    to: "  vel = clamp(vel, -1000.0, 1000.0);",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "la vorticidad vuelve a dividir por una magnitud casi nula: convierte ruido de precision en una direccion de magnitud completa",
+    file: FLUID,
+    from: "  force *= mag / (mag * mag + 0.02);",
+    to: "  force /= mag + 0.0001;",
+  },
+  {
+    name: "N3C-8",
+    result:
       "se borra el GUARD del interruptor: el fluido se enciende en produccion aunque la constante diga que no, y apagado deja de ser distinguible de roto",
     file: FLUID,
     from: "  if (!ORB_FLUID_ENABLED && !forzar) return null;",

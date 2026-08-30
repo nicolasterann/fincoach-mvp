@@ -105,6 +105,7 @@ import {
   ORB_FLUID_ITERATIONS,
   ORB_FLUID_MAP_RELAX,
   ORB_FLUID_MAP_DIFFUSE,
+  ORB_FLUID_MAX_SUBSTEPS,
   ORB_FLUID_DYE_SIZE,
   ORB_FLUID_SIM_SIZE,
   ORB_FLUID_VELOCITY_DISSIPATION,
@@ -30006,6 +30007,38 @@ assert(
       // (pico 8,7), con 1 el flujo se disuelve en una mancha.
       ORB_FLUID_MAP_DIFFUSE > 0 &&
       ORB_FLUID_MAP_DIFFUSE < 0.8 &&
+      // ── N3C r16 · TRES INVARIANTES QUE SÓLO SE VEN CON CUADROS REALES ─────
+      //
+      // Las «olas duras» que el founder veía y yo no: destellos de 32–67 ms —
+      // uno o dos cuadros— cada ~10 s. Mi instrumento muestreaba cada 200 ms y
+      // se saltaba cinco de cada seis cuadros, así que para mí no existían.
+      //
+      // 1 · UN PASO DE FLUIDO POR CUADRO. El comentario lo decía desde la r6 y
+      //     el código daba uno por LLAMADA DE DIBUJO: medido en el Chrome del
+      //     founder, 5 pasos por cuadro con los empujones repetidos en el mismo
+      //     sitio. Él miraba una simulación 5× más violenta que la que yo medía.
+      n3ShaderCode.includes("if (fluid && frame.stepFluid !== false) {") &&
+      n3cSpecimenCode.includes("stepFluid: avanzar,") &&
+      // 2 · EL PASO SE PARTE. La advección desplaza `dt × velocidad`: a 30
+      //     cuadros el salto es el DOBLE que a 60 y el mapa se pliega en filos.
+      //     Partirlo en tramos de a lo sumo 1/60 vuelve la física independiente
+      //     del ritmo de cuadros — que es lo mínimo exigible cuando el usuario
+      //     tiene otro teléfono. La fuerza se REPARTE o se inyectaría `tramos`
+      //     veces.
+      ORB_FLUID_MAX_SUBSTEPS > 1 &&
+      ORB_FLUID_MAX_SUBSTEPS <= 8 &&
+      n3cFluido.includes("Math.ceil(total * 60)") &&
+      n3cFluido.includes("dx: sp.dx / tramos,") &&
+      // 3 · LOS DOS TOPES SON SUAVES. Un recorte duro APLANA lo que lo supera y
+      //     le pone un borde: esa frontera es una línea que dura lo que dure el
+      //     pico. Medido: con el recorte del original, 7 eventos en 70 s; con
+      //     el tope suave, 3. (Y probado que el tope hace falta: sin él, 19.)
+      //     El `if` por píxel tampoco sirve — acotar el salto a un téxel los
+      //     subió a 15, porque el propio umbral dibuja su contorno.
+      n3cFluido.includes("vel *= inversesqrt(1.0 + (largo * largo) / 1000000.0);") &&
+      !/clamp\(vel, -1000\.0, 1000\.0\)/u.test(n3cFluido) &&
+      n3cFluido.includes("force *= mag / (mag * mag + 0.02);") &&
+      !/force \/= length\(force\) \+ 0\.0001;/u.test(n3cFluido) &&
       n3cFluido.includes('gl.uniform1f(u(progs.advect, "uDiffuse"), 0);') &&
       n3cFluido.includes(
         'gl.uniform1f(u(progs.advect, "uDiffuse"), ORB_FLUID_MAP_DIFFUSE);',

@@ -88,6 +88,21 @@ function ensureRenderer(): OrbRenderer | null {
 const FLUID_WARM_SECONDS = 6;
 let fluidWarmed = false;
 
+/**
+ * N3C r16 · EL FLUIDO AVANZA UNA VEZ POR CUADRO, NO UNA POR PROBETA.
+ *
+ * Cinco probetas comparten UN renderer, y cada una llamaba a `draw`, que
+ * avanzaba el fluido. Medido en el Chrome del founder: **5 pasos por cuadro**,
+ * con los cinco empujones repetidos casi en el mismo instante y en el mismo
+ * sitio. Él miraba una simulación cinco veces más violenta que la que yo medía
+ * — y por eso él veía olas duras donde mis números decían que ya casi no había.
+ *
+ * El reloj de pared decide: la primera probeta del cuadro avanza, las otras
+ * cuatro dibujan el mismo estado. `forzarPaso` existe para el instrumento
+ * headless, que llama en un bucle apretado y necesita avanzar igual.
+ */
+let ultimoPasoMs = -1;
+
 function paint(
   target: HTMLCanvasElement,
   width: number,
@@ -96,6 +111,7 @@ function paint(
   day: number,
   time: number,
   voice = 0,
+  forzarPaso = false,
 ): 1 | 2 | null {
   const renderer = ensureRenderer();
   if (!renderer || !sharedCanvas) return null;
@@ -108,7 +124,23 @@ function paint(
   // esto, «hay fluido» sería una suposición mirando una foto.
   target.dataset.fluid = renderer.hasFluid() ? "1" : "0";
   const info = renderer.resize(width, height, window.devicePixelRatio || 1);
-  renderer.draw({ time, day, tier: 3, voice, wave: 0, dtSeconds: 1 / 60, orbs });
+  const ahora = typeof performance !== "undefined" ? performance.now() : 0;
+  const transcurrido = ultimoPasoMs < 0 ? 1 / 60 : (ahora - ultimoPasoMs) / 1000;
+  // 4 ms: por debajo de eso es otra probeta del MISMO cuadro, no un cuadro nuevo
+  const avanzar = forzarPaso || ultimoPasoMs < 0 || ahora - ultimoPasoMs > 4;
+  if (avanzar) ultimoPasoMs = ahora;
+  renderer.draw({
+    time,
+    day,
+    tier: 3,
+    voice,
+    wave: 0,
+    // el paso real del reloj, acotado: un cuadro perdido no puede teletransportar
+    // el fluido, y el instrumento headless pide 1/60 exacto para ser comparable
+    dtSeconds: forzarPaso ? 1 / 60 : Math.min(1 / 20, Math.max(1 / 240, transcurrido)),
+    stepFluid: avanzar,
+    orbs,
+  });
   target.width = info.width;
   target.height = info.height;
   const ctx = target.getContext("2d");

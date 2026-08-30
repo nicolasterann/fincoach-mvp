@@ -156,6 +156,21 @@ export interface OrbFrame {
   voice: number;
   wave: number;
   dtSeconds: number;
+  /**
+   * N3C r16 · SI ESTE CUADRO AVANZA EL FLUIDO. Por defecto sí.
+   *
+   * El comentario del paso decía «un paso de fluido por cuadro» desde la r6 y
+   * el código daba uno por LLAMADA DE DIBUJO. En el santuario da lo mismo —una
+   * llamada por cuadro—, pero en la mesa de luz hay cinco probetas compartiendo
+   * un renderer: medido, **5 pasos por cuadro** con los cinco empujones
+   * repetidos en el mismo sitio. O sea que el founder estaba mirando una
+   * simulación cinco veces más violenta que la que yo medía, y por eso él veía
+   * olas duras donde mis números decían que ya no había.
+   *
+   * Una invariante escrita en un comentario y no aplicada por el código no es
+   * una invariante: es una intención.
+   */
+  stepFluid?: boolean;
   orbs: readonly OrbDrawCall[];
 }
 
@@ -1447,7 +1462,7 @@ export function createOrbRenderer(
       // El calendario de empujones es una función PURA: el gate la ejecuta y le
       // exige que en silencio siga habiendo movimiento y que la voz empuje
       // mucho más. Lo que corre en la GPU es sólo el solver.
-      if (fluid) {
+      if (fluid && frame.stepFluid !== false) {
         fluid.step(
           frame.dtSeconds,
           orbFluidSplats({
@@ -1456,8 +1471,10 @@ export function createOrbRenderer(
             wave: frame.wave,
             dtSeconds: frame.dtSeconds,
           }),
-          ORB_FLUID_ITERATIONS[frame.tier],
+            ORB_FLUID_ITERATIONS[frame.tier],
         );
+      }
+      if (fluid) {
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, fluid.texture);
         gl.activeTexture(gl.TEXTURE0);

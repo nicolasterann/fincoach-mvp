@@ -110,6 +110,15 @@ export const ORB_FLUID_VELOCITY_DISSIPATION = 0.2;
  * deshilacha en filamentos. Con un valor alto vuelve a estar anclado y
  * volvemos al defecto. Es el único freno, así que va con los dos topes puestos.
  */
+/**
+ * N3C r16 · CUÁNTOS TRAMOS COMO MÁXIMO PARTE UN PASO LARGO.
+ *
+ * Con 1 la física depende del ritmo de cuadros: a 30 fps el salto de advección
+ * es el doble que a 60 y el mapa se pliega en filos. Sin tope, un cuadro perdido
+ * de medio segundo pediría treinta tramos y congelaría la página.
+ */
+export const ORB_FLUID_MAX_SUBSTEPS = 4;
+
 export const ORB_FLUID_MAP_RELAX = 0.20;
 
 /**
@@ -483,11 +492,39 @@ void main(){
   float B = texture2D(uCurl, vB).x;
   float C = texture2D(uCurl, vUv).x;
   vec2 force = 0.5 * vec2(abs(T) - abs(B), abs(R) - abs(L));
-  force /= length(force) + 0.0001;
+  // ── N3C r16 · NORMALIZAR UN VECTOR QUE PASA POR CERO ES UNA RULETA ────────
+  //
+  // El original divide por 'length(force) + 0.0001'. Donde la fuerza es casi
+  // nula —y lo es en franjas enteras, porque es una diferencia de curls
+  // vecinos— esa división convierte ruido de precisión en una DIRECCIÓN de
+  // magnitud completa. Píxeles contiguos salen apuntando a lados opuestos, y
+  // eso es un filo que aparece y desaparece en un cuadro.
+  //
+  // El épsilon suma en vez de multiplicar: por debajo de él la fuerza se apaga
+  // en vez de dispararse, y por encima el comportamiento es el del original.
+  float mag = length(force);
+  force *= mag / (mag * mag + 0.02);
   force *= uCurlStrength * C;
   force.y *= -1.0;
   vec2 vel = texture2D(uVelocity, vUv).xy + force * uDt;
-  gl_FragColor = vec4(clamp(vel, -1000.0, 1000.0), 0.0, 1.0);
+  // ── N3C r16 · EL TOPE DE LA VELOCIDAD, SUAVE ──────────────────────────────
+  //
+  // El original recorta a ±1000 con un clamp. Un recorte APLANA la zona que lo
+  // supera y le pone un borde: la frontera entre lo recortado y lo que no lo
+  // está es una línea, y dura exactamente lo que dure el pico — uno o dos
+  // cuadros. Eso es lo que el founder describe como «de la nada aparece y
+  // después desaparece», medido en 7 eventos de 32–67 ms cada 70 s.
+  //
+  // Probado que el tope hace falta: levantarlo a 100000 subió los eventos de 7
+  // a 19. Y probado que un 'if' por píxel no sirve: acotar el salto a un téxel
+  // los subió a 15, porque el propio umbral dibuja su contorno.
+  //
+  // Éste satura sin borde: por debajo del tope el factor es ~1 y por encima
+  // tiende a L/|v|, igual que el recorte, pero sin discontinuidad en ninguna
+  // parte. Es el mismo cambio que la r8 hizo en el orbe, aplicado al solver.
+  float largo = length(vel);
+  vel *= inversesqrt(1.0 + (largo * largo) / 1000000.0);
+  gl_FragColor = vec4(vel, 0.0, 1.0);
 }`;
 
 const PRESSURE = `${HEAD}
@@ -692,9 +729,63 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
     get texture() {
       return dye.read.tex;
     },
+    /**
+     * ── N3C r16 · EL PASO SE PARTE, PORQUE EL DEFECTO ERA EL TAMAÑO DEL PASO ──
+     *
+     * La advección desplaza `dt × velocidad`. A 60 cuadros por segundo ese
+     * salto es chico y el mapa se deforma suave; a 30 —lo que mide el Chrome
+     * del founder— el salto es EL DOBLE, y ahí el mapa se PLIEGA: dos téxeles
+     * vecinos vienen de puntos cruzados y la frontera entre ellos es un filo.
+     * Un filo que se mueve es una línea dura barriendo el disco.
+     *
+     * Por eso mi instrumento headless nunca lo reprodujo: llamaba con 1/60
+     * exacto. **Un defecto que depende del ritmo de cuadros no aparece con un
+     * reloj fijo** — él miraba 30 y yo medía 60.
+     *
+     * Partirlo en tramos de a lo sumo 1/60 hace además que el fluido se
+     * comporte IGUAL a 30, 60 o 120 cuadros: la física deja de depender de qué
+     * tan rápido va el teléfono, que es lo mínimo que se le puede pedir.
+     *
+     * La fuerza del empujón YA lleva el dt adentro (`dx = u·f·GRID·dt·60`), así
+     * que repetir los mismos empujones en cada tramo inyectaría `tramos` veces
+     * la energía: se reparte.
+     */
     step(dtSeconds, splats, iterations) {
       if (disposed || gl.isContextLost()) return;
-      const dt = Math.min(1 / 30, Math.max(1 / 240, Number.isFinite(dtSeconds) ? dtSeconds : 1 / 60));
+      const total = Math.min(1 / 20, Math.max(1 / 240, Number.isFinite(dtSeconds) ? dtSeconds : 1 / 60));
+      const tramos = Math.min(ORB_FLUID_MAX_SUBSTEPS, Math.max(1, Math.ceil(total * 60)));
+      const repartidos =
+        tramos === 1
+          ? splats
+          : splats.map((sp) => ({
+              ...sp,
+              dx: sp.dx / tramos,
+              dy: sp.dy / tramos,
+              tx: sp.tx / tramos,
+              ty: sp.ty / tramos,
+              tz: sp.tz / tramos,
+            }));
+      for (let tramo = 0; tramo < tramos; tramo += 1) {
+        unPaso(total / tramos, repartidos, iterations);
+      }
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const p of todos) if (p) gl.deleteProgram(p);
+      for (const f of [velocity.read, velocity.write, dye.read, dye.write, pressure.read, pressure.write, divergence, curl]) {
+        gl.deleteTexture(f.tex);
+        gl.deleteFramebuffer(f.fbo);
+      }
+      gl.deleteBuffer(quad);
+    },
+  };
+
+  function unPaso(dt: number, splats: readonly OrbFluidSplat[], iterations: number): void {
+      // El estrechamiento de tipos del chequeo de arriba no cruza una
+      // declaración de función: se repite acá, y de paso el tramo se vuelve
+      // seguro por sí mismo.
+      if (!velocity || !dye || !pressure || !divergence || !curl) return;
       gl.disable(gl.BLEND);
       bindQuad();
 
@@ -781,16 +872,5 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.enable(gl.BLEND);
-    },
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      for (const p of todos) if (p) gl.deleteProgram(p);
-      for (const f of [velocity.read, velocity.write, dye.read, dye.write, pressure.read, pressure.write, divergence, curl]) {
-        gl.deleteTexture(f.tex);
-        gl.deleteFramebuffer(f.fbo);
-      }
-      gl.deleteBuffer(quad);
-    },
-  };
+  }
 }
