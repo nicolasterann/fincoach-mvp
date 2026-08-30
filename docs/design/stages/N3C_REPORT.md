@@ -1443,3 +1443,73 @@ se le atribuye ninguna mejora observada.
 
 Gate **891/891** · mutación **77 muertas, 0 fallas** · lint 0 errores · build verde.
 `ORB_FLUID_ENABLED = false`: producción intacta.
+
+---
+
+## Ronda 15 — las olas duras, hasta el suelo
+
+El founder, tras la r14: «siguen apareciendo, un 90 % del tiempo… no es la misma
+sino que aparecen de varios lados». Siete capturas, y en ellas lo que faltaba:
+los bordes son **escalonados** — una recta vertical con escalones rectangulares
+en la ámbar, otra en la turquesa.
+
+### La prueba que había que hacer desde el principio
+
+Pinté el **desplazamiento crudo** en el orbe, sin campo ni grano. Razones de
+línea de **33 a 256**, contra un suelo de 5,2. Las líneas estaban dentro del
+fluido, no las creaba el campo. Cinco rondas mirando el efecto en vez de la
+causa.
+
+### Dos defectos, y el segundo era el grande
+
+**1 · La precisión (real, medida).** El mapa guardaba la COORDENADA absoluta en
+una textura de media precisión: escalón 4,9e-4 contra una señal de 7,9e-4 — **el
+62 %**. Y el orbe hacía `mapa − suPropiaCoordenada`, que es restar dos números
+casi iguales y quedarse con todo el error. Ahora guarda el **desplazamiento**,
+que vive cerca de cero, donde la media precisión da resolución relativa (~0,1 %):
+`D_nuevo(x) = D_viejo(x − v·dt) − v·dt`.
+
+**2 · El mapa resolvía más fino que su propia física.** La velocidad se advecta
+a sí misma y forma **choques** — eso es física, no un error. En el original no
+se ven porque lo que se mira es el tinte, que se disipa y se difunde. Nuestro
+mapa no se disipa (una coordenada no puede), así que copiaba cada choque con
+filo perfecto. Y estaba a **640 contra una velocidad de 128**: cinco veces más
+detalle del que la física resuelve, o sea puro artefacto numérico.
+
+| mapa | base | pico | flujo 1 s |
+|---|---|---|---|
+| 640 | 6,1 | 15,3 | 0,0127 |
+| 160 | 5,4 | 9,1 | 0,0128 |
+| **128** (= la velocidad) | **5,2** | **7,4** | 0,0126 |
+| suelo (sin fluido) | 5,2 | — | — |
+
+**La base tocó el suelo del orbe sin fluido.** Y el flujo NO se movió: los 5× de
+resolución no compraban nada de movimiento, sólo artefacto.
+
+Más un poco de viscosidad en el mapa (0,35), que se ganó su costo por medición:
+pico 8,7 → 7,4.
+
+### Cuatro hipótesis muertas antes de llegar
+
+Vale dejarlas escritas, porque cada una parecía la buena:
+
+| hipótesis | prueba | resultado |
+|---|---|---|
+| el borde de la textura (CLAMP_TO_EDGE) | ventana 0,40 → 0,22 | pico 15,8 · no era |
+| pliegue por pasos grandes | fuerza 190 → 45 | **peor**: 24,5 |
+| la dirección normalizada salta | cálculo del giro por cuadro | 1 cuadro en 300 · no era |
+| la viscosidad sola | 0 → 0,35 con mapa 640 | 15,8 → 15,3 · insuficiente |
+
+El dato que ignoré tres veces fue **«peor con menos fuerza»**, que es
+físicamente imposible si el artefacto fuera de amplitud — y era la firma de que
+mi métrica de flujo estaba midiendo el propio artefacto.
+
+### Efectos colaterales
+
+- `ORB_FLUID_DYE_DISSIPATION` quedó MUERTA (el mapa no se disipa) y se borró.
+- La ventana de muestreo quedó en 0,22: duplicó el flujo medido (0,0066 →
+  0,0127) sin costo en artefacto.
+- Flujo hoy: 0,0126 a 1 s contra **0,075** de ellos. Sigue 6× abajo.
+
+Gate **891/891** · mutación **80 muertas, 0 fallas** · lint 0 errores · build verde.
+`ORB_FLUID_ENABLED = false`: producción intacta.

@@ -549,8 +549,8 @@ const mutations = [
     result:
       "el mapa material vuelve a ser un RASTRO acotado: el dibujo se sacude y VUELVE — la curva de decorrelacion plana, el defecto de once rondas",
     file: SHADER,
-    from: "      vec2 fw = (fl.xy - fs0) * 7.0;",
-    to: "      vec2 fw = fl.xy * 7.0;",
+    from: "      vec2 fw = fl.xy * 7.0;",
+    to: "      vec2 fw = fl.xy * 0.0;",
   },
   {
     name: "N3C-8",
@@ -595,6 +595,30 @@ const mutations = [
   {
     name: "N3C-8",
     result:
+      "el mapa vuelve a resolver MAS FINO que la velocidad que lo mueve: copia los choques con filo perfecto y vuelven las olas duras",
+    file: FLUID,
+    from: "export const ORB_FLUID_DYE_SIZE = 128;",
+    to: "export const ORB_FLUID_DYE_SIZE = 640;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "el mapa pierde su viscosidad: el filo de cada choque se conserva entero",
+    file: FLUID,
+    from: "export const ORB_FLUID_MAP_DIFFUSE = 0.35;",
+    to: "export const ORB_FLUID_MAP_DIFFUSE = 0;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "el mapa vuelve a guardar la COORDENADA absoluta: en media precision el escalon es el 62 % de la senal y el desplazamiento queda en escalones",
+    file: FLUID,
+    from: "  vec3 d = vec3(r.xy - paso, r.z);",
+    to: "  vec3 d = vec3(r.xy, r.z);",
+  },
+  {
+    name: "N3C-8",
+    result:
       "se borra el GUARD del interruptor: el fluido se enciende en produccion aunque la constante diga que no, y apagado deja de ser distinguible de roto",
     file: FLUID,
     from: "  if (!ORB_FLUID_ENABLED && !forzar) return null;",
@@ -628,7 +652,7 @@ const mutations = [
     result:
       "el orbe vuelve a muestrear el fluido FUERA de la textura: CLAMP_TO_EDGE repite la ultima fila y eso dibuja rayas verticales — las que el founder vio dos veces",
     file: SHADER,
-    from: "    vec2 fs0 = fr * 0.40 + 0.5;",
+    from: "    vec2 fs0 = fr * 0.22 + 0.5;",
     to: "    vec2 fs0 = fr * 0.75 + 0.5;",
   },
   {

@@ -724,7 +724,7 @@ void main(){
       // 'uv' vale como mucho 1 dentro del disco, así que con 0,40 el muestreo
       // vive en [0,10 · 0,90] y nunca toca el borde.
       vec2 fr = vec2(fc*uv.x - fs*uv.y, fs*uv.x + fc*uv.y);
-      vec2 fs0 = fr * 0.40 + 0.5;
+      vec2 fs0 = fr * 0.22 + 0.5;
       // N3C r14 · El mismo filtrado a mano que la advección, y por el mismo
       // motivo: sin 'half_float_linear' esta lectura sería NEAREST y el
       // desplazamiento llegaría CUANTIZADO — escalones que barren el orbe.
@@ -743,7 +743,9 @@ void main(){
       // fl.xy es DE DÓNDE VINO este punto. La diferencia contra dónde está es
       // el desplazamiento acumulado por el fluido, y crece: por eso el dibujo
       // se aleja de su pasado en vez de sacudirse y volver.
-      vec2 fw = (fl.xy - fs0) * 7.0;
+      // r15 · el mapa YA guarda el desplazamiento: restarle la coordenada era
+      // justamente la resta que perdía toda la precisión.
+      vec2 fw = fl.xy * 7.0;
       gFlow = fw / (1.0 + abs(fw) * 0.72);
       gFlowMag = clamp(length(fw) * 0.55, 0.0, 1.0);
     }

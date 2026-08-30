@@ -69,7 +69,7 @@ export const ORB_FLUID_ENABLED = false;
 export const ORB_FLUID_SIM_SIZE = 128;
 
 /** Lado de la rejilla del tinte, que es la que el orbe mira. */
-export const ORB_FLUID_DYE_SIZE = 640;
+export const ORB_FLUID_DYE_SIZE = 128;
 
 /**
  * Iteraciones de presión por escalón de calidad. El nivel 1 NO corre fluido:
@@ -98,13 +98,6 @@ export const ORB_FLUID_ITERATIONS: Record<1 | 2 | 3, number> = { 1: 0, 2: 12, 3:
  * rompen entre sí y el campo no vuelve a pasar dos veces por el mismo estado.
  */
 export const ORB_FLUID_VELOCITY_DISSIPATION = 0.2;
-/** Y cuánto se desvanece el rastro. Más lento que la velocidad: deja estela. */
-// 0,10 y no 0,045: con la disipación muy baja el rastro desarrolla frentes
-// AFILADOS —un fluido sin difusión los produce solo— y esos frentes son los
-// cortes duros que aparecían cada tanto. Un poco de disipación los suaviza
-// sin quitarle estela.
-export const ORB_FLUID_DYE_DISSIPATION = 1.0;
-
 /**
  * N3C r12 · CADA CUÁNTO EL MAPA MATERIAL VUELVE A SU SITIO, por segundo.
  *
@@ -118,6 +111,16 @@ export const ORB_FLUID_DYE_DISSIPATION = 1.0;
  * volvemos al defecto. Es el único freno, así que va con los dos topes puestos.
  */
 export const ORB_FLUID_MAP_RELAX = 0.20;
+
+/**
+ * N3C r15 · CUÁNTA VISCOSIDAD LLEVA EL MAPA, por cuadro.
+ *
+ * Con 0 el mapa copia los choques de la velocidad con filo perfecto y aparecen
+ * las «olas duras». Con 1 se promedia entero cada cuadro y el flujo desaparece
+ * en una mancha. Los dos topes van puestos porque un umbral de un lado deja
+ * pasar el otro — lección de la r8, pagada con la app rota.
+ */
+export const ORB_FLUID_MAP_DIFFUSE = 0.35;
 /** La vorticidad: cuánto se enrosca. Es lo que hace que «bordee la esfera». */
 // 20 y no 34: la vorticidad alta afila los remolinos hasta el pixel de la
 // rejilla, y ahí es donde el campo empieza a vibrar en vez de fluir.
@@ -365,7 +368,7 @@ void main(){
 const ADVECT = `${HEAD}
 uniform sampler2D uVelocity, uSource;
 uniform vec2 uTexelSize, uSourceTexel;
-uniform float uDt, uDissipation, uRelax;
+uniform float uDt, uDissipation, uRelax, uDiffuse;
 // ── N3C r14 · EL FILTRADO A MANO, y por qué NO es opcional ──────────────────
 //
 // 'OES_texture_half_float_linear' NO existe en todo el hardware — medido en
@@ -390,21 +393,58 @@ vec4 bilerp(sampler2D sam, vec2 uv, vec2 ts){
   return mix(mix(a, b, fuv.x), mix(c, d, fuv.x), fuv.y);
 }
 void main(){
-  vec2 coord = vUv - uDt * bilerp(uVelocity, vUv, uTexelSize).xy * uTexelSize;
+  vec2 paso = uDt * bilerp(uVelocity, vUv, uTexelSize).xy * uTexelSize;
+  vec2 coord = vUv - paso;
   vec4 r = bilerp(uSource, coord, uSourceTexel) / (1.0 + uDissipation * uDt);
-  // N3C r12 · LA RELAJACIÓN HACIA LA IDENTIDAD.
-  // Con uRelax = 0 esto es la advección clásica del original MIT. Con uRelax > 0
-  // el mapa material vuelve LENTAMENTE a su sitio, lo que acota el filamentado
-  // sin volver a anclar el dibujo: el patrón se aleja de su pasado —que es lo
-  // que faltaba— pero no se deshilacha al infinito.
-  gl_FragColor = mix(r, vec4(vUv, 0.0, 1.0), clamp(uRelax * uDt, 0.0, 1.0));
+  // ── N3C r15 · SE GUARDA EL DESPLAZAMIENTO, NO LA COORDENADA ───────────────
+  //
+  // Ésta es la causa REAL de las «olas duras», y es de precisión, no de física.
+  // La textura es de media precisión: diez bits de mantisa. Guardando la
+  // coordenada absoluta (0,1 a 0,9) el escalón vale 4,9e-4 — y el
+  // desplazamiento que el orbe necesita leer es del orden de 7,9e-4. O sea que
+  // **el escalón era el 62 % de la señal**: del desplazamiento sobrevivían un
+  // puñado de niveles discretos, y la frontera entre dos niveles es exactamente
+  // una línea con borde escalonado barriendo el disco.
+  //
+  // Peor todavía: el orbe hacía mapa menos su propia coordenada, que es restar dos
+  // números casi iguales. Esa resta se queda con TODO el error absoluto y no
+  // con la parte buena.
+  //
+  // Guardando el desplazamiento el valor vive cerca de cero, donde la media
+  // precisión da resolución RELATIVA: el escalón pasa a ser ~0,1 % de la señal.
+  // La identidad ya no es vUv, es el cero, y el paso propio se resta acá:
+  //   M(x) = D(x) + x  ⇒  D_nuevo(x) = D_viejo(x - v·dt) - v·dt
+  vec3 d = vec3(r.xy - paso, r.z);
+  // ── N3C r15 · LA VISCOSIDAD QUE LE FALTABA AL MAPA ───────────────────────
+  //
+  // La velocidad SE ADVECTA A SÍ MISMA, y eso forma choques: es física, no un
+  // error de implementación. En el original no se ven porque lo que se mira es
+  // el TINTE, que se disipa y se difunde. Nuestro mapa no se disipa —una
+  // coordenada no puede— así que copia cada choque con filo perfecto, y un filo
+  // que se mueve es una línea dura barriendo el disco. Medido pintando el
+  // desplazamiento crudo: razones de 33 a 256 contra un suelo de 5,2.
+  //
+  // La cura es la que usa cualquier fluido real: un poco de viscosidad. Se
+  // promedia con los cuatro vecinos, lo justo para redondear el filo sin
+  // borrar el flujo. Va sólo en el mapa; la velocidad conserva su física.
+  if(uDiffuse > 0.0){
+    vec3 vecinos = 0.25 * (
+      bilerp(uSource, coord + vec2(uSourceTexel.x, 0.0), uSourceTexel).xyz +
+      bilerp(uSource, coord - vec2(uSourceTexel.x, 0.0), uSourceTexel).xyz +
+      bilerp(uSource, coord + vec2(0.0, uSourceTexel.y), uSourceTexel).xyz +
+      bilerp(uSource, coord - vec2(0.0, uSourceTexel.y), uSourceTexel).xyz);
+    d = mix(d, vec3(vecinos.xy - paso, vecinos.z), clamp(uDiffuse, 0.0, 1.0));
+  }
+  gl_FragColor = vec4(mix(d, vec3(0.0), clamp(uRelax * uDt, 0.0, 1.0)), 1.0);
 }`;
 
-// N3C r12 · EL MAPA MATERIAL EMPIEZA SIENDO LA IDENTIDAD: cada punto guarda su
-// propia coordenada. Advectado, cada punto guarda DE DÓNDE VINO, y esa
-// diferencia es un desplazamiento que crece — no un empujón acotado que vuelve.
+// N3C r12/r15 · EL MAPA MATERIAL EMPIEZA EN CERO: cada punto guarda cuánto se
+// ha desplazado, no dónde está. Advectado, ese desplazamiento CRECE — no es un
+// empujón acotado que vuelve. En cero la media precisión da resolución
+// relativa; guardando la coordenada absoluta, el escalón se comía el 62 % de
+// la señal (r15).
 const IDENTITY = `${HEAD}
-void main(){ gl_FragColor = vec4(vUv, 0.0, 1.0); }`;
+void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }`;
 
 const DIVERGENCE = `${HEAD}
 uniform sampler2D uVelocity;
@@ -717,6 +757,7 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       gl.uniform1f(u(progs.advect, "uDt"), dt);
       gl.uniform1f(u(progs.advect, "uDissipation"), ORB_FLUID_VELOCITY_DISSIPATION);
       gl.uniform1f(u(progs.advect, "uRelax"), 0);
+      gl.uniform1f(u(progs.advect, "uDiffuse"), 0);
       gl.uniform2f(u(progs.advect, "uSourceTexel"), velocity.read.texel[0], velocity.read.texel[1]);
       bindTex(progs.advect, "uVelocity", 2, velocity.read.tex);
       bindTex(progs.advect, "uSource", 3, velocity.read.tex);
@@ -731,6 +772,7 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       // la esquina inferior izquierda.
       gl.uniform1f(u(progs.advect, "uDissipation"), 0);
       gl.uniform1f(u(progs.advect, "uRelax"), ORB_FLUID_MAP_RELAX);
+      gl.uniform1f(u(progs.advect, "uDiffuse"), ORB_FLUID_MAP_DIFFUSE);
       gl.uniform2f(u(progs.advect, "uSourceTexel"), dye.read.texel[0], dye.read.texel[1]);
       bindTex(progs.advect, "uVelocity", 2, velocity.read.tex);
       bindTex(progs.advect, "uSource", 3, dye.read.tex);

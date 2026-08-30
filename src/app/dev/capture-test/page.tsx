@@ -104,6 +104,8 @@ import { orbReferenceClock } from "@/app/app/components/shell/orb-shader";
 import {
   ORB_FLUID_ITERATIONS,
   ORB_FLUID_MAP_RELAX,
+  ORB_FLUID_MAP_DIFFUSE,
+  ORB_FLUID_DYE_SIZE,
   ORB_FLUID_SIM_SIZE,
   ORB_FLUID_VELOCITY_DISSIPATION,
   orbFluidPush,
@@ -29975,11 +29977,39 @@ assert(
       // Los dos topes del freno, porque un umbral de un lado deja pasar el
       // otro: con 0 el mapa se deshilacha en filamentos, y alto vuelve a
       // anclar el dibujo — que es el defecto original.
-      n3ShaderCode.includes("vec2 fw = (fl.xy - fs0)") &&
-      n3cFluido.includes("gl_FragColor = vec4(vUv, 0.0, 1.0); }") &&
-      /uniform float uDt, uDissipation, uRelax;/u.test(n3cFluido) &&
+      // r15 · el mapa guarda el DESPLAZAMIENTO, no la coordenada. Guardando la
+      // coordenada absoluta en media precisión el escalón valía 4,9e-4 contra
+      // una señal de 7,9e-4 — el 62 % —, y el orbe además restaba dos números
+      // casi iguales, que se queda con todo el error y nada de la señal. Cerca
+      // de cero la media precisión da resolución RELATIVA: ~0,1 %.
+      n3ShaderCode.includes("vec2 fw = fl.xy * 7.0;") &&
+      n3cFluido.includes("gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }") &&
+      n3cFluido.includes("vec3 d = vec3(r.xy - paso, r.z);") &&
+      /uniform float uDt, uDissipation, uRelax, uDiffuse;/u.test(n3cFluido) &&
       ORB_FLUID_MAP_RELAX > 0.02 &&
       ORB_FLUID_MAP_RELAX < 1 &&
+      // ── N3C r15 · EL MAPA NO PUEDE RESOLVER MÁS FINO QUE SU VELOCIDAD ─────
+      // La causa REAL de las «olas duras». La velocidad se advecta a sí misma y
+      // forma choques —es física—, y un mapa con 5× la resolución de esa
+      // velocidad los copia con filo perfecto: detalle por debajo de la escala
+      // que la física resuelve es puro artefacto numérico, y un filo que se
+      // mueve es una línea dura barriendo el disco.
+      //
+      // Medido, con el suelo del orbe SIN fluido en 5,2:
+      //   mapa 640 → base 6,1 · pico 15,3
+      //   mapa 160 → base 5,4 · pico  9,1
+      //   mapa 128 → base 5,2 · pico  7,4   ← igual a la velocidad
+      // y el flujo no se movió (0,0127 → 0,0126). O sea: los 5× de resolución
+      // no compraban NADA de movimiento, sólo artefacto.
+      ORB_FLUID_DYE_SIZE <= ORB_FLUID_SIM_SIZE &&
+      // …y la viscosidad, con los dos topes: con 0 el filo se conserva
+      // (pico 8,7), con 1 el flujo se disuelve en una mancha.
+      ORB_FLUID_MAP_DIFFUSE > 0 &&
+      ORB_FLUID_MAP_DIFFUSE < 0.8 &&
+      n3cFluido.includes('gl.uniform1f(u(progs.advect, "uDiffuse"), 0);') &&
+      n3cFluido.includes(
+        'gl.uniform1f(u(progs.advect, "uDiffuse"), ORB_FLUID_MAP_DIFFUSE);',
+      ) &&
       // …y el CABLEADO de las dos pasadas, que el gate no puede ejecutar
       // porque no corre GPU: la velocidad se disipa y no se relaja; el mapa se
       // relaja y NO se disipa. Disipar una coordenada la lleva a cero, y cero
