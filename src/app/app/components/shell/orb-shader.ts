@@ -72,6 +72,12 @@ import {
   orbNoiseTexture,
   orbSeededAngles,
 } from "./orb-noise-texture";
+import {
+  ORB_FLUID_ITERATIONS,
+  createOrbFluid,
+  orbFluidSplats,
+  type OrbFluid,
+} from "./orb-fluid";
 
 export type OrbRgb = readonly [number, number, number];
 
@@ -141,6 +147,14 @@ export interface OrbFrame {
   time: number;
   day: number;
   tier: 1 | 2 | 3;
+  /**
+   * N3C r6 · LO QUE EL FLUIDO NECESITA. La simulación es UNA para todo el
+   * lienzo —igual que el lienzo es uno para los cinco orbes—, así que el empuje
+   * no puede salir de una llamada de dibujo: llega con el cuadro.
+   */
+  voice: number;
+  wave: number;
+  dtSeconds: number;
   orbs: readonly OrbDrawCall[];
 }
 
@@ -156,6 +170,15 @@ export interface OrbBufferInfo {
 export interface OrbRenderer {
   resize(cssWidth: number, cssHeight: number, dpr: number): OrbBufferInfo;
   draw(frame: OrbFrame): void;
+  /**
+   * N3C r6 · ADELANTAR EL FLUIDO SIN DIBUJAR. Una probeta pinta UN cuadro, y un
+   * fluido recién arrancado está quieto: sin esto las probetas mostrarían el
+   * material sin movimiento y la mesa de luz mentiría. Es determinista —mismos
+   * segundos, mismo estado— así que las fotos se pueden comparar entre rondas.
+   */
+  warmFluid(seconds: number, voice?: number): void;
+  /** `true` cuando el fluido corre de verdad. `false` es el degradado honesto. */
+  hasFluid(): boolean;
   dispose(): void;
 }
 
@@ -199,6 +222,8 @@ uniform float uWave, uBob, uDepth, uEnv, uField;
 uniform vec2 uTilt;
 uniform vec3 uLiq, uDeep, uAcc;
 uniform sampler2D uPerlin;
+uniform sampler2D uFluid;
+uniform float uHasFluid;
 const float KIPU_TIER = __KIPU_TIER__;
 const vec3 LKEY = vec3(-0.4082, 0.8367, 0.3646);
 const vec3 LFILL = vec3(0.6396, -0.2559, 0.7248);
@@ -305,6 +330,11 @@ float fbm(vec2 p){
 // viene curvada, y el resultado es continuo en la primera y la segunda
 // derivada. Cuesta cinco operaciones y no una lectura más.
 const float FIELD_TEX = __KIPU_NOISE__;
+// EL FLUIDO DEL PÍXEL: hacia dónde empuja el líquido acá, y cuánto. Se lee una
+// sola vez en 'main' —una muestra de textura— y de ahí sale TODO el movimiento.
+vec2 gFlow = vec2(0.0);
+float gFlowMag = 0.0;
+
 float fieldTex(vec2 p){
   vec2 t = p * FIELD_TEX + 0.5;
   vec2 i = floor(t), f = fract(t);
@@ -357,8 +387,21 @@ float fieldGray(vec2 p, float anim, float drive){
   // tiempo es el campo de DESPLAZAMIENTO, y como su amplitud está acotada, las
   // manchas se hinchan, se estiran y se deshacen EN SU SITIO. Nada cruza el
   // orbe, y por eso no hay ni velocidad ni dirección que percibir.
-  vec2 q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),
-                fieldFbm(p + vec2(5.2, 1.3) - vec2(anim*0.061, anim*0.074)));
+  //
+  // N3C r6 · Y EL DESPLAZAMIENTO YA NO LO INVENTA UN SENO: LO DA UN FLUIDO.
+  // Capturando el shader de su página apareció 'uFluidSimTexture' y, con él,
+  // el solver de Navier-Stokes entero. Un fluido advecta: cada trozo viaja por
+  // su cuenta siguiendo la velocidad local, se enrosca, no repite, y cuando lo
+  // empujás la perturbación se propaga sola. Eso no se fabrica con un seno.
+  // Sin texturas de coma flotante no hay fluido y el campo vuelve al ruido:
+  // peor, y verdadero.
+  vec2 q;
+  if(uHasFluid > 0.5){
+    q = 0.5 + gFlow;
+  } else {
+    q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),
+             fieldFbm(p + vec2(5.2, 1.3) - vec2(anim*0.061, anim*0.074)));
+  }
   // la voz abre la deformación: el campo se revuelve más mientras hablás, que
   // es lo único que su 'uOutputVolume' hacía con el ángulo.
   //
@@ -376,7 +419,7 @@ float fieldGray(vec2 p, float anim, float drive){
   // La amplitud sube un poco respecto de la ronda 4 porque ahora es lo ÚNICO
   // que se mueve — pero sigue acotada: el desplazamiento máximo es un cuarto de
   // mancha, así que ningún rasgo llega a cruzar nada.
-  float amount = mix(0.17, 0.40, drive);
+  float amount = mix(0.17, 0.40, drive) * (uHasFluid > 0.5 ? 1.55 : 1.0);
   float f = fieldFbm(p + amount*(q - 0.5) + vec2(1.7, 9.2));
   // El rango útil del fbm no es [0,1]: sin esto el campo vive apretado en el
   // medio de la rampa y sale un color plano.
@@ -390,8 +433,15 @@ float fieldGray(vec2 p, float anim, float drive){
 float fieldHue(vec2 p, float anim){
   // Igual que el del tono: el punto no se mueve, se mueve su deformación — y a
   // otro ritmo, para que el color y el brillo no respiren al unísono.
-  vec2 q = vec2(fieldFbm(p + vec2(2.9, 7.4) - vec2(anim*0.047, anim*0.068)),
-                fieldFbm(p + vec2(8.1, 0.6) + vec2(anim*0.072, -anim*0.039)));
+  // El color usa el MISMO fluido, girado un cuarto de vuelta: los dos vienen
+  // del líquido y aun así no respiran al unísono.
+  vec2 q;
+  if(uHasFluid > 0.5){
+    q = 0.5 + vec2(-gFlow.y, gFlow.x) * 0.85;
+  } else {
+    q = vec2(fieldFbm(p + vec2(2.9, 7.4) - vec2(anim*0.047, anim*0.068)),
+             fieldFbm(p + vec2(8.1, 0.6) + vec2(anim*0.072, -anim*0.039)));
+  }
   float h = fieldFbm(p + 0.30*(q - 0.5) + vec2(6.3, 2.1));
   return clamp((h - 0.34) / 0.34, 0.0, 1.0);
 }
@@ -601,12 +651,26 @@ void main(){
     float sn = sin(uSpin * 0.30), cs = cos(uSpin * 0.30);
     // 0,22 y no 0,62: con 0,62 el orbe abarcaba cinco manchas de la tela y el
     // campo se leía como una textura. Sus orbes muestran DOS o TRES.
+    // EL FLUIDO, UNA SOLA MUESTRA. Cada capa lo mira GIRADO 72 grados respecto
+    // de la anterior: la simulación es una —un lienzo, un fluido— y aun así las
+    // cinco no muestran el mismo remolino.
+    if(uHasFluid > 0.5){
+      float fa = uMat * 1.2566;
+      float fc = cos(fa), fs = sin(fa);
+      vec2 fr = vec2(fc*fq.x - fs*fq.y, fs*fq.x + fc*fq.y);
+      vec3 fl = texture2D(uFluid, clamp(fr * 0.44 + 0.5, 0.015, 0.985)).xyz;
+      gFlow = clamp(fl.xy * 1.85, -1.0, 1.0);
+      gFlowMag = clamp(fl.z * 3.0, 0.0, 1.0);
+    }
     vec2 fp = vec2(cs*fq.x + sn*fq.y, -sn*fq.x + cs*fq.y) * 0.22;
     // Cada capa mira OTRA PARTE del mismo campo. Sin esto las cinco dibujan el
     // mismo patrón con distinto color, y el carrusel se lee como un filtro.
     fp += vec2(uMat * 0.37, uMat * 0.23);
     gField = fieldRamp(fieldGray(fp, uField, drive), fieldHue(fp, uField), 1.0 - uDay) * uEnv;
     gField += fieldGrain(fq) * (0.055 + 0.02*uDay) * uEnv;
+    // donde el fluido acaba de pasar queda un rastro más claro: es la estela,
+    // y es lo que hace que se vea DE DÓNDE viene el movimiento
+    gField += mix(uAcc, vec3(1.0), 0.35) * gFlowMag * 0.075 * uEnv;
   }
 
   vec3 soul = vec3(0.0);
@@ -966,6 +1030,8 @@ interface ProgramBundle {
     env: WebGLUniformLocation | null;
     field: WebGLUniformLocation | null;
     perlin: WebGLUniformLocation | null;
+    fluid: WebGLUniformLocation | null;
+    hasFluid: WebGLUniformLocation | null;
     tilt: WebGLUniformLocation | null;
     liquid: WebGLUniformLocation | null;
     deep: WebGLUniformLocation | null;
@@ -1021,6 +1087,8 @@ function linkTierProgram(
       env: uniform("uEnv"),
       field: uniform("uField"),
       perlin: uniform("uPerlin"),
+      fluid: uniform("uFluid"),
+      hasFluid: uniform("uHasFluid"),
       tilt: uniform("uTilt"),
       liquid: uniform("uLiq"),
       deep: uniform("uDeep"),
@@ -1193,6 +1261,10 @@ export function createOrbRenderer(
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
+  // EL FLUIDO. Puede no existir —hay teléfonos sin texturas de coma flotante—
+  // y en ese caso el orbe vuelve a su deformación de ruido. Nunca se finge.
+  const fluid: OrbFluid | null = createOrbFluid(gl);
+
   const noise = uploadNoise(gl);
   if (!noise) {
     gl.deleteBuffer(buffer);
@@ -1203,6 +1275,8 @@ export function createOrbRenderer(
   for (const bundle of programs) {
     gl.useProgram(bundle.program);
     gl.uniform1i(bundle.locations.perlin, 0);
+    gl.uniform1i(bundle.locations.fluid, 1);
+    gl.uniform1f(bundle.locations.hasFluid, fluid ? 1 : 0);
   }
   if (reference) {
     // Los siete desfasajes son de SU componente, no del nuestro: nuestro campo
@@ -1265,6 +1339,30 @@ export function createOrbRenderer(
           gl.drawArrays(gl.TRIANGLES, 0, 6);
         }
       }
+      // ── UN PASO DE FLUIDO POR CUADRO, ANTES DE DIBUJAR ──────────────────
+      // El calendario de empujones es una función PURA: el gate la ejecuta y le
+      // exige que en silencio siga habiendo movimiento y que la voz empuje
+      // mucho más. Lo que corre en la GPU es sólo el solver.
+      if (fluid) {
+        fluid.step(
+          frame.dtSeconds,
+          orbFluidSplats({
+            time: frame.time,
+            voice: frame.voice,
+            wave: frame.wave,
+            dtSeconds: frame.dtSeconds,
+          }),
+          ORB_FLUID_ITERATIONS[frame.tier],
+        );
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, fluid.texture);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, noise);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
       gl.useProgram(bundle.program);
       gl.uniform2f(locations.canvas, cssWidth, cssHeight);
       gl.uniform1f(locations.time, frame.time);
@@ -1292,9 +1390,28 @@ export function createOrbRenderer(
         gl.drawArrays(gl.TRIANGLES, 0, 6);
       }
     },
+    warmFluid(seconds, voice = 0) {
+      if (!fluid || disposed) return;
+      const dt = 1 / 60;
+      const pasos = Math.max(0, Math.min(600, Math.round(seconds / dt)));
+      for (let i = 0; i < pasos; i += 1) {
+        const t = i * dt;
+        fluid.step(
+          dt,
+          orbFluidSplats({ time: t, voice, wave: 0, dtSeconds: dt }),
+          ORB_FLUID_ITERATIONS[3],
+        );
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+    },
+    hasFluid() {
+      return fluid !== null;
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
+      fluid?.dispose();
       gl.deleteBuffer(buffer);
       gl.deleteTexture(noise);
       for (const compiled of programs) gl.deleteProgram(compiled.program);

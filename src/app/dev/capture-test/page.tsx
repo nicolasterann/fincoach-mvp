@@ -102,6 +102,12 @@ import {
 } from "@/app/app/components/shell/orb-noise-texture";
 import { orbReferenceClock } from "@/app/app/components/shell/orb-shader";
 import {
+  ORB_FLUID_ITERATIONS,
+  ORB_FLUID_VELOCITY_DISSIPATION,
+  orbFluidPush,
+  orbFluidSplats,
+} from "@/app/app/components/shell/orb-fluid";
+import {
   KIPU_STATE_KINDS,
   KIPU_STATE_SHAPES,
   KIPU_UNMEASURED,
@@ -29691,8 +29697,11 @@ assert(
           n3ShaderCode.indexOf("float fieldGrain("),
         ),
       ) &&
-      // …y el tiempo entra SÓLO por el desplazamiento
-      /vec2 q = vec2\(fieldFbm\(p \+ vec2\(anim/u.test(n3ShaderCode) &&
+      // …y el tiempo entra SÓLO por el desplazamiento. N3C r6 · re-anclado: el
+      // desplazamiento ya no lo inventa un seno, lo da el fluido — y cuando no
+      // hay fluido, el respaldo sigue siendo deformación y no transporte.
+      /q = 0\.5 \+ gFlow;/u.test(n3ShaderCode) &&
+      /q = vec2\(fieldFbm\(p \+ vec2\(anim/u.test(n3ShaderCode) &&
       // los siete óvalos sobreviven SÓLO en el porte fiel, que es de ellos
       ORB_FIELD_OVALS === 7 &&
       n3cReferenceCode.includes("for (int i = 0; i < 7; i++)") &&
@@ -29748,6 +29757,77 @@ assert(
     JSON.stringify({
       santuarioImportaLaReferencia: /from "\.\/orb-reference-shader"/u.test(n3ShaderCode),
       relojFiel: +orbReferenceClock(10, 0.3).animation.toFixed(3),
+    }),
+  );
+
+  // N3C-8 · EL FLUIDO EMPUJA SIEMPRE, EMPUJA MÁS CON VOZ, Y NO DEPENDE DEL
+  // CUADRO — y cuando no se puede, se dice.
+  //
+  // Cinco rondas ajustando un campo de ruido y el founder dijo lo mismo las
+  // cinco veces: «una capa que pasa». Era estructural: un ruido sólo sabe
+  // quedarse quieto o desplazarse. Capturando el shader de su página apareció
+  // `uFluidSimTexture` y el solver de Navier-Stokes entero.
+  //
+  // El solver corre en la GPU y desde acá no se puede ejecutar. Lo que SÍ se
+  // ejecuta —y es donde vive la conducta que el founder juzga— es el CALENDARIO
+  // de empujones: cuándo se empuja el fluido, dónde y con cuánta fuerza.
+  const n3cFluido = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/orb-fluid.ts`,
+    "utf8",
+  );
+  const n3cFluCallada = orbFluidSplats({ time: 3.1, voice: 0, wave: 0, dtSeconds: 1 / 60 });
+  const n3cFluHablando = orbFluidSplats({ time: 3.1, voice: 1, wave: 0, dtSeconds: 1 / 60 });
+  const n3cFluMedioCuadro = orbFluidSplats({ time: 3.1, voice: 1, wave: 0, dtSeconds: 1 / 120 });
+  assert(
+    "N3C-8 · el fluido nunca está del todo quieto, la voz lo empuja mucho más, la fuerza no depende del cuadro y sin coma flotante se degrada honesto",
+    // ── EN SILENCIO SIGUE HABIENDO MOVIMIENTO ──
+    // Es la mitad de la queja del founder: «el nuestro es mucho más estático».
+    // Un fluido sin empuje se aquieta y no vuelve solo.
+    n3cFluCallada.length >= 2 &&
+      orbFluidPush(n3cFluCallada) > 0 &&
+      // ── Y HABLANDO EMPUJA MUCHO MÁS ──
+      n3cFluHablando.length > n3cFluCallada.length &&
+      orbFluidPush(n3cFluHablando) > orbFluidPush(n3cFluCallada) * 8 &&
+      // ── LA FUERZA VA POR SEGUNDO, NO POR CUADRO ──
+      // Sin esto un teléfono de 120 Hz revuelve el fluido al doble que uno de
+      // 60, y «responde exacto» pasa a depender del aparato.
+      Math.abs(orbFluidPush(n3cFluMedioCuadro) * 2 - orbFluidPush(n3cFluHablando)) < 1e-9 &&
+      // ── nada se sale de la rejilla, ni con voz al máximo ──
+      [...n3cFluCallada, ...n3cFluHablando].every(
+        (s) =>
+          Number.isFinite(s.x) && Number.isFinite(s.y) &&
+          Number.isFinite(s.dx) && Number.isFinite(s.dy) &&
+          s.x >= 0 && s.x <= 1 && s.y >= 0 && s.y <= 1 && s.radius > 0,
+      ) &&
+      // determinista: el mismo momento, el mismo empujón
+      JSON.stringify(orbFluidSplats({ time: 3.1, voice: 1, wave: 0, dtSeconds: 1 / 60 })) ===
+        JSON.stringify(n3cFluHablando) &&
+      // ── EL FLUIDO SE AQUIETA: hay disipación, o el empuje se acumula para
+      // siempre y el orbe termina hirviendo ──
+      ORB_FLUID_VELOCITY_DISSIPATION > 0 &&
+      // ── EL DEGRADADO ES HONESTO ──
+      // Sin texturas de coma flotante no hay fluido, y el orbe vuelve a su
+      // deformación de ruido. Nunca se finge un fluido que no corrió.
+      n3cFluido.includes("export function createOrbFluid") &&
+      /return null;/u.test(n3cFluido) &&
+      ORB_FLUID_ITERATIONS[1] === 0 &&
+      ORB_FLUID_ITERATIONS[2] < ORB_FLUID_ITERATIONS[3] &&
+      // ── EL CABLE, en las tres puntas ──
+      n3ShaderCode.includes("createOrbFluid(gl)") &&
+      n3ShaderCode.includes("orbFluidSplats({") &&
+      n3ShaderCode.includes("ORB_FLUID_ITERATIONS[frame.tier]") &&
+      n3ShaderCode.includes("uniform float uHasFluid;") &&
+      n3ShaderCode.includes("if(uHasFluid > 0.5){") &&
+      // …y el orbe vivo le pasa la voz de M5 y el chapoteo, no un número fijo
+      n3LiveCode.includes("voice: animatedVoice,") &&
+      n3LiveCode.includes("wave: waveEnergy,") &&
+      // …y se puede MEDIR si corrió, en vez de suponerlo mirando una foto
+      n3LiveCode.includes('canvas.dataset.fluid = renderer.hasFluid() ? "1" : "0";') &&
+      n3cSpecimenCode.includes('target.dataset.fluid = renderer.hasFluid()'),
+    JSON.stringify({
+      empujeCallado: +orbFluidPush(n3cFluCallada).toFixed(4),
+      empujeHablando: +orbFluidPush(n3cFluHablando).toFixed(4),
+      razon: +(orbFluidPush(n3cFluHablando) / orbFluidPush(n3cFluCallada)).toFixed(1),
     }),
   );
 

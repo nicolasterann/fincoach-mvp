@@ -791,10 +791,18 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
         });
       }
       drawnOrbs = calls.length;
+      // el santuario también lo declara: el fluido corrió, o no
+      canvas.dataset.fluid = renderer.hasFluid() ? "1" : "0";
       renderer.draw({
         time: slowTime,
         day: theme === "light" ? 1 : 0,
         tier: currentTier,
+        // N3C r6 · lo que empuja el fluido: la voz de M5 y el chapoteo del
+        // líquido. Es UNA simulación para el lienzo entero, así que el empuje
+        // viene del cuadro y no de una llamada de dibujo.
+        voice: animatedVoice,
+        wave: waveEnergy,
+        dtSeconds: frameDelta == null ? 1 / 60 : Math.max(0.001, frameDelta / 1_000),
         orbs: calls,
       });
 

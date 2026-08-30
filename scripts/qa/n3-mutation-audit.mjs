@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 // build no prueba nada: prueba que el código no compila, no que alguien estaba
 // mirando.
 
-const TOTAL = 890;
+const TOTAL = 891;
 const runner = ["scripts/qa/run-capture-gate.mjs"];
 
 const CONTRACT = "src/app/app/components/shell/shell-orb-contract.ts";
@@ -27,6 +27,7 @@ const PAYLOAD = "src/app/app/components/shell/shell-payload.ts";
 const SAVE_ACTIONS = "src/app/onboarding/save-actions.ts";
 const NOISE = "src/app/app/components/shell/orb-noise-texture.ts";
 const REFERENCE = "src/app/app/components/shell/orb-reference-shader.ts";
+const FLUID = "src/app/app/components/shell/orb-fluid.ts";
 
 const mutations = [
   // ── N3B · el vidrio y el agua ────────────────────────────────────────────
@@ -470,8 +471,54 @@ const mutations = [
     result:
       "vuelve el TRANSPORTE: el campo gira, y con rasgos seguibles cualquier giro se lee como «una capa que pasa» — el founder lo dijo con giro y con traslacion",
     file: SHADER,
-    from: "  vec2 q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),",
-    to: "  float a_=anim*0.16, c_=cos(a_), s_=sin(a_); p = vec2(c_*p.x - s_*p.y, s_*p.x + c_*p.y);\n  vec2 q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),",
+    from: "    q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),",
+    to: "    float a_=anim*0.16, c_=cos(a_), s_=sin(a_); p = vec2(c_*p.x - s_*p.y, s_*p.x + c_*p.y);\n    q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),",
+  },
+  // ── N3C ronda 6 · el fluido ───────────────────────────────────────────────
+  {
+    name: "N3C-8",
+    result:
+      "el fluido se queda sin empuje de fondo: en silencio se aquieta y no vuelve solo — «el nuestro es mucho mas estatico», otra vez",
+    file: FLUID,
+    from: "export const ORB_FLUID_AMBIENT_FORCE = 0.85;",
+    to: "export const ORB_FLUID_AMBIENT_FORCE = 0;",
+  },
+  {
+    name: "N3C-8",
+    result: "la voz deja de empujar el fluido: el orbe se mueve igual hablando que callado",
+    file: FLUID,
+    from: "export const ORB_FLUID_VOICE_FORCE = 5.0;",
+    to: "export const ORB_FLUID_VOICE_FORCE = 0.1;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "la fuerza pasa a depender del CUADRO: un telefono de 120 Hz revuelve el fluido al doble que uno de 60",
+    file: FLUID,
+    from: "  const dt = Math.min(1 / 30, Math.max(1 / 240, finite(input.dtSeconds, 1 / 60)));",
+    to: "  const dt = 1 / 60;",
+  },
+  {
+    name: "N3C-8",
+    result: "el fluido no se disipa: el empuje se acumula para siempre y el orbe termina hirviendo",
+    file: FLUID,
+    from: "export const ORB_FLUID_VELOCITY_DISSIPATION = 0.34;",
+    to: "export const ORB_FLUID_VELOCITY_DISSIPATION = 0;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "CABLE · el orbe vivo deja de pasarle la voz al fluido: el santuario nunca responde al hablar aunque el solver corra",
+    file: LIVE,
+    from: "        voice: animatedVoice,\n        wave: waveEnergy,",
+    to: "        voice: 0,\n        wave: 0,",
+  },
+  {
+    name: "N3C-5",
+    result: "el shader deja de leer el fluido y vuelve al ruido aunque el solver este corriendo",
+    file: SHADER,
+    from: "    q = 0.5 + gFlow;",
+    to: "    q = vec2(0.5);",
   },
 ];
 

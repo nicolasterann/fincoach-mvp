@@ -807,3 +807,102 @@ No puedo ver el movimiento con las herramientas que tengo. Lo que sí serviría:
 **cuatro o cinco capturas del MISMO orbe, con un segundo de diferencia**,
 mientras suena. Con eso puedo medir si se deforma en el sitio o si algo viaja, y
 a qué ritmo — que es exactamente lo que no puedo observar.
+
+---
+
+## Ronda 6 — el fluido
+
+El founder pidió que encontrara la forma de ver su movimiento. La encontró él:
+**trajo Chrome al frente.** Con la pestaña oculta el navegador suspende
+`requestAnimationFrame` y nada se anima — ni lo nuestro ni lo ajeno. Medido:
+**0 cuadros/s oculta, 120 cuadros/s visible.** Treinta segundos de su tiempo
+valieron más que cinco rondas mías.
+
+### Lo que apareció
+
+Enganché `shaderSource` y capturé **20 shaders**. El compuesto declara:
+
+```
+uniform sampler2D uFluidSimTexture;    ← una simulación de fluidos
+uniform sampler2D uTexture;            ← un degradado pre-renderizado
+uniform vec4 uAudioAverage, uAudioAverageInput, uCumulativeAudio;
+float filmGrainNoise(...)  contrast()  exposure()  czm_saturation()
+```
+
+Y los shaders chicos son, uno por uno, el solver clásico de Navier-Stokes:
+
+| uniformes | paso |
+|---|---|
+| `point`, `radius`, `color`, `cumulativeAudio`, `audioAverage` | **salpicadura** — el audio inyecta fuerza |
+| `uVelocity` | divergencia |
+| `uVelocity` | advección |
+| `uVelocity`, `uCurl`, `curl`, `dt` | **vorticidad** |
+| `uPressure`, `uDivergence` | presión por Jacobi |
+| `uPressure`, `uVelocity` | resta del gradiente |
+
+**Su orbe es una simulación de fluidos empujada por la voz.** Por eso ninguna de
+las cinco rondas podía llegar: un campo de ruido sólo sabe quedarse quieto o
+desplazarse, y las dos cosas se leen como transporte. Un fluido **advecta** —
+cada trozo viaja por su cuenta siguiendo la velocidad local, se enrosca, no
+repite, y cuando lo empujás la perturbación se propaga sola y se disipa.
+
+(No pude leer su `main()`: un filtro de seguridad de la herramienta bloqueó el
+cuerpo. Los uniformes y las firmas alcanzaron.)
+
+### Lo que se construyó
+
+`orb-fluid.ts`: el solver completo — salpicadura, curl, vorticidad, divergencia,
+presión por Jacobi, resta del gradiente y advección — sobre texturas de media
+precisión, velocidad a 128² y rastro a 192². **Cero dependencias nuevas.**
+
+- **El rastro advectado ES el desplazamiento del campo.** La estampa del
+  material sigue siendo nuestra —las manchas, la rampa, el grano—; lo que cambia
+  es que ahora la mueve un líquido de verdad.
+- **Un fluido para el lienzo entero**, como el lienzo es uno para los cinco
+  orbes. Cada capa lo mira girado 72°, así que ninguna repite el remolino de
+  la anterior.
+- **El degradado es honesto:** sin texturas de coma flotante `createOrbFluid`
+  devuelve `null`, el shader recibe `uHasFluid = 0` y el campo vuelve a su
+  deformación de ruido. Peor, y verdadero. Y se puede **medir**: el lienzo
+  declara `data-fluid`.
+- **La probeta adelanta 6 s de simulación** antes de la primera foto — un fluido
+  recién arrancado está quieto, y la mesa de luz mostraría un material sin
+  movimiento, que es justo lo que hay que juzgar.
+
+### Lo que el gate sujeta
+
+El solver corre en la GPU y desde node no se ejecuta. Lo que **sí** se ejecuta es
+el **calendario de empujones**, que es donde vive la conducta que el founder
+juzga. N3C-8 exige:
+
+| | medido |
+|---|---|
+| en silencio sigue habiendo empuje | 0,0086 |
+| hablando empuja mucho más | 0,383 — **44×** |
+| la fuerza va por segundo, no por cuadro | mitad de `dt` ⇒ exactamente la mitad del empuje |
+| el fluido se disipa | `> 0`, o el orbe termina hirviendo |
+| sin coma flotante, sin fluido | `ORB_FLUID_ITERATIONS[1] === 0` y el respaldo de ruido |
+
+### Dos defectos míos, encontrados ejecutando
+
+1. **El shader no compilaba.** Declaré `gFlow` *después* de `fieldGray`, que lo
+   usa — y GLSL exige declarar antes de usar. El renderer devolvía `null` y las
+   probetas decían «sin contexto WebGL».
+2. **Crear los destinos del fluido deja uno atado.** Sin desatar el framebuffer
+   al final de la creación, todo lo que el orbe dibujaba después aterrizaba
+   dentro de la última textura de la simulación, y el lienzo salía en negro.
+
+Los dos aparecieron en el primer render, no leyendo el código.
+
+### Los números
+
+```
+lint 0 · build 0 · capture 891/891 · mutación 62/62 con nombre
+```
+
+Peso del santuario: 65,7 KB gz de base → **75,9 KB gz** (+10,2). El solver son
+siete programas de shader más; es la pieza más grande del bloque y la única que
+podía dar el movimiento. Cero dependencias.
+
+```
+```

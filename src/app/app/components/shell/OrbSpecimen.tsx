@@ -76,6 +76,14 @@ function ensureRenderer(): OrbRenderer | null {
   return sharedRenderer;
 }
 
+// N3C r6 · CUÁNTOS SEGUNDOS DE FLUIDO SE ADELANTAN ANTES DE LA PRIMERA FOTO.
+// Una probeta pinta un cuadro, y un fluido recién arrancado está QUIETO: sin
+// esto la mesa de luz mostraría el material sin nada de movimiento, que es
+// justo lo que hay que juzgar. Es determinista, así que dos rondas se pueden
+// comparar.
+const FLUID_WARM_SECONDS = 6;
+let fluidWarmed = false;
+
 function paint(
   target: HTMLCanvasElement,
   width: number,
@@ -83,12 +91,20 @@ function paint(
   orbs: OrbDrawCall[],
   day: number,
   time: number,
+  voice = 0,
 ): 1 | 2 | null {
   const renderer = ensureRenderer();
   if (!renderer || !sharedCanvas) return null;
   const source = sharedCanvas;
+  if (!fluidWarmed) {
+    fluidWarmed = true;
+    renderer.warmFluid(FLUID_WARM_SECONDS);
+  }
+  // Que se pueda MEDIR si el fluido corrió o si estamos en el degradado: sin
+  // esto, «hay fluido» sería una suposición mirando una foto.
+  target.dataset.fluid = renderer.hasFluid() ? "1" : "0";
   const info = renderer.resize(width, height, window.devicePixelRatio || 1);
-  renderer.draw({ time, day, tier: 3, orbs });
+  renderer.draw({ time, day, tier: 3, voice, wave: 0, dtSeconds: 1 / 60, orbs });
   target.width = info.width;
   target.height = info.height;
   const ctx = target.getContext("2d");
@@ -212,6 +228,7 @@ export function OrbSpecimen({
       ],
       theme === "light" ? 1 : 0,
       time,
+      voice,
     );
     if (glVersion == null) {
       setFailure("sin contexto WebGL");
