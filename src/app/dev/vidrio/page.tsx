@@ -58,24 +58,24 @@ type Sheet = (typeof SHEETS)[number];
  * azul-turquesa.
  */
 const PALETA_PROPUESTA: Record<OrbKind, { liquid: OrbRgb; deep: OrbRgb; accent: OrbRgb }> = {
-  // permiso para disfrutar, HOY: fresco y con energía, el más vivo de los cinco
-  saldo: { liquid: [0.14, 0.86, 0.716], accent: [0.354, 0.886, 0.4249], deep: [0.0195, 0.2184, 0.2405] },
-  // lo que te protege: profundo y sólido, una bóveda — el más oscuro
-  reserva: { liquid: [0.1012, 0.2926, 0.8188], accent: [0.5339, 0.352, 0.848], deep: [0.024, 0.0496, 0.216] },
-  // hacia dónde vas: luminoso y aspiracional — el más claro
-  metas: { liquid: [0.7294, 0.3464, 0.8936], accent: [0.934, 0.466, 0.7624], deep: [0.1536, 0.064, 0.256] },
-  // lo que construiste: mineral, callado, poco saturado — bronce, no azul
-  patrimonio: { liquid: [0.752, 0.6608, 0.448], accent: [0.8152, 0.6819, 0.6248], deep: [0.0812, 0.1478, 0.1988] },
-  // lo que tira de vos: cálido y grave, SIN alarma roja — terracota a ciruela
-  deuda: { liquid: [0.8988, 0.4204, 0.1812], accent: [0.808, 0.232, 0.376], deep: [0.221, 0.0754, 0.039] },
+  // «un poco de blanco verdoso, para que no se vea tan chillón sino más sobrio»
+  saldo: { liquid: [0.3088, 0.7312, 0.6749], accent: [0.8392, 0.9208, 0.8827], deep: [0.0532, 0.2094, 0.2268] },
+  // «lo PURO del azul: de celeste casi blanco a azul más oscuro»
+  reserva: { liquid: [0.184, 0.4304, 0.856], accent: [0.842, 0.9135, 0.958], deep: [0.0234, 0.0696, 0.2366] },
+  // «menos lila, más morado/azulado, contrastes de blanco azul, un poquito de amarillo»
+  metas: { liquid: [0.4922, 0.3008, 0.7792], accent: [0.9188, 0.8914, 0.8012], deep: [0.1557, 0.0616, 0.2184] },
+  // «el amarillo pálido no va, se ve sucio»: lo construido es verde profundo,
+  // sólido y callado — el registro que él pidió (calma, control, sobriedad)
+  patrimonio: { liquid: [0.204, 0.476, 0.3763], accent: [0.784, 0.856, 0.82], deep: [0.048, 0.152, 0.1312] },
+  // «rojos, naranjas, blancos y un poquito de amarillo», un punto menos intenso
+  deuda: { liquid: [0.78, 0.3693, 0.22], accent: [0.9232, 0.8622, 0.7568], deep: [0.2028, 0.0718, 0.0572] },
 };
-
 const ETIQUETA_PROPUESTA: Record<OrbKind, string> = {
-  saldo: "turquesa → verde · el permiso de hoy",
-  reserva: "azul → índigo · la bóveda",
-  metas: "violeta → magenta · lo que viene",
-  patrimonio: "bronce → arena · lo construido",
-  deuda: "terracota → ciruela · el peso, sin alarma",
+  saldo: "turquesa → blanco verdoso · el permiso de hoy, sobrio",
+  reserva: "azul puro → celeste casi blanco · la bóveda",
+  metas: "morado azulado → crema cálida · lo que viene",
+  patrimonio: "verde profundo → plata · lo construido",
+  deuda: "terracota → arena cálida · el peso, sin alarma",
 };
 
 export default async function VidrioPage({

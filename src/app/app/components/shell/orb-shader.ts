@@ -292,6 +292,10 @@ const float VOICE_AMP = 3.85;
 const float VOICE_FREQ = 9.0;
 const float VOICE_SPEED = 5.4;
 const float CAM_PITCH = -0.11;
+// N3C r20 · cuánto se escorza la textura hacia la silueta. 0 = plano (una
+// calcomanía); 1 = la esfera exacta, cuya derivada explota en el contorno y
+// vuelve a plegar el dominio. 0,90 da ~2x de compresión en el borde.
+const float ORB_SPHERE_K = 0.90;
 // El menisco DE VERDAD es una película fina, no un bulto. N3 lo tenía en 0.078
 // —más alto que el piso del vaso entero— y por eso un orbe vacío dibujaba un
 // charco: el bulto trepaba la pared y levantaba la superficie visible.
@@ -741,7 +745,29 @@ void main(){
     // nivel, que es lo que hace un contenido y no un fondo.
     float wb = isDrop() > 0.5 ? -0.955 : waterBase();
     float cLiq = (wb - 1.0) * 0.5;
-    vec2 fq = uv - vec2(0.0, cLiq * 0.85);
+    // ── N3C r20 · LA ESFERA COMPRIME SU TEXTURA HACIA LA SILUETA ─────────
+    //
+    // El founder, mirando los suyos: «las fluctuaciones de color nacen desde
+    // los bordes, como ondulaciones sutiles del borde hacia adentro, y eso le
+    // da el efecto 3D». Tiene razón, y tiene nombre: en una esfera de verdad la
+    // textura se ESCORZA. Un paso igual de superficie ocupa cada vez menos
+    // pantalla a medida que se acerca al contorno, igual que los continentes se
+    // aplastan en el borde de un globo terráqueo.
+    //
+    // Nuestro campo se muestreaba en coordenadas PLANAS, así que las manchas
+    // tenían el mismo tamaño en el centro y en el borde: eso se lee como una
+    // calcomanía sobre un círculo, no como una esfera. Y explica lo que él
+    // describe: si el campo se comprime hacia afuera, las manchas parecen NACER
+    // en el borde y agrandarse al venir hacia el centro.
+    //
+    // La proyección exacta de una esfera es r' = asin(r), cuya derivada se va
+    // al infinito en el contorno. Eso plegaría el dominio justo donde acabamos
+    // de arreglarlo, así que se acota: con el factor 0,90 la compresión en el
+    // borde es ~2×, suficiente para leerse esférico y lejos del umbral.
+    float rPlano = min(length(uv), 1.0);
+    float rEsfera = asin(rPlano * ORB_SPHERE_K) / asin(ORB_SPHERE_K);
+    vec2 uvEsf = rPlano > 0.0001 ? uv * (rEsfera / rPlano) : uv;
+    vec2 fq = uvEsf - vec2(0.0, cLiq * 0.85);
     // …y gira con el orbe: un solo objeto, otra vez.
     // el gesto ya NO gira el campo: durante un deslizamiento uSpin salta y el
     // giro brusco se lee como un corte. El orbe se mueve; su contenido no.

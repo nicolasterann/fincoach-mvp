@@ -30216,6 +30216,37 @@ assert(
       // forzada no llegara al orbe, las dos filas serían la MISMA y la
       // comparación diría lo contrario de lo que muestra — el peor tipo de
       // instrumento. Se exige el cable y que las cinco capas tengan propuesta.
+      // ── N3C r20 · LA ESFERA COMPRIME SU TEXTURA HACIA LA SILUETA ─────────
+      //
+      // El founder, mirando los suyos: «las fluctuaciones de color nacen desde
+      // los bordes, como ondulaciones del borde hacia adentro, y eso le da el
+      // efecto 3D». Tiene razón y tiene nombre: en una esfera la textura se
+      // ESCORZA — un paso igual de superficie ocupa cada vez menos pantalla
+      // cerca del contorno. Sin eso, el campo se lee como una calcomanía sobre
+      // un círculo.
+      //
+      // El factor va acotado: la proyección exacta (asin) tiene derivada
+      // infinita en el contorno y volvería a plegar el dominio justo donde lo
+      // arreglamos. Medido con 0,90 (≈2× de compresión en el borde), las
+      // crestas MEJORARON: deuda 0,1096 → 0,0919, por debajo de su suelo.
+      n3ShaderCode.includes("float rEsfera = asin(rPlano * ORB_SPHERE_K) / asin(ORB_SPHERE_K);") &&
+      n3ShaderCode.includes("vec2 fq = uvEsf - vec2(0.0, cLiq * 0.85);") &&
+      (() => {
+        const m = n3ShaderCode.match(/const float ORB_SPHERE_K = ([0-9.]+);/u);
+        if (m == null) return false;
+        const k = Number.parseFloat(m[1]!);
+        // 0 sería plano (sin esfera); 1 es la esfera exacta, que pliega
+        return k > 0.5 && k < 0.97;
+      })() &&
+      // ── N3C r20 · UN CUADRO ES UN CUADRO, NO UN INTERVALO ────────────────
+      // La r16 decidía «cuadro nuevo» por separación temporal (>4 ms). Con diez
+      // probetas los dibujos de un mismo cuadro se estiran más allá de eso y se
+      // cuelan pasos de más: medido con la MISMA paleta, el fluido corría 11 %
+      // más rápido en la hoja de diez. El founder lo vio como «más rápido y más
+      // brusco que el que ya habíamos aprobado».
+      n3cSpecimenCode.includes("const avanzar = forzarPaso || ultimoPasoEn !== cuadroActual;") &&
+      n3cSpecimenCode.includes("cuadroActual += 1;") &&
+      !/ahora - ultimoPasoMs > 4/u.test(n3cSpecimenCode) &&
       n3cVidrioCode.includes('show("colores")') &&
       n3cVidrioCode.includes("paleta={PALETA_PROPUESTA[kind]}") &&
       n3cSpecimenCode.includes("paleta?.liquid ?? readCssColor(canvas,") &&

@@ -89,6 +89,28 @@ const FLUID_WARM_SECONDS = 6;
 let fluidWarmed = false;
 
 /**
+ * N3C r20 · EL CONTADOR DE CUADROS, porque el reloj de pared no alcanzaba.
+ *
+ * La r16 decidía «esto es un cuadro nuevo» por separación temporal: más de 4 ms
+ * desde el último paso. Con cinco probetas funcionaba; con DIEZ —la hoja de
+ * colores— los dibujos de un mismo cuadro se estiran más allá de esos 4 ms y se
+ * cuelan pasos de más. Medido con la MISMA paleta: el fluido corría 11 % más
+ * rápido en la hoja de diez (0,0204 contra 0,0184). El founder lo vio: «el
+ * movimiento es un poco más rápido y brusco que el que ya habíamos aprobado».
+ *
+ * Un cuadro no es un intervalo de tiempo: es un cuadro. Se cuenta con su propio
+ * `requestAnimationFrame`, y sólo la primera pintada de cada número avanza.
+ */
+let cuadroActual = 0;
+if (typeof window !== "undefined") {
+  const contar = () => {
+    cuadroActual += 1;
+    requestAnimationFrame(contar);
+  };
+  requestAnimationFrame(contar);
+}
+
+/**
  * N3C r16 · EL FLUIDO AVANZA UNA VEZ POR CUADRO, NO UNA POR PROBETA.
  *
  * Cinco probetas comparten UN renderer, y cada una llamaba a `draw`, que
@@ -101,6 +123,7 @@ let fluidWarmed = false;
  * cuatro dibujan el mismo estado. `forzarPaso` existe para el instrumento
  * headless, que llama en un bucle apretado y necesita avanzar igual.
  */
+let ultimoPasoEn = -1;
 let ultimoPasoMs = -1;
 
 function paint(
@@ -126,9 +149,12 @@ function paint(
   const info = renderer.resize(width, height, window.devicePixelRatio || 1);
   const ahora = typeof performance !== "undefined" ? performance.now() : 0;
   const transcurrido = ultimoPasoMs < 0 ? 1 / 60 : (ahora - ultimoPasoMs) / 1000;
-  // 4 ms: por debajo de eso es otra probeta del MISMO cuadro, no un cuadro nuevo
-  const avanzar = forzarPaso || ultimoPasoMs < 0 || ahora - ultimoPasoMs > 4;
-  if (avanzar) ultimoPasoMs = ahora;
+  // el NÚMERO de cuadro, no el tiempo: otra probeta del mismo cuadro no avanza
+  const avanzar = forzarPaso || ultimoPasoEn !== cuadroActual;
+  if (avanzar) {
+    ultimoPasoEn = cuadroActual;
+    ultimoPasoMs = ahora;
+  }
   renderer.draw({
     time,
     day,

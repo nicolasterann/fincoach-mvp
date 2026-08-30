@@ -707,6 +707,30 @@ const mutations = [
   {
     name: "N3C-8",
     result:
+      "la textura deja de ESCORZARSE hacia la silueta: el campo vuelve a leerse como una calcomania sobre un circulo, sin esfera",
+    file: SHADER,
+    from: "    vec2 fq = uvEsf - vec2(0.0, cLiq * 0.85);",
+    to: "    vec2 fq = uv - vec2(0.0, cLiq * 0.85);",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "el escorzo se va a la esfera EXACTA: la derivada explota en el contorno y el dominio vuelve a plegarse justo en el borde",
+    file: SHADER,
+    from: "const float ORB_SPHERE_K = 0.90;",
+    to: "const float ORB_SPHERE_K = 1.0;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "vuelve el reloj de pared para decidir si es un cuadro nuevo: con diez probetas se cuelan pasos de mas y el fluido corre 11 % mas rapido",
+    file: SPEC,
+    from: "  const avanzar = forzarPaso || ultimoPasoEn !== cuadroActual;",
+    to: "  const avanzar = forzarPaso || ultimoPasoMs < 0 || ahora - ultimoPasoMs > 4;",
+  },
+  {
+    name: "N3C-8",
+    result:
       "se borra el GUARD del interruptor: el fluido se enciende en produccion aunque la constante diga que no, y apagado deja de ser distinguible de roto",
     file: FLUID,
     from: "  if (!ORB_FLUID_ENABLED && !forzar) return null;",

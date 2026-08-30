@@ -1869,3 +1869,87 @@ al orbe, las dos filas serían la misma mostrada como distinta — el peor tipo 
 instrumento.
 
 Gate **891/891** · mutación **91 muertas, 0 fallas** · lint 0 errores · build verde.
+
+---
+
+## Ronda 20 — el escorzo de la esfera, y un defecto que el founder vio antes que yo
+
+Tres cosas del founder, y las tres resultaron correctas.
+
+### 1 · «El movimiento de la propuesta es un poco más rápido y brusco»
+
+No era impresión: **era un defecto mío**. La r16 decidía «esto es un cuadro
+nuevo» por separación temporal —más de 4 ms desde el último paso—. Con cinco
+probetas funcionaba; la hoja de colores tiene **diez**, sus dibujos se estiran
+más allá de esos 4 ms y se colaban pasos de más.
+
+Medido con la MISMA paleta: **0,0204 en la hoja de diez contra 0,0184 en la de
+cinco — 11 % más rápido.** Corregido contando el NÚMERO de cuadro con su propio
+`requestAnimationFrame`: 0,0178, otra vez igual que lo aprobado.
+
+**Un cuadro no es un intervalo de tiempo: es un cuadro.** La heurística
+funcionaba con la cantidad de probetas con la que la escribí.
+
+### 2 · «Las fluctuaciones nacen desde los bordes y eso da el efecto 3D»
+
+Tiene razón, y tiene nombre: **escorzo**. En una esfera, un paso igual de
+superficie ocupa cada vez menos pantalla cerca del contorno — los continentes se
+aplastan en el borde de un globo terráqueo. Nuestro campo se muestreaba en
+coordenadas **planas**, así que las manchas medían lo mismo en el centro y en el
+borde: una calcomanía sobre un círculo.
+
+Y explica exactamente lo que él describe: si el campo se comprime hacia afuera,
+las manchas **parecen nacer en el borde** y agrandarse al venir al centro.
+
+La proyección exacta es `r' = asin(r)`, cuya derivada se va al infinito en el
+contorno — eso plegaría el dominio justo donde acabábamos de arreglarlo. Va
+acotada con `ORB_SPHERE_K = 0,90`: ~2× de compresión en el borde.
+
+**Y mejoró las crestas** en vez de empeorarlas:
+
+| | p999 | su suelo |
+|---|---|---|
+| deuda, sin escorzo | 0,1096 | 0,0950 |
+| **deuda, con escorzo** | **0,0919** | 0,0950 |
+| saldo, con escorzo | 0,0799 | 0,0887 |
+
+Los dos quedan **por debajo de su propio suelo**.
+
+### 3 · Los colores, v2
+
+Su realimentación, capa por capa: saldo demasiado chillón (falta blanco
+verdoso); reserva le gustaba **lo puro del azul** del original, con más
+contraste de blancos; metas menos lila y más morado-azulado con un toque de
+amarillo; patrimonio **no le gustó** («el amarillo pálido se ve sucio»); deuda
+acertada pero menos intensa.
+
+Y la dirección de conjunto, que es la que manda: *«está bien que nuestros
+colores no sean tan saturados ni variados como los de ellos, porque nosotros
+queremos transmitir calma, wellness, control, satisfacción, modernidad»*.
+
+| | ancho de tono | recorrido de luz | saturación |
+|---|---|---|---|
+| hoy | 3,6° | 0,18 | 0,50 |
+| propuesta v1 | 31° | 0,21 | 0,44 |
+| **propuesta v2** | 10,4° | **0,26** | **0,33** |
+| ellos | 77,5° | 0,40 | 0,57 |
+
+La v2 baja el tono y la saturación **a propósito** y sube el recorrido de luz:
+es la estrategia MONOCROMA de ellos (su menta: 21° de tono con 0,36 de luz; su
+rojo: 15° con 0,56), que es justo el registro sobrio que él pidió.
+
+**Hallazgo que ahorra un cambio:** los acentos casi blancos suben el recorrido
+de luz de 0,18 a 0,26 **por sí solos**. La rampa ensanchada que había propuesto
+en la r19 ya no hace falta.
+
+Patrimonio sale del amarillo pálido y pasa a **verde profundo con plata** — lo
+construido es sólido y callado, y es el registro de su orbe verde oscuro, que es
+el más sobrio de los suyos.
+
+### Qué queda en producción y qué no
+
+- **En producción**: el contador de cuadros (corrige un defecto) y el escorzo
+  esférico (él lo pidió y está verificado que no daña nada).
+- **Sólo en la mesa de luz**: las paletas. Los tokens no se tocaron.
+
+Gate **891/891** · mutación **94 muertas, 0 fallas** · lint 0 errores · build verde.
