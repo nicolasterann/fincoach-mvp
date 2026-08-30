@@ -29669,6 +29669,26 @@ assert(
       // Es lo que más se nota en sus capturas y lo primero que se cae si
       // alguien "limpia" una línea que parece decorativa.
       n3ShaderCode.includes("gField += fieldGrain(") &&
+      // ── N3C r11 · LA CANTIDAD DE GRANO, CON LOS DOS TOPES ────────────────
+      // El founder pidió «un poco más de grain». Medido a resolución NATIVA
+      // (reducir la imagen promedia el grano y lo esconde — el mismo error de
+      // escala que arruinó la métrica de titileo), subir la base de 0,030 a
+      // 0,055 multiplicó la energía de alto detalle por 1,8 en las seis
+      // materias: 0,0049 → 0,0089. O sea el cambio aterriza en la pantalla.
+      //
+      // Los DOS topes, porque un umbral con un solo lado deja pasar el otro:
+      // por debajo de 0,040 el material vuelve a leerse como degradado liso;
+      // por encima de 0,090 deja de ser grano de película y es ruido sucio.
+      (() => {
+        const m = /gField \+= fieldGrain\(fq\) \* \((\d\.\d+) \+ (\d\.\d+)\*uDay\)/u.exec(
+          n3ShaderCode,
+        );
+        if (!m) return false;
+        const base = Number(m[1]);
+        const dia = Number(m[2]);
+        // en claro el orbe tapa la página, así que aguanta —y necesita— algo más
+        return base >= 0.04 && base <= 0.09 && dia > 0 && dia < base;
+      })() &&
       // la deformación es un ruido cuyo ARGUMENTO es otro ruido: sin esto son
       // manchas redondas, que es lo que se ve cuando alguien la corta
       /fieldFbm\(p \+ amount\*\(q - 0\.5\)/u.test(n3ShaderCode) &&

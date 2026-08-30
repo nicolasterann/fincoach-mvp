@@ -1206,3 +1206,45 @@ Dos reglas que quedan:
 
 Cierre de ronda: gate **891/891** · mutación **70 muertas, 0 fallas**,
 restauración 891/891 · lint 0 errores · build verde.
+
+---
+
+## Ronda 11 — más grano
+
+El founder, sobre la ronda 10: «ya no hay vibraciones ni titiliteo… tal vez le
+pondría un poco más de grain».
+
+Base del grano **0,030 → 0,055** (en tema claro 0,042 → 0,075, porque ahí el
+orbe tapa la página y aguanta más).
+
+### Medido, y casi mal medido otra vez
+
+La primera medición dio +5 % y estuve a punto de creerle. Estaba reduciendo la
+imagen de 372 a 220 px antes de medir — y el grano es de ~1 celda por píxel, así
+que **el promedio del reescalado se lo comía**. Es exactamente el error de
+escala de la ronda 10 (medir por debajo del tamaño de la señal), dos rondas
+después y en otro disfraz.
+
+A resolución NATIVA, energía de alto detalle en el centro del disco:
+
+| probeta | antes | después | razón |
+|---|---|---|---|
+| 1 | 0,00495 | 0,00892 | 1,80× |
+| 2 | 0,00492 | 0,00885 | 1,80× |
+| 3 | 0,00466 | 0,00840 | 1,80× |
+| 4 | 0,00322 | 0,00560 | 1,74× |
+| 5 | 0,00386 | 0,00688 | 1,78× |
+| 6 | 0,00502 | 0,00901 | 1,79× |
+
+1,8× medido contra 1,83× de la constante: **el cambio aterriza en la pantalla**,
+no sólo en el código.
+
+### El pin, con los dos topes
+
+Piso 0,040 (por debajo el material vuelve a leerse como degradado liso) y techo
+0,090 (por encima deja de ser grano de película y es ruido sucio). Más: el
+término de tema claro tiene que ser positivo y menor que la base. Un umbral con
+un solo lado deja pasar el otro — la regla que costó un despliegue roto en la
+ronda 8.
+
+Gate **891/891** · mutación **71 muertas, 0 fallas** · lint 0 errores · build verde.

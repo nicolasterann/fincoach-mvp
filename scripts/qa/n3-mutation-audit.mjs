@@ -408,7 +408,7 @@ const mutations = [
     name: "N3C-5",
     result: "CABLE · el grano se calcula y no se suma: el campo pierde lo que más lo hace parecer material",
     file: SHADER,
-    from: "    gField += fieldGrain(fq) * (0.030 + 0.012*uDay) * uEnv;",
+    from: "    gField += fieldGrain(fq) * (0.055 + 0.020*uDay) * uEnv;",
     to: "",
   },
   // ── N3C ronda 3 · lo que el founder vio en el teléfono ────────────────────
@@ -534,6 +534,14 @@ const mutations = [
     file: SHADER,
     from: "), 1.24) * uEnv;",
     to: "), 1.0) * uEnv;",
+  },
+  {
+    name: "N3C-5",
+    result:
+      "el grano vuelve por debajo del piso visible: el material se lee como degradado liso otra vez — «un poco mas de grain»",
+    file: SHADER,
+    from: "    gField += fieldGrain(fq) * (0.055 + 0.020*uDay) * uEnv;",
+    to: "    gField += fieldGrain(fq) * (0.030 + 0.012*uDay) * uEnv;",
   },
   {
     name: "N3C-8",

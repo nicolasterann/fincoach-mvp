@@ -706,7 +706,7 @@ void main(){
     // mismo patrón con distinto color, y el carrusel se lee como un filtro.
     fp += vec2(uMat * 0.37, uMat * 0.23);
     gField = saturar(fieldRamp(fieldGray(fp, uField, drive), fieldHue(fp, uField), 1.0 - uDay), 1.24) * uEnv;
-    gField += fieldGrain(fq) * (0.030 + 0.012*uDay) * uEnv;
+    gField += fieldGrain(fq) * (0.055 + 0.020*uDay) * uEnv;
     // donde el fluido acaba de pasar queda un rastro más claro: es la estela,
     // y es lo que hace que se vea DE DÓNDE viene el movimiento
     gField += mix(uAcc, vec3(1.0), 0.35) * gFlowMag * 0.075 * uEnv;
