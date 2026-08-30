@@ -77,6 +77,7 @@ import {
   createOrbFluid,
   orbFluidSplats,
   type OrbFluid,
+  ORB_FLUID_DYE_SIZE,
 } from "./orb-fluid";
 
 export type OrbRgb = readonly [number, number, number];
@@ -224,6 +225,7 @@ uniform vec3 uLiq, uDeep, uAcc;
 uniform sampler2D uPerlin;
 uniform sampler2D uFluid;
 uniform float uHasFluid;
+uniform vec2 uFluidTexel;
 const float KIPU_TIER = __KIPU_TIER__;
 const vec3 LKEY = vec3(-0.4082, 0.8367, 0.3646);
 const vec3 LFILL = vec3(0.6396, -0.2559, 0.7248);
@@ -467,6 +469,16 @@ float fieldHue(vec2 p, float anim){
 //
 // Y ninguna parada es blanca: el claro más alto sigue siendo del color, que es
 // lo que conserva el mate.
+// Hermite cúbica: pasa por a y b, y llega con las pendientes ma y mb. Es lo que
+// permite que dos tramos vecinos empalmen sin quiebre — y un quiebre de
+// pendiente en un campo suave se ve como una línea dura.
+vec3 hermite3(vec3 a, vec3 b, vec3 ma, vec3 mb, float t){
+  float t2 = t*t;
+  float t3 = t2*t;
+  return (2.0*t3 - 3.0*t2 + 1.0)*a + (t3 - 2.0*t2 + t)*ma
+       + (-2.0*t3 + 3.0*t2)*b + (t3 - t2)*mb;
+}
+
 vec3 fieldRamp(float gray, float hue, float inverted){
   float l = mix(gray, 1.0 - gray, inverted);
   vec3 mid = mix(uLiq, uAcc, hue);
@@ -493,11 +505,30 @@ vec3 fieldRamp(float gray, float hue, float inverted){
   // dentados; con el fluido cruzándolos, las bandas SALTAN de una a otra, que
   // es el titileo.
   //
-  // Lineal, las paradas se reparten parejo: pendiente constante, sin mesetas y
-  // sin saltos. Es lo que hace su 'colorRamp', y no por casualidad.
-  if(l < 0.34) return mix(c0, c1, l / 0.34);
-  if(l < 0.67) return mix(c1, c2, (l - 0.34) / 0.33);
-  return mix(c2, c3, (l - 0.67) / 0.33);
+  // Lineal arregló las mesetas… y trajo el defecto de al lado: en la UNIÓN de
+  // dos tramos rectos la pendiente SALTA. Medido en las tres uniones con estos
+  // colores: en l = 0,67 la pendiente pasa de 1,15*(mid-deep) a
+  // 0,24*(white-mid) — cambia de magnitud Y de dirección de golpe.
+  //
+  // Un quiebre de pendiente dentro de un campo suave NO se ve como un salto de
+  // color: se ve como una LÍNEA. La isolínea l = 0,67 dibuja una curva nítida
+  // que barre el disco mientras el campo se mueve, aparece y desaparece. Es
+  // exactamente lo que el founder fotografió: «olas duras que de la nada
+  // distorsionan todo, después desaparecen». Medido antes de tocar nada: el
+  // 0,1 % de los píxeles tenía un laplaciano 33,7× la mediana.
+  //
+  // La cura es una rampa C1: pasa por las cuatro paradas (sin mesetas, así que
+  // no vuelve la posterización) y además EMPALMA LAS PENDIENTES (sin quiebres,
+  // así que no hay línea). Hermite cúbica con tangentes por diferencias
+  // centradas, tramos iguales de un tercio para que las pendientes se puedan
+  // igualar a ambos lados de cada unión.
+  vec3 m0 = c1 - c0;
+  vec3 m1 = (c2 - c0) * 0.5;
+  vec3 m2 = (c3 - c1) * 0.5;
+  vec3 m3 = c3 - c2;
+  if(l < 0.33333) return hermite3(c0, c1, m0, m1, l * 3.0);
+  if(l < 0.66667) return hermite3(c1, c2, m1, m2, (l - 0.33333) * 3.0);
+  return hermite3(c2, c3, m2, m3, (l - 0.66667) * 3.0);
 }
 
 // EL GRANO. Es lo que más se nota en sus capturas y lo que más barato compra
@@ -694,7 +725,17 @@ void main(){
       // vive en [0,10 · 0,90] y nunca toca el borde.
       vec2 fr = vec2(fc*uv.x - fs*uv.y, fs*uv.x + fc*uv.y);
       vec2 fs0 = fr * 0.40 + 0.5;
-      vec3 fl = texture2D(uFluid, fs0).xyz;
+      // N3C r14 · El mismo filtrado a mano que la advección, y por el mismo
+      // motivo: sin 'half_float_linear' esta lectura sería NEAREST y el
+      // desplazamiento llegaría CUANTIZADO — escalones que barren el orbe.
+      vec2 mst = fs0 / uFluidTexel - 0.5;
+      vec2 mi = floor(mst);
+      vec2 mf = fract(mst);
+      vec3 ma = texture2D(uFluid, (mi + vec2(0.5, 0.5)) * uFluidTexel).xyz;
+      vec3 mb = texture2D(uFluid, (mi + vec2(1.5, 0.5)) * uFluidTexel).xyz;
+      vec3 mc = texture2D(uFluid, (mi + vec2(0.5, 1.5)) * uFluidTexel).xyz;
+      vec3 md = texture2D(uFluid, (mi + vec2(1.5, 1.5)) * uFluidTexel).xyz;
+      vec3 fl = mix(mix(ma, mb, mf.x), mix(mc, md, mf.x), mf.y);
       // Tope SUAVE en vez de recorte: un recorte pega el valor contra el
       // límite y ahí deja de variar — que es como se fabricó el patrón
       // trabado. Así siempre queda pendiente, por fuerte que sea el rastro.
@@ -1080,6 +1121,7 @@ interface ProgramBundle {
     perlin: WebGLUniformLocation | null;
     fluid: WebGLUniformLocation | null;
     hasFluid: WebGLUniformLocation | null;
+    fluidTexel: WebGLUniformLocation | null;
     tilt: WebGLUniformLocation | null;
     liquid: WebGLUniformLocation | null;
     deep: WebGLUniformLocation | null;
@@ -1137,6 +1179,7 @@ function linkTierProgram(
       perlin: uniform("uPerlin"),
       fluid: uniform("uFluid"),
       hasFluid: uniform("uHasFluid"),
+      fluidTexel: uniform("uFluidTexel"),
       tilt: uniform("uTilt"),
       liquid: uniform("uLiq"),
       deep: uniform("uDeep"),
@@ -1331,6 +1374,11 @@ export function createOrbRenderer(
     gl.uniform1i(bundle.locations.perlin, 0);
     gl.uniform1i(bundle.locations.fluid, 1);
     gl.uniform1f(bundle.locations.hasFluid, fluid ? 1 : 0);
+    gl.uniform2f(
+      bundle.locations.fluidTexel,
+      1 / ORB_FLUID_DYE_SIZE,
+      1 / ORB_FLUID_DYE_SIZE,
+    );
   }
   if (reference) {
     // Los siete desfasajes son de SU componente, no del nuestro: nuestro campo

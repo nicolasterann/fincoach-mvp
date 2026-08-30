@@ -29941,7 +29941,25 @@ assert(
       // …y con las coordenadas CRUDAS, no con las del líquido
       /vec2 fr = vec2\(fc\*uv\.x - fs\*uv\.y, fs\*uv\.x \+ fc\*uv\.y\);/u.test(n3ShaderCode) &&
       n3ShaderCode.includes("if(uHasFluid > 0.5){") &&
-      n3ShaderCode.includes("texture2D(uFluid, fs0)") &&
+      // ── N3C r14 · EL FILTRADO A MANO, EN LAS DOS PUNTAS ──────────────────
+      // 'OES_texture_half_float_linear' NO existe en todo el hardware — medido
+      // false en este mismo navegador. Sin él, muestrear las texturas del
+      // fluido es NEAREST: la advección lee el mapa a saltos y el orbe recibe
+      // un desplazamiento CUANTIZADO. Un escalón que se mueve es una línea dura
+      // que barre el disco — «olas duras que de la nada distorsionan todo».
+      // Medido: el pico de cortes pasó de 23,3 a 11,3 con la base en 6,0, que
+      // es el suelo del orbe SIN fluido (5,2).
+      //
+      // El original MIT ya traía esta rama y yo había portado sólo la otra. Va
+      // SIEMPRE, no según la extensión: un defecto que aparece según la GPU es
+      // un defecto que no se puede medir, y el founder tiene otro teléfono.
+      /vec4 bilerp\(sampler2D sam, vec2 uv, vec2 ts\)\{/u.test(n3cFluido) &&
+      n3cFluido.includes("bilerp(uSource, coord, uSourceTexel)") &&
+      n3cFluido.includes("bilerp(uVelocity, vUv, uTexelSize)") &&
+      !/texture2D\(uSource, coord\)/u.test(n3cFluido) &&
+      n3ShaderCode.includes("vec2 mst = fs0 / uFluidTexel - 0.5;") &&
+      n3ShaderCode.includes("mix(mix(ma, mb, mf.x), mix(mc, md, mf.x), mf.y)") &&
+      !/vec3 fl = texture2D\(uFluid, fs0\)/u.test(n3ShaderCode) &&
       // ── N3C r12 · LA TEXTURA GUARDA COORDENADAS, NO UN RASTRO ────────────
       // Éste es el defecto que el founder describió once rondas seguidas —«los
       // colores se mueven en el mismo lugar»— y que sólo se pudo nombrar al

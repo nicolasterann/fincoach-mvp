@@ -1367,3 +1367,79 @@ test nombrado), se cancela al desmontar, y no reaparece el reloj por estado.
 
 Gate **891/891** · mutación **75 muertas, 0 fallas** · lint 0 errores · build verde.
 Producción sigue intacta: `ORB_FLUID_ENABLED = false`.
+
+---
+
+## Ronda 14 — las olas duras: el hardware, y una rama del original que no porté
+
+El founder, sobre la r13: «ya fluye mucho mejor, pero de la nada hay olas
+bruscas o cortes que se ven super rígidos… después desaparecen y de la nada hay
+otra». Con dos capturas donde se ve una **línea curva y limpia** cruzando el
+disco.
+
+### Cuatro hipótesis, tres muertas por medición
+
+| hipótesis | prueba | resultado |
+|---|---|---|
+| quiebre de pendiente de la rampa | rampa lineal → Hermite C¹ | 33,7 → 35,6 · **no era** |
+| el mapa material se pliega | relax 0,20 → 3,0 (deriva casi nula) | 6,5 → 7,9 · **no era** |
+| vorticidad (normaliza un vector casi nulo) | CURL 30 → 0 | pico 23,3 → 24 · **no era** |
+| **el fluido, en general** | `forceFluid: false` | **5,2 PLANO, sin un solo pico** |
+
+La cuarta partió el problema al medio: los cortes existen **sólo con el fluido
+encendido**, y no eran ni el mapa ni la vorticidad.
+
+### Dos veces medí el instrumento en vez del defecto
+
+Vale anotarlo porque es la tercera repetición de la misma clase:
+
+1. La primera ventana de medición **incluía el borde del orbe** contra el negro
+   — un salto enorme que no es un defecto. De ahí salía el 33,7.
+2. Corregida la ventana, el pico (`max` 0,217) resultó ser **≈ 4 × la amplitud
+   del grano**: estaba midiendo el grano, que es de un píxel y por diseño duro.
+   Hubo que suavizar la imagen ANTES de buscar la línea.
+
+Sólo con la tercera versión del instrumento apareció la firma real: una base de
+~5,5 con **picos intermitentes** (5,5 · 5,5 · 10,6 · 6 · … · 23,3), que es
+exactamente «de la nada hay una y después desaparece».
+
+### La causa
+
+`OES_texture_half_float_linear` **no existe en todo el hardware** — medido
+`false` en este mismo navegador. Sin esa extensión, muestrear una textura de
+media precisión es **NEAREST**: la advección lee el mapa a saltos y el orbe
+recibe un desplazamiento cuantizado. Un escalón que se mueve **es** una línea
+dura barriendo el disco.
+
+**El original MIT ya trae esta rama** (`#ifdef MANUAL_FILTERING`, con su
+`bilerp`) exactamente por esto. Yo había portado sólo la otra. Es el segundo
+regalo del hallazgo de la r12: el arreglo ya estaba escrito, en el archivo que
+ahora sí puedo leer entero.
+
+Va **siempre**, no según la extensión: un defecto que aparece según la GPU es un
+defecto que no se puede medir, y el founder tiene otro teléfono.
+
+| | pico de cortes | base |
+|---|---|---|
+| antes | 23,3 | 5,5 |
+| **con bilerp** | **11,3** | **6,0** |
+| sin fluido (el suelo) | — | 5,2 |
+
+La base ya toca el suelo del orbe sin fluido. Quedan picos residuales de hasta
+11,3 contra 5,2: **no está cerrado**.
+
+### Una corrección incómoda
+
+El flujo medido BAJÓ: 1 s pasó de 0,0142 a **0,0055**. No es que el arreglo haya
+frenado el orbe — **parte de lo que yo estaba midiendo como «flujo» era el
+escalonado**. El número honesto es 0,0055, y contra los 0,075 de ellos eso es
+13× por debajo, no 5×. La r12 se reportó con un número inflado por el defecto.
+
+### Sobre la rampa Hermite
+
+Se midió que NO era la causa y se conservó igual: pasar de tramos rectos a C¹
+elimina los quiebres de pendiente, que son una clase de artefacto real. Pero no
+se le atribuye ninguna mejora observada.
+
+Gate **891/891** · mutación **77 muertas, 0 fallas** · lint 0 errores · build verde.
+`ORB_FLUID_ENABLED = false`: producción intacta.

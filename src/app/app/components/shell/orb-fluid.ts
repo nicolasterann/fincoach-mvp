@@ -364,11 +364,34 @@ void main(){
 // velocidad local, y por eso se enrosca en vez de pasar.
 const ADVECT = `${HEAD}
 uniform sampler2D uVelocity, uSource;
-uniform vec2 uTexelSize;
+uniform vec2 uTexelSize, uSourceTexel;
 uniform float uDt, uDissipation, uRelax;
+// ── N3C r14 · EL FILTRADO A MANO, y por qué NO es opcional ──────────────────
+//
+// 'OES_texture_half_float_linear' NO existe en todo el hardware — medido en
+// este mismo navegador: false. Sin esa extensión, muestrear una textura de
+// media precisión es NEAREST: la advección lee el mapa a saltos, en escalones,
+// y un escalón que se mueve es una LÍNEA DURA que barre el orbe. Eso es lo que
+// el founder fotografió: «olas duras que de la nada distorsionan todo».
+//
+// El original MIT ya trae esta rama (un ifdef MANUAL_FILTERING) exactamente por
+// esto, y yo había portado sólo la otra. Acá va SIEMPRE, sin depender de la
+// extensión: si el filtrado por hardware está, da el mismo resultado, y si no
+// está, el orbe se ve igual en vez de romperse sólo en algunos teléfonos. Un
+// defecto que aparece según la GPU es un defecto que no se puede medir.
+vec4 bilerp(sampler2D sam, vec2 uv, vec2 ts){
+  vec2 st = uv / ts - 0.5;
+  vec2 iuv = floor(st);
+  vec2 fuv = fract(st);
+  vec4 a = texture2D(sam, (iuv + vec2(0.5, 0.5)) * ts);
+  vec4 b = texture2D(sam, (iuv + vec2(1.5, 0.5)) * ts);
+  vec4 c = texture2D(sam, (iuv + vec2(0.5, 1.5)) * ts);
+  vec4 d = texture2D(sam, (iuv + vec2(1.5, 1.5)) * ts);
+  return mix(mix(a, b, fuv.x), mix(c, d, fuv.x), fuv.y);
+}
 void main(){
-  vec2 coord = vUv - uDt * texture2D(uVelocity, vUv).xy * uTexelSize;
-  vec4 r = texture2D(uSource, coord) / (1.0 + uDissipation * uDt);
+  vec2 coord = vUv - uDt * bilerp(uVelocity, vUv, uTexelSize).xy * uTexelSize;
+  vec4 r = bilerp(uSource, coord, uSourceTexel) / (1.0 + uDissipation * uDt);
   // N3C r12 · LA RELAJACIÓN HACIA LA IDENTIDAD.
   // Con uRelax = 0 esto es la advección clásica del original MIT. Con uRelax > 0
   // el mapa material vuelve LENTAMENTE a su sitio, lo que acota el filamentado
@@ -694,6 +717,7 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       gl.uniform1f(u(progs.advect, "uDt"), dt);
       gl.uniform1f(u(progs.advect, "uDissipation"), ORB_FLUID_VELOCITY_DISSIPATION);
       gl.uniform1f(u(progs.advect, "uRelax"), 0);
+      gl.uniform2f(u(progs.advect, "uSourceTexel"), velocity.read.texel[0], velocity.read.texel[1]);
       bindTex(progs.advect, "uVelocity", 2, velocity.read.tex);
       bindTex(progs.advect, "uSource", 3, velocity.read.tex);
       blit(velocity.write);
@@ -707,6 +731,7 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       // la esquina inferior izquierda.
       gl.uniform1f(u(progs.advect, "uDissipation"), 0);
       gl.uniform1f(u(progs.advect, "uRelax"), ORB_FLUID_MAP_RELAX);
+      gl.uniform2f(u(progs.advect, "uSourceTexel"), dye.read.texel[0], dye.read.texel[1]);
       bindTex(progs.advect, "uVelocity", 2, velocity.read.tex);
       bindTex(progs.advect, "uSource", 3, dye.read.tex);
       blit(dye.write);

@@ -579,6 +579,22 @@ const mutations = [
   {
     name: "N3C-8",
     result:
+      "vuelve el muestreo NEAREST en la adveccion: sin half_float_linear el mapa se lee a saltos y los escalones barren el orbe como lineas duras",
+    file: FLUID,
+    from: "  vec4 r = bilerp(uSource, coord, uSourceTexel) / (1.0 + uDissipation * uDt);",
+    to: "  vec4 r = texture2D(uSource, coord) / (1.0 + uDissipation * uDt);",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "el orbe vuelve a leer el mapa NEAREST: el desplazamiento llega cuantizado y dibuja escalones que se mueven",
+    file: SHADER,
+    from: "      vec2 mst = fs0 / uFluidTexel - 0.5;",
+    to: "      vec2 mst = fs0 / uFluidTexel;",
+  },
+  {
+    name: "N3C-8",
+    result:
       "se borra el GUARD del interruptor: el fluido se enciende en produccion aunque la constante diga que no, y apagado deja de ser distinguible de roto",
     file: FLUID,
     from: "  if (!ORB_FLUID_ENABLED && !forzar) return null;",
