@@ -29665,6 +29665,34 @@ assert(
       // la deformación es un ruido cuyo ARGUMENTO es otro ruido: sin esto son
       // manchas redondas, que es lo que se ve cuando alguien la corta
       /fieldFbm\(p \+ amount\*\(q - 0\.5\)/u.test(n3ShaderCode) &&
+      // ── N3C r5 · EL CAMPO NO SE TRANSPORTA ──────────────────────────────
+      //
+      // Ni gira ni se traslada: `p` no se reasigna nunca dentro del campo. Lo
+      // único que avanza con el tiempo es el desplazamiento, y su amplitud está
+      // acotada, así que las manchas se deforman EN SU SITIO.
+      //
+      // Por qué es una regla y no un ajuste: su orbe está hecho con 64 píxeles
+      // desenfocados, o sea que no tiene un solo rasgo que el ojo pueda seguir.
+      // El nuestro sí los tiene — y mientras los tenga, CUALQUIER transporte se
+      // lee como velocidad y dirección. El founder lo vio con giro y con
+      // traslación, y las dos veces dijo lo mismo: «una capa que pasa».
+      // Bajar la velocidad no lo arregla; sacar el transporte, sí.
+      // (sin anclar a principio de línea: la mutación que lo probó metía el giro
+      // en la MISMA línea que su declaración, y un pin anclado no lo veía)
+      !/[^a-zA-Z_]p = vec2\(/u.test(
+        n3ShaderCode.slice(
+          n3ShaderCode.indexOf("float fieldGray("),
+          n3ShaderCode.indexOf("vec3 fieldRamp("),
+        ),
+      ) &&
+      !/[^a-zA-Z_]p = vec2\(/u.test(
+        n3ShaderCode.slice(
+          n3ShaderCode.indexOf("float fieldHue("),
+          n3ShaderCode.indexOf("float fieldGrain("),
+        ),
+      ) &&
+      // …y el tiempo entra SÓLO por el desplazamiento
+      /vec2 q = vec2\(fieldFbm\(p \+ vec2\(anim/u.test(n3ShaderCode) &&
       // los siete óvalos sobreviven SÓLO en el porte fiel, que es de ellos
       ORB_FIELD_OVALS === 7 &&
       n3cReferenceCode.includes("for (int i = 0; i < 7; i++)") &&

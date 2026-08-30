@@ -338,20 +338,27 @@ float fieldFbm(vec2 p){
 // LA DEFORMACIÓN. 'q' desplaza el punto antes de volver a leer el ruido: es lo
 // que convierte manchas redondas en esas lenguas de color que se enroscan.
 float fieldGray(vec2 p, float anim, float drive){
-  // EL CAMPO GIRA. NO SE TRASLADA.
+  // ── N3C r5 · EL CAMPO NO SE MUEVE: SE DEFORMA ──────────────────────────
   //
-  // El founder lo describió exacto: el nuestro «parece que viene de un solo
-  // lado, como viento que pasa», y el de ellos «bordea la esfera». Eso es la
-  // diferencia entre trasladar y ROTAR, y hasta acá el campo hacía las dos —
-  // con la traslación pesando más, que es de donde salía el viento diagonal.
+  // Rotar tampoco alcanzó. El founder, sobre la ronda 4: «es sólo una capa que
+  // pasa y se mueve bruscamente a velocidad super rápida… molesto de ver por
+  // más de unos segundos». Girar más despacio no lo arregla, y la razón la
+  // encontré leyendo su página, no mirando la nuestra.
   //
-  // Ahora la traslación se va entera y queda el giro, más una deriva MUY lenta
-  // en el segundo campo para que la rotación no se lea como un carrusel rígido.
-  float a = anim * 0.16;
-  float cs = cos(a), sn = sin(a);
-  p = vec2(cs*p.x - sn*p.y, sn*p.x + cs*p.y);
-  vec2 q = vec2(fieldFbm(p + vec2(0.0, anim*0.012)),
-                fieldFbm(p + vec2(5.2, 1.3) - vec2(anim*0.009, 0.0)));
+  // SU ORBE ESTÁ HECHO CON 64 PÍXELES. Un PNG de 8×8 estirado 25 veces y
+  // desenfocado dos veces. Eso quiere decir que **no tiene ni un solo rasgo que
+  // el ojo pueda seguir**. Y ahí está la clave: si el campo tiene rasgos
+  // seguibles, CUALQUIER traslación o giro se lee como velocidad y como
+  // dirección — «una capa que pasa». No importa cuánto se baje: mientras haya
+  // algo que seguir, se ve pasar.
+  //
+  // Así que el movimiento deja de ser transporte y pasa a ser DEFORMACIÓN.
+  // 'p' no se mueve nunca: ni gira ni se traslada. Lo único que avanza con el
+  // tiempo es el campo de DESPLAZAMIENTO, y como su amplitud está acotada, las
+  // manchas se hinchan, se estiran y se deshacen EN SU SITIO. Nada cruza el
+  // orbe, y por eso no hay ni velocidad ni dirección que percibir.
+  vec2 q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),
+                fieldFbm(p + vec2(5.2, 1.3) - vec2(anim*0.061, anim*0.074)));
   // la voz abre la deformación: el campo se revuelve más mientras hablás, que
   // es lo único que su 'uOutputVolume' hacía con el ángulo.
   //
@@ -366,7 +373,10 @@ float fieldGray(vec2 p, float anim, float drive){
   // manchas: eso no enrosca el campo, lo REVUELVE, y revuelto se lee como
   // brusco. Su orbe no tiene deformación en absoluto — es una malla suave — así
   // que acá queda lo mínimo para que las manchas no sean círculos.
-  float amount = mix(0.11, 0.26, drive);
+  // La amplitud sube un poco respecto de la ronda 4 porque ahora es lo ÚNICO
+  // que se mueve — pero sigue acotada: el desplazamiento máximo es un cuarto de
+  // mancha, así que ningún rasgo llega a cruzar nada.
+  float amount = mix(0.17, 0.40, drive);
   float f = fieldFbm(p + amount*(q - 0.5) + vec2(1.7, 9.2));
   // El rango útil del fbm no es [0,1]: sin esto el campo vive apretado en el
   // medio de la rampa y sale un color plano.
@@ -378,13 +388,11 @@ float fieldGray(vec2 p, float anim, float drive){
 // primero: donde una empieza, la otra va por la mitad. Es lo que hace que los
 // colores se fundan en vez de repartirse en zonas.
 float fieldHue(vec2 p, float anim){
-  // gira al revés y más despacio que el del tono: dos rotaciones opuestas dan
-  // esa sensación de algo que se revuelve sobre sí mismo, sin ir a ningún lado
-  float a = -anim * 0.11;
-  float cs = cos(a), sn = sin(a);
-  p = vec2(cs*p.x - sn*p.y, sn*p.x + cs*p.y);
-  vec2 q = vec2(fieldFbm(p + vec2(2.9, 7.4)), fieldFbm(p + vec2(8.1, 0.6)));
-  float h = fieldFbm(p + 0.16*(q - 0.5) + vec2(6.3, 2.1));
+  // Igual que el del tono: el punto no se mueve, se mueve su deformación — y a
+  // otro ritmo, para que el color y el brillo no respiren al unísono.
+  vec2 q = vec2(fieldFbm(p + vec2(2.9, 7.4) - vec2(anim*0.047, anim*0.068)),
+                fieldFbm(p + vec2(8.1, 0.6) + vec2(anim*0.072, -anim*0.039)));
+  float h = fieldFbm(p + 0.30*(q - 0.5) + vec2(6.3, 2.1));
   return clamp((h - 0.34) / 0.34, 0.0, 1.0);
 }
 
@@ -416,8 +424,11 @@ vec3 fieldRamp(float gray, float hue, float inverted){
   // son todos tonos medios del mismo aire, y por eso se funden. El nuestro
   // llegaba de 'uDeep * 0.55' hasta casi blanco — un rango que ningún
   // difuminado alcanza a integrar.
-  vec3 c0 = mix(uDeep, mid, 0.10);
-  vec3 c1 = mix(uDeep, mid, 0.46);
+  // El founder: «choque de colores». El extremo oscuro seguía siendo el
+  // pigmento profundo casi puro, y contra el medio claro eso es un choque, no
+  // una fusión. Se acerca al medio: el rango entero vive más junto.
+  vec3 c0 = mix(uDeep, mid, 0.30);
+  vec3 c1 = mix(uDeep, mid, 0.62);
   vec3 c2 = mid;
   vec3 c3 = mix(mid, vec3(1.0), 0.20);
   // interpolación suavizada en cada tramo: sin esto la unión entre paradas es

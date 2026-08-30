@@ -322,7 +322,7 @@ const mutations = [
     name: "N3C-4",
     result: "el reloj del campo corre siempre igual: el orbe deja de acelerar cuando hablás",
     file: SIM,
-    from: "  return 0.85 + (1 - Math.pow(bounded - 1, 2)) * 1.75;",
+    from: "  return 1.10 + (1 - Math.pow(bounded - 1, 2)) * 2.20;",
     to: "  return 1.05;",
   },
   {
@@ -416,7 +416,7 @@ const mutations = [
     result:
       "vuelve el campo CASI QUIETO: la razón entre hablar y callar se conserva, pero una mancha tarda 45 s en cruzar — que es lo que se veía",
     file: SIM,
-    from: "  return 0.85 + (1 - Math.pow(bounded - 1, 2)) * 1.75;",
+    from: "  return 1.10 + (1 - Math.pow(bounded - 1, 2)) * 2.20;",
     to: "  return 0.1 + (1 - Math.pow(bounded - 1, 2)) * 0.9;",
   },
   {
@@ -463,6 +463,15 @@ const mutations = [
     file: CONTRACT,
     from: "  const decided = orbMaterialCode(input);",
     to: "  const decided = ORB_MATERIAL_CRISTAL;",
+  },
+  // ── N3C ronda 5 · el movimiento deja de ser transporte ────────────────────
+  {
+    name: "N3C-5",
+    result:
+      "vuelve el TRANSPORTE: el campo gira, y con rasgos seguibles cualquier giro se lee como «una capa que pasa» — el founder lo dijo con giro y con traslacion",
+    file: SHADER,
+    from: "  vec2 q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),",
+    to: "  float a_=anim*0.16, c_=cos(a_), s_=sin(a_); p = vec2(c_*p.x - s_*p.y, s_*p.x + c_*p.y);\n  vec2 q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),",
   },
 ];
 

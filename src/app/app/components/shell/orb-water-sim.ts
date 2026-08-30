@@ -261,7 +261,10 @@ export function orbFieldSpeed(drive: number): number {
   // brusco». De 45 s por mancha pasé a 4,3, y 4,3 es demasiado para un campo
   // que tiene que sentirse calmo. Acá queda en ~11 s callado y ~3 hablando:
   // se mueve todo el tiempo, se nota, y no corre.
-  return 0.85 + (1 - Math.pow(bounded - 1, 2)) * 1.75;
+  // N3C r5 · con DEFORMACIÓN en vez de transporte, el reloj puede volver a
+  // correr sin que se lea como velocidad: nada cruza el orbe. Lo que se nota
+  // es que las manchas cambian de forma, y eso quiere ritmo.
+  return 1.10 + (1 - Math.pow(bounded - 1, 2)) * 2.20;
 }
 
 /** Un paso del reloj del campo. Monótono: el campo nunca retrocede. */

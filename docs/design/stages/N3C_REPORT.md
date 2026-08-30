@@ -734,3 +734,76 @@ lo que se cuenta es la llamada nueva.
    con el resto sin agua se ve fuera de lugar. Si el experimento sigue, el cero
    necesita su propia forma dentro del material nuevo.
 4. **El techo del Saldo**, en el motor.
+
+---
+
+## Ronda 5 — el movimiento no es transporte
+
+El founder, sobre la ronda 4: *«es sólo una capa que pasa y se mueve
+bruscamente a velocidad super rápida. Incluso es molesto de ver por más de unos
+segundos.»* Y: *«en textura está casi idéntico, pero en choque de colores,
+movimiento y flujo estamos lejos.»*
+
+### Lo que intenté para ver su movimiento, y por qué no pude
+
+Pidió expresamente que entrara a ver cómo se mueve el suyo. Lo intenté por
+cinco caminos y **fallé en los cinco**. Vale la pena dejar por qué:
+
+1. **Renderizar su orbe en el panel de este navegador.** Su lienzo WebGL sólo
+   existe *mientras suena el audio* (el clip dura 3,4 s). El panel está oculto,
+   `requestAnimationFrame` no corre, y el audio no arranca.
+2. **Reemplazar `requestAnimationFrame` por un temporizador**, que sí corre
+   oculto. El bucle avanzó (5 pedidos) pero el lienzo nunca llegó a montarse.
+3. **Tu Chrome real.** También entrega la pestaña en segundo plano:
+   `visibilityState: hidden`, cero cuadros en un segundo.
+4. **Capturar su shader forzando pérdida y restauración de contexto.** No
+   recompiló.
+5. **Buscar su shader en su JavaScript.** Extraje el mapa de webpack y revisé
+   **los 409 chunks** del sitio más los ya cargados: **cero** contienen GLSL del
+   orbe. El único con GLSL es three.js interno.
+
+**Así que no vi su movimiento, y no voy a decir que sí.**
+
+### Lo que sí extraje, y lo que implica
+
+Su orbe en reposo está hecho con **64 píxeles** (8×8) estirados 25 veces y
+desenfocados dos veces. De ahí sale una consecuencia que **no necesita ver el
+movimiento para ser cierta**:
+
+> Su campo **no tiene un solo rasgo que el ojo pueda seguir.**
+
+Y ésa es la explicación de las dos rondas fallidas. Mientras nuestro campo tenga
+rasgos seguibles, **cualquier** transporte —traslación o giro— se lee como
+velocidad y como dirección. El founder lo vio con traslación («viene de un solo
+lado como viento») y lo volvió a ver con giro («una capa que pasa»). Bajar la
+velocidad no lo arregla: si hay algo que seguir, se ve pasar.
+
+**Así que el movimiento deja de ser transporte y pasa a ser DEFORMACIÓN.**
+`p` no se mueve nunca: ni gira ni se traslada. Lo único que avanza con el tiempo
+es el campo de desplazamiento, y su amplitud está acotada a un cuarto de mancha.
+Las manchas se hinchan, se estiran y se deshacen **en su sitio**. Nada cruza el
+orbe, y por eso no hay ni velocidad ni dirección que percibir.
+
+Es una regla, no un ajuste, y está pinchada: `p` no puede reasignarse dentro del
+campo. La mutación que repone el giro muere con nombre — y la primera versión de
+ese pin **no la mataba**, porque estaba anclada a principio de línea y la
+mutación metía el giro en la misma línea que su declaración. Corregido.
+
+### El choque de colores
+
+El extremo oscuro de la rampa seguía siendo el pigmento profundo casi puro, y
+contra el medio claro eso es un choque, no una fusión. Las cuatro paradas viven
+ahora mucho más juntas.
+
+### Los números
+
+```
+lint 0 · build 0 · capture 890/890 · mutación 56/56 con nombre
+```
+
+### Lo que le pido al founder
+
+No puedo ver el movimiento con las herramientas que tengo. Lo que sí serviría:
+**cuatro o cinco capturas del MISMO orbe, con un segundo de diferencia**,
+mientras suena. Con eso puedo medir si se deforma en el sitio o si algo viaja, y
+a qué ritmo — que es exactamente lo que no puedo observar.
