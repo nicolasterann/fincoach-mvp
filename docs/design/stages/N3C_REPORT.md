@@ -481,3 +481,137 @@ bucle vivo no se nota; con el bucle pausado deja el lienzo en blanco. Sigue
 siendo conducta preexistente de N2/N3 y sigue fuera del alcance de una etapa de
 presentación — pero es la causa de que este entorno no pueda verificar el
 santuario, y merece su propia etapa.
+
+---
+
+## Ronda 3 — el founder lo miró en el teléfono
+
+Seis observaciones suyas. **Las seis tenían una causa medible**, y ninguna era
+un ajuste de gusto.
+
+| lo que dijo | la causa | el arreglo |
+|---|---|---|
+| «manchas super duras combinadas entre sí» | **la rejilla**, no el ruido | muestreo quíntico |
+| «el nuestro es mucho más estático» | **45 s** por mancha en reposo | velocidad ×10 |
+| «cuando hablo casi no hay movimiento» | la voz movía la deformación 0,32→0,58 | 0,34→1,05, y la velocidad al triple |
+| «esa segunda línea de agua se ve terrible» | el menisco rodeaba **toda** la elipse | sólo el borde lejano |
+| «la forma del agua como hacia arriba» | cámara a −0,30 + menisco trepando | cámara a **−0,11** |
+| «líneas dibujadas que no se entiende qué son» | la **cáustica** del fondo | eliminada |
+
+### La rejilla — el hallazgo de la ronda
+
+Lo que se veía como manchas duras no venía del ruido: venía del **filtrado de
+la textura**. Medido:
+
+```
+el orbe abarca 113 téxeles · cada téxel ocupa 5,0 px
+⇒ magnificación 5,0× — la rejilla bilineal SE VE
+```
+
+La GPU interpola **recto** entre téxeles. A cinco píxeles por téxel eso dibuja
+los bordes de las celdas — cuadriláteros, exactamente lo que se veía en el orbe
+naranja. El arreglo es curvar la coordenada **antes** de muestrear, con la misma
+quíntica de Perlin: la GPU sigue interpolando recto, sobre una coordenada ya
+curvada, y el resultado es continuo en la segunda derivada. Cinco operaciones,
+ninguna lectura extra.
+
+**Su mutación sobrevivía al gate.** Ahora está pinchada.
+
+### El movimiento — una razón no dice nada de la velocidad
+
+El pin de N3C-4 exigía que hablando el campo corriera **5× más rápido** que
+callado. Lo cumplía de sobra… con un campo que en reposo **no se movía**:
+
+```
+reloj en reposo 0,1 /s  ×  0,055 de tela por unidad  =  0,0055 de tela/s
+una mancha mide 0,25 de tela  ⇒  45 SEGUNDOS por mancha
+```
+
+Una razón no dice nada sobre la velocidad absoluta, que es lo único que el ojo
+juzga. El pin pasa a medir **tiempo**, con la misma cuenta que hace el shader:
+
+| | antes | ahora |
+|---|---|---|
+| una mancha, callado | 45 s | **4,3 s** |
+| una mancha, hablando | 4,5 s | **1,3 s** |
+
+Y la voz abre la deformación tres veces más que antes, además de acelerar el
+reloj. Son dos efectos distintos: uno cambia el ritmo, el otro cambia **cuánto
+se revuelve**.
+
+### El agua
+
+- **Cámara de −0,30 a −0,11.** Modelado antes de tocar: la curvatura de la
+  superficie al 36 % cae de 37,5 a 22,7, y al 100 % de 18,9 a **0,8**. El
+  cuenco desaparece. Los cinco umbrales de N3-1 siguen valiendo con margen.
+- **Una sola línea.** El menisco se dibujaba alrededor de toda la elipse: el
+  borde lejano —el que el ojo lee como «el nivel»— y también el cercano, más
+  abajo. Dos arcos paralelos no existen en un vaso. Se conserva el lejano, que
+  es además lo que pasa de verdad: el borde de acá lo mirás a través del agua.
+- **Se fueron la cáustica y las motas.** Físicamente correctas, y el founder las
+  leyó por lo que parecían.
+- **El menisco casi no trepa** (0,35 de lo que trepaba).
+
+**Efecto secundario que vale la pena:** `orbWaterApex` dejó de ser una cota
+inferior con desvío. Medido sobre el renderer real, contra lo que calcula la
+función pura:
+
+| dato | calculado | medido | desvío |
+|---|---|---|---|
+| 60 % | 48,7 % | **47,5 %** | −1,2 |
+| 100 % | 70,7 % | **~70 %** | ~0 |
+
+En N3B el desvío era +2,1 y +6,5 puntos, porque el menisco levantaba el borde y
+el contrato no lo modelaba. Ahora el dibujo y la cuenta dicen lo mismo. La
+separación se mantiene: vacío ≈ 0,05 · 60 % ≈ 0,475 · 100 % ≈ 0,70, y el lleno
+deja **30 % de aire**.
+
+### El material
+
+- **Se va el `smoothstep(0.06, 0.94)`** de la rampa. Lo había puesto para ganar
+  rango tonal y lo que hacía era **empinar** la transición — de ahí los bordes.
+  El rango se recupera separando las paradas, no acelerando la curva. Y cada
+  tramo interpola suavizado: una unión con quiebre de pendiente **se ve** como
+  un borde.
+- **Un segundo campo, el del color.** Con una sola rampa el orbe es un tono con
+  más y menos luz; los suyos funden violeta con rosa con azul. `fieldHue` corre
+  el color intermedio entre el líquido y el acento, y comparte la deformación
+  pero mira otra parte de la tela, así que sus manchas **no coinciden** con las
+  del tono. De ahí sale que los colores se fundan en vez de repartirse en zonas.
+  **Su mutación también sobrevivía al gate.**
+- **Mate.** El reflejo del vidrio baja a menos de la mitad, el borde a un
+  tercio, y el destello duro del panel a una cuarta parte.
+
+### Los números de la ronda 3
+
+```
+npm run lint    → 0 errores
+npm run build   → exit 0
+capture gate    → 889/889
+mutación        → 53/53 mueren con su nombre (48 + 5 nuevas)
+```
+
+Las aserciones siguen en **889**: la ronda 3 tampoco agrega, **re-ancla y
+refuerza**. Dos pines nuevos dentro de aserciones existentes —el muestreo
+quíntico y el segundo campo— porque sus mutaciones **sobrevivían**; ésa es la
+prueba de que hacían falta.
+
+Dos re-anclajes, los dos declarados:
+
+| pin | antes | ahora | por qué |
+|---|---|---|---|
+| N3C-4 | «hablando corre 5× más que callado» | «una mancha cruza en <6 s callado y <2 s hablando» | una razón la cumple un campo quieto |
+| N3C-3 | la línea literal del menisco | el menisco **más** el factor del borde lejano | el pin viejo permitía los dos arcos |
+
+| peso | base | r1 | r2 | **r3** |
+|---|---|---|---|---|
+| `/app` comprimido | 65,7 KB | 69,7 | 70,5 | **71,6 KB** |
+
+Total de N3C: **+5,9 KB comprimidos**, cero dependencias.
+
+### Lo que sigue sin poder juzgarse acá
+
+**El movimiento.** Sigue siendo lo único que decide, y este entorno no compone
+cuadros. Lo que sí puedo afirmar con números es que el campo pasó de cruzar una
+mancha en 45 s a hacerlo en 4,3 s, y en 1,3 s hablando — pero si eso «se mueve
+de una forma interesante» sólo lo dice el teléfono.

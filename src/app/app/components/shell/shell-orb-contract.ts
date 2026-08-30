@@ -495,7 +495,7 @@ export const ORB_WATERLINE_CEILING = 0.70;
 // constante y pasa a mirar **lo que se ve**, que es lo que el founder puntúa.
 
 /** La inclinación de la cámara sobre el agua. El shader usa este mismo valor. */
-export const ORB_CAM_PITCH = -0.3;
+export const ORB_CAM_PITCH = -0.11;
 /** Distancia de la cámara al centro del orbe, en radios. */
 export const ORB_CAM_DISTANCE = 3.4;
 /** Los dos factores del rayo: `vec3(uv*0.94, -3.2)` en el shader. */

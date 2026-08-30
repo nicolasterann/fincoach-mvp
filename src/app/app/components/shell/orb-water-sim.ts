@@ -247,10 +247,17 @@ export function orbWaterAtRest(state: OrbWaterState, target: number): boolean {
 /** La velocidad del campo, en unidades de reloj por segundo. */
 export function orbFieldSpeed(drive: number): number {
   const bounded = Math.min(1, Math.max(0, Number.isFinite(drive) ? drive : 0));
-  // La misma curva de su componente: `0.1 + (1 - (v - 1)^2) * 0.9`. Sin voz el
-  // campo no se congela —se mueve despacio—, que es lo que hace que el orbe
-  // esté vivo en reposo.
-  return 0.1 + (1 - Math.pow(bounded - 1, 2)) * 0.9;
+  // N3C r3 · MEDIDO, y era el defecto. Con la curva de su componente
+  // (`0.1 + (1 - (v-1)^2) * 0.9`) el campo tardaba CUARENTA Y CINCO SEGUNDOS en
+  // cruzar una mancha estando en reposo: no es «se mueve despacio», es que no
+  // se mueve. El founder lo dijo de las dos maneras — «el nuestro es mucho más
+  // estático» y «cuando hablo casi no hay movimiento».
+  //
+  // La forma de la curva se conserva —arranca lento y acelera con la voz— y lo
+  // que cambia es la ESCALA: en reposo una mancha cruza en ~4 s, y hablando en
+  // algo más de 1 s. Eso es lo que se ve como «se está moviendo todo el tiempo»
+  // y como «responde exacto» al hablar.
+  return 1.05 + (1 - Math.pow(bounded - 1, 2)) * 2.55;
 }
 
 /** Un paso del reloj del campo. Monótono: el campo nunca retrocede. */

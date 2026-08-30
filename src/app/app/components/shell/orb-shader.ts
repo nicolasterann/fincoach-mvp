@@ -239,7 +239,7 @@ const float WAVE_AMP = 0.026;
 const float VOICE_AMP = 3.85;
 const float VOICE_FREQ = 9.0;
 const float VOICE_SPEED = 5.4;
-const float CAM_PITCH = -0.30;
+const float CAM_PITCH = -0.11;
 // El menisco DE VERDAD es una película fina, no un bulto. N3 lo tenía en 0.078
 // —más alto que el piso del vaso entero— y por eso un orbe vacío dibujaba un
 // charco: el bulto trepaba la pared y levantaba la superficie visible.
@@ -292,7 +292,25 @@ float fbm(vec2 p){
 // 'orb-reference-shader.ts', y '/dev/vidrio' lo muestra por lo que es: su
 // código abierto, que no es su página.
 
-float fieldTex(vec2 p){ return texture2D(uPerlin, p).r; }
+// EL MUESTREO QUINTICO — la corrección que mata las «manchas duras».
+//
+// El founder las nombró exacto: «manchas super duras combinadas entre sí».
+// No eran del ruido: eran de la REJILLA. La tela se magnifica cinco veces
+// (medido: un téxel ocupa 5 px en un teléfono) y el filtrado bilineal de la GPU
+// interpola RECTO entre téxeles, así que a esa escala se ven los bordes de las
+// celdas — cuadriláteros, que es justo lo que se veía en el orbe naranja.
+//
+// El truco: se curva la coordenada ANTES de muestrear, con la misma quíntica de
+// Perlin. La GPU sigue interpolando recto, pero sobre una coordenada que ya
+// viene curvada, y el resultado es continuo en la primera y la segunda
+// derivada. Cuesta cinco operaciones y no una lectura más.
+const float FIELD_TEX = __KIPU_NOISE__;
+float fieldTex(vec2 p){
+  vec2 t = p * FIELD_TEX + 0.5;
+  vec2 i = floor(t), f = fract(t);
+  f = f*f*f*(f*(f*6.0-15.0)+10.0);
+  return texture2D(uPerlin, (i + f - 0.5) / FIELD_TEX).r;
+}
 
 // fbm leído de la tela en vez de calculado: la tela cierra sobre sí misma, así
 // que sumar octavas escaladas no produce costuras. Y cuesta cuatro lecturas en
@@ -311,6 +329,12 @@ float fieldFbm(vec2 p){
 // LA DEFORMACIÓN. 'q' desplaza el punto antes de volver a leer el ruido: es lo
 // que convierte manchas redondas en esas lenguas de color que se enroscan.
 float fieldGray(vec2 p, float anim, float drive){
+  // EL CAMPO GIRA ADEMÁS DE FLUIR. Sólo trasladándolo, el movimiento se lee
+  // como un fondo que pasa por detrás; girándolo despacio a la vez, se lee como
+  // algo que se revuelve DENTRO. Es la diferencia entre un scroll y una nube.
+  float a = anim * 0.085;
+  float cs = cos(a), sn = sin(a);
+  p = vec2(cs*p.x - sn*p.y, sn*p.x + cs*p.y);
   vec2 q = vec2(fieldFbm(p + vec2(anim*0.055, anim*0.031)),
                 fieldFbm(p + vec2(5.2, 1.3) - vec2(anim*0.043, anim*0.027)));
   // la voz abre la deformación: el campo se revuelve más mientras hablás, que
@@ -320,30 +344,61 @@ float fieldGray(vec2 p, float anim, float drive){
   // las manchas de la octava base miden 0,25 de tela, así que desplazar 0,35 las
   // enrosca; desplazar 2,0 —lo que tenía la primera versión— las revuelve ocho
   // veces y devuelve ruido.
-  float amount = mix(0.32, 0.58, drive);
-  float f = fieldFbm(p + amount*(q - 0.5) + vec2(1.7, 9.2));
+  // …y la voz ABRE la deformación mucho más que antes: el founder dijo que al
+  // hablar «casi no hay movimiento», y con 0,32→0,58 tenía razón — el campo se
+  // movía casi igual callado que hablando.
+  float amount = mix(0.34, 1.05, drive);
+  float f = fieldFbm(p + amount*(q - 0.5) + vec2(1.7, 9.2) + vec2(0.0, anim*0.021));
   // El rango útil del fbm no es [0,1]: sin esto el campo vive apretado en el
   // medio de la rampa y sale un color plano.
   return clamp((f - 0.32) / 0.38, 0.0, 1.0);
+}
+
+// EL SEGUNDO CAMPO — el del color, no el del tono. Comparte la deformación pero
+// mira otra parte de la tela, así que sus manchas NO coinciden con las del
+// primero: donde una empieza, la otra va por la mitad. Es lo que hace que los
+// colores se fundan en vez de repartirse en zonas.
+float fieldHue(vec2 p, float anim){
+  vec2 q = vec2(fieldFbm(p + vec2(2.9, 7.4) + vec2(anim*0.037, -anim*0.049)),
+                fieldFbm(p + vec2(8.1, 0.6) - vec2(anim*0.031, anim*0.041)));
+  float h = fieldFbm(p + 0.62*(q - 0.5) + vec2(6.3, 2.1));
+  return clamp((h - 0.34) / 0.34, 0.0, 1.0);
 }
 
 // LA RAMPA. Cuatro paradas, como la suya, pero **ninguna es negra**: el extremo
 // oscuro es el pigmento profundo de la capa. Sus orbes no tienen un solo negro
 // —lo más oscuro sigue siendo del color— y ahí está la mitad de por qué se ven
 // cremosos en vez de duros.
-vec3 fieldRamp(float gray, float inverted){
+// LA RAMPA, SIN ESCALONES Y CON DOS EJES.
+//
+// Dos correcciones que salieron de lo que el founder señaló:
+//
+// 1. Se va el 'smoothstep(0.06, 0.94)'. Lo puse para ganar rango tonal y lo que
+//    hacía era EMPINAR la transición: por eso las manchas tenían borde. Sus
+//    orbes tienen el mismo rango con la pendiente suave, y el rango se recupera
+//    separando más las paradas de color en vez de acelerar la curva.
+//
+// 2. El color deja de moverse en un solo eje. Con una sola rampa el campo es un
+//    tono con más y menos luz, y los suyos FUNDEN VARIOS COLORES —violeta con
+//    rosa con azul—. 'hue' es un segundo campo, independiente del primero, que
+//    corre el color intermedio entre el líquido y el acento. De ahí sale que
+//    «se fusionen perfecto» en vez de verse como un degradado de brillo.
+//
+// Y ninguna parada es blanca: el claro más alto sigue siendo del color, que es
+// lo que conserva el mate.
+vec3 fieldRamp(float gray, float hue, float inverted){
   float l = mix(gray, 1.0 - gray, inverted);
-  // Un poco de contraste antes de la rampa. Sin esto el campo vive en el medio
-  // y sale un color plano; sus orbes tienen sombras profundas del mismo tono
-  // ocupando un tercio del disco, y el claro es un destello chico, no la mitad.
-  l = smoothstep(0.06, 0.94, l);
-  vec3 c0 = uDeep * 0.72;
-  vec3 c1 = uDeep;
-  vec3 c2 = uLiq;
-  vec3 c3 = mix(uAcc, vec3(1.0), 0.60);
-  if(l < 0.40) return mix(c0, c1, l / 0.40);
-  if(l < 0.80) return mix(c1, c2, (l - 0.40) / 0.40);
-  return mix(c2, c3, (l - 0.80) / 0.20);
+  vec3 mid = mix(uLiq, uAcc, hue);
+  vec3 c0 = uDeep * 0.55;
+  vec3 c1 = mix(uDeep, mid, 0.30);
+  vec3 c2 = mid;
+  vec3 c3 = mix(mid, vec3(1.0), 0.30);
+  // interpolación suavizada en cada tramo: sin esto la unión entre paradas es
+  // un quiebre de pendiente, y un quiebre de pendiente se VE como un borde
+  if(l < 0.38){ float t = l / 0.38; return mix(c0, c1, t*t*(3.0-2.0*t)); }
+  if(l < 0.78){ float t = (l - 0.38) / 0.40; return mix(c1, c2, t*t*(3.0-2.0*t)); }
+  float t = (l - 0.78) / 0.22;
+  return mix(c2, c3, t*t*(3.0-2.0*t));
 }
 
 // EL GRANO. Es lo que más se nota en sus capturas y lo que más barato compra
@@ -375,7 +430,7 @@ vec3 envSample(vec3 d){
   base += ENV_KEY * (pow(max(dot(d, LKEY), 0.0), 14.0)*0.30
                    + pow(max(dot(d, LKEY), 0.0), 2.6)*0.055);
   // y su brillo pequeño y duro, que es el que hace la chispa en el borde
-  base += ENV_KEY * pow(max(dot(d, LKEY), 0.0), 260.0) * 0.55;
+  base += ENV_KEY * pow(max(dot(d, LKEY), 0.0), 260.0) * 0.14;
   base += ENV_FILL * pow(max(dot(d, LFILL), 0.0), 5.0) * 0.10;
   // EL CAMPO, dentro del vidrio. Entra como tinte del píxel y no como una
   // dirección: lo que el ojo tiene que ver es color que se mueve, no una forma
@@ -445,7 +500,10 @@ float waterHeight(vec3 p, float detail){
   // queda poca agua. Un charco no tiene menisco de vaso lleno.
   float wallR = sqrt(max(0.0, 1.0 - base*base));
   float rad = length(p.xz);
-  float men = smoothstep(wallR*0.55, wallR*1.02, rad) * MENISCUS
+  // El menisco trepaba la pared y con poca agua eso dibujaba un CUENCO: el
+  // founder lo vio —«la forma del agua como hacia arriba en lugar de ser
+  // plana»—. Se reduce a una película fina que casi no levanta el borde.
+  float men = smoothstep(wallR*0.80, wallR*1.02, rad) * MENISCUS * 0.35
             * smoothstep(0.0, 0.30, base + 1.0);
   return base + lean + w + men;
 }
@@ -509,7 +567,7 @@ void main(){
     // Cada capa mira OTRA PARTE del mismo campo. Sin esto las cinco dibujan el
     // mismo patrón con distinto color, y el carrusel se lee como un filtro.
     fp += vec2(uMat * 0.37, uMat * 0.23);
-    gField = fieldRamp(fieldGray(fp, uField, drive), 1.0 - uDay) * uEnv;
+    gField = fieldRamp(fieldGray(fp, uField, drive), fieldHue(fp, uField), 1.0 - uDay) * uEnv;
     gField += fieldGrain(fq) * (0.055 + 0.02*uDay) * uEnv;
   }
 
@@ -598,7 +656,10 @@ void main(){
     tB = mix(tA, tB, inside);
   }
   float thick = max(0.0, tB - tA);
-  float has = smoothstep(0.0, 0.030, thick);
+  // 0,075 y no 0,030: con la cámara aplanada la superficie es casi una recta,
+  // y una recta con transición de 0,030 es un CORTE. El agua tiene que
+  // empezar, no aparecer de golpe.
+  float has = smoothstep(0.0, 0.075, thick);
   float hit = step(0.004, thick);
 
   // N3C r2 · el cristal tiene su propio código (6). Antes era el 3 —el de la
@@ -621,7 +682,10 @@ void main(){
   vec3 body = mix(gField, uDeep * 0.28, (1.0 - uEnv))
             + mix(uDeep * 0.92, uLiq * 1.30, exp(-((vec3(1.0) - uLiq) * 1.55 + 0.16) * depth * 1.45))
               * 0.16 * (1.0 - uEnv);
-  body *= 0.52 + 0.46 * clamp(thick * 1.15, 0.0, 1.0);
+  // El piso sube: donde el líquido es fino —justo debajo de la superficie—
+  // 0,52 lo dejaba casi negro, y esa banda oscura contra el aire se leía
+  // como una segunda línea dibujada.
+  body *= 0.78 + 0.26 * clamp(thick * 1.15, 0.0, 1.0);
   // La gota es una lámina, y una lámina de líquido apenas tiñe: sin esto un
   // orbe VACÍO brillaba más que uno lleno — exactamente al revés.
   body *= 1.0 - drop * 0.45;
@@ -631,28 +695,11 @@ void main(){
   float flow = fbm(vec2(uv.x*2.3 + uTime*0.055, uv.y*2.7 - uTime*0.042));
   body *= 0.90 + (0.10 + 0.22*uWave)*flow;
 
-  if(KIPU_TIER > 1.5){
-    vec3 qFloor = qo + qd*tExit;
-    float dBelow = max(0.0, base - qFloor.y);
-    float onFloor = smoothstep(0.04, 0.34, dBelow) * smoothstep(0.05, -0.55, qFloor.y);
-    vec3 lw = toWater(LKEY);
-    vec2 entry = qFloor.xz + (lw.xz / max(lw.y, 0.30)) * dBelow;
-    entry = rotY(vec3(entry.x, 0.0, entry.y), uSpin).xz;
-    float A = waveAmp();
-    float h1 = -A * 1.00 *  19.36 * sin(dot(entry, WD1)*4.40 + uTime*0.85);
-    float h2 = -A * 0.75 *  10.24 * sin(dot(entry, WD2)*3.20 - uTime*0.66);
-    float h3 = -A * 0.20 * 136.89 * sin(dot(entry, WD3)*11.70 - uTime*1.35);
-    float h4 = -A * 0.20 *  86.49 * sin(dot(entry, WD4)*9.30 + uTime*1.12);
-    float hxx = h1*WD1.x*WD1.x + h2*WD2.x*WD2.x + h3*WD3.x*WD3.x + h4*WD4.x*WD4.x;
-    float hyy = h1*WD1.y*WD1.y + h2*WD2.y*WD2.y + h3*WD3.y*WD3.y + h4*WD4.y*WD4.y;
-    float hxy = h1*WD1.x*WD1.y + h2*WD2.x*WD2.y + h3*WD3.x*WD3.y + h4*WD4.x*WD4.y;
-    float f = dBelow * 3.4;
-    float jac = abs((1.0 + f*hxx)*(1.0 + f*hyy) - f*f*hxy*hxy);
-    float caus = clamp(1.0/max(jac, 0.11) - 1.0, 0.0, 4.0);
-    // La cáustica es CONSECUENCIA de la superficie: si la superficie está
-    // quieta, la luz no se concentra y no hay red. Antes brillaba igual.
-    body += mix(uAcc, vec3(1.0), 0.46) * caus * hit * onFloor * (0.012 + 0.10*uWave);
-  }
+  // LA CÁUSTICA SE FUE (N3C r3). Era una red de luz proyectada en el fondo del
+  // vaso — físicamente correcta, y el founder la leyó por lo que parecía:
+  // «líneas dibujadas que no se entiende qué son». Le quitaba el mate. Con ella
+  // se van también las motas suspendidas, que eran de la misma familia: detalle
+  // que compite con el campo en vez de acompañarlo.
 
   // ── LA SUPERFICIE ES UNA INTERFAZ, NO UNA RAYA PINTADA ─────────────────────
   //
@@ -675,10 +722,12 @@ void main(){
   body = mix(body, wrefl, wfres * surfaceSeen * 0.20);
   // El destello duro del panel sobre el agua: es el que dice «esto está mojado».
   float wspec = pow(max(dot(reflect(rdn, wnv), LKEY), 0.0), 300.0);
+  // el destello duro del panel se va con el resto de lo brillante: es lo que
+  // hacía que la superficie se leyera como plástico mojado y no como agua mate.
   // Medido: con ganancia 2.0 el fondo del orbe vacío llegaba a [255,255,233]
   // —recortado— y eso es lo que se veía como una mancha sucia. Un destello que
   // satura deja de ser un destello: es un agujero blanco.
-  body += ENV_KEY * wspec * surfaceSeen * 0.32;
+  body += ENV_KEY * wspec * surfaceSeen * 0.10;
 
   // Y EL MENISCO, ahora como lo que es: la línea exacta donde el líquido toca el
   // vidrio. Fina, no una banda ancha del mismo material — que era la razón de
@@ -690,30 +739,23 @@ void main(){
   // ruidoso de su orbe, pero puesto donde en el nuestro tiene sentido: en la
   // línea donde el líquido toca el vidrio, no en el borde del vidrio. Sin voz
   // el factor es 1 exacto y el menisco es el mismo de N3B.
+  // UNA LÍNEA, NO DOS. El menisco rodea TODA la elipse, así que se dibujaba el
+  // borde lejano —el que el ojo lee como «el nivel»— y también el cercano, más
+  // abajo. Dos arcos paralelos no existen en un vaso: se leen como dibujados, y
+  // el founder los vio así («esa segunda línea de agua se ve terrible»).
+  // Se conserva el lejano y se apaga el cercano, que es además lo que pasa de
+  // verdad: el borde de acá lo estás mirando a través del agua.
+  float ringFar = smoothstep(-0.30, 0.42, -qSurf.z / max(wallR, 0.001));
   float ringAng = atan(qSurf.z, qSurf.x) * 0.15915494;
   float ringNoise = texture2D(uPerlin, vec2(ringAng + uField * 0.35, 0.5)).r - 0.5;
-  ring *= 1.0 + uVoice * ringNoise * 2.2;
-  body += mix(uAcc, vec3(1.0), 0.55) * ring * surfaceSeen * (0.50 + 0.85*uVoice);
-
-  if(KIPU_TIER > 2.5){
-    float motes = 0.0;
-    for(int i=0;i<7;i++){
-      float fi = float(i);
-      vec3 mq = rotY(vec3(
-        sin(uTime*0.11 + fi*2.13)*0.56,
-        fract(uTime*0.020 + fi*0.1631)*1.72 - 0.86,
-        cos(uTime*0.09 + fi*1.71)*0.56), uSpin);
-      if(mq.y < base + dot(mq.xz, uTilt)){
-        vec3 mp = fromWater(mq);
-        motes += smoothstep(0.034, 0.004, length(cross(mp - pf, rdi)));
-      }
-    }
-    body += mix(uAcc, vec3(1.0), 0.45) * motes * 0.13 * hit;
-  }
+  ring *= (1.0 + uVoice * ringNoise * 2.2) * ringFar;
+  body += mix(uAcc, vec3(1.0), 0.55) * ring * surfaceSeen * (0.20 + 0.55*uVoice);
 
   vec3 R = reflect(-V, N);
   float schlick = 0.04 + 0.96*pow(1.0 - ndv, 5.0);
-  vec3 reflection = envSample(R) * schlick * mix(1.05, 1.00, uDay);
+  // MATE, no vidrio pulido. Sus orbes casi no tienen especular: son discos de
+  // color, no bolas brillantes, y eso es la mitad de lo «místico».
+  vec3 reflection = envSample(R) * schlick * mix(0.42, 0.52, uDay);
   float rimw = pow(1.0 - ndv, 5.0);
 
   // ── SIN TECHO: EL VIDRIO SE LLENA ENTERO (N3C r2) ──────────────────────
@@ -783,7 +825,7 @@ void main(){
   // así que teñía media esfera de rojo — [149,89,100] donde todo lo demás era
   // azul. La dispersión ya está donde corresponde: en 'empty', un canal por
   // índice. Sumarla dos veces no es más física, es un error de color.
-  vec3 rim = uAcc * (fres*0.26 + rimw*0.46) * mix(1.0, 1.75, uDay);
+  vec3 rim = uAcc * (fres*0.10 + rimw*0.20) * mix(1.0, 1.75, uDay);
 
   vec3 col = body*has + empty*(1.0 - has*0.985) + core*coreA + rim
            + reflection * (1.0 - has*0.62);
@@ -900,7 +942,9 @@ function linkTierProgram(
   vertex: WebGLShader,
   tier: RenderTier,
 ): ProgramBundle | null {
-  const source = FRAGMENT_SOURCE.replace("__KIPU_TIER__", `${tier}.0`);
+  const source = FRAGMENT_SOURCE
+    .replace("__KIPU_TIER__", `${tier}.0`)
+    .replace("__KIPU_NOISE__", `${ORB_NOISE_SIZE}.0`);
   const fragment = compileShader(gl, gl.FRAGMENT_SHADER, source);
   if (!fragment) return null;
   const program = gl.createProgram();

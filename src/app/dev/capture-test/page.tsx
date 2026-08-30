@@ -29469,7 +29469,13 @@ assert(
       // así que un orbe callado vuelve a tener la superficie espejo de N3B ──
       !/VOICE_AMP \* \(0\.[0-9]+ \+/u.test(n3ShaderCode) &&
       // el menisco se vuelve irregular con la voz, y con voz 0 el factor es 1
-      n3ShaderCode.includes("ring *= 1.0 + uVoice * ringNoise * 2.2;") &&
+      // N3C r3 · el menisco ganó un factor: se dibuja SÓLO el borde lejano de la
+      // elipse. El cercano producía un segundo arco paralelo, y dos arcos
+      // paralelos no existen en un vaso — el founder los vio como líneas
+      // dibujadas. Lo que el pin sujeta sigue siendo lo mismo: con voz el
+      // menisco se vuelve irregular, y sin voz el factor del ruido es 1 exacto.
+      n3ShaderCode.includes("ring *= (1.0 + uVoice * ringNoise * 2.2) * ringFar;") &&
+      n3ShaderCode.includes("float ringFar = smoothstep(") &&
       // ── y el VOLUMEN es el de M5, no uno inventado: lo que llega al lienzo
       // sale del envolvente que alimenta el medidor real ──
       n3LiveCode.includes("voice: isActive ? animatedVoice : 0,") &&
@@ -29494,12 +29500,27 @@ assert(
   };
   const n3cCallado = n3cIntegra(0);
   const n3cHablando = n3cIntegra(1);
+  // ── N3C r3 · RE-ANCLADO A LO QUE SE VE, y declarado ─────────────────────
+  //
+  // El pin viejo pedía una RAZÓN (hablando 5× más rápido que callado) y la
+  // cumplía de sobra un campo que en reposo **no se movía**: 0,1 y 1,0 son
+  // 10×, y con 0,1 una mancha del campo tardaba CUARENTA Y CINCO SEGUNDOS en
+  // cruzar el orbe. El founder lo dijo entero: «el nuestro es mucho más
+  // estático» y «cuando hablo casi no hay movimiento». Una razón no dice nada
+  // sobre la velocidad absoluta, que es lo único que el ojo juzga.
+  //
+  // Ahora el pin mide TIEMPO: cuánto tarda una mancha del campo en cruzar. Una
+  // mancha de la octava base mide 0,25 de tela y el campo la recorre a
+  // `velocidad × 0,055` por segundo — la misma cuenta que hace el shader.
+  const n3cCruce = (drive: number) => 0.25 / (orbFieldSpeed(drive) * 0.055);
   assert(
     "N3C-4 · el reloj del campo avanza siempre y avanza MÁS con voz; el orbe vivo lo acumula y se lo pasa al lienzo",
-    // en reposo el campo NO se congela: un orbe quieto sigue vivo
-    n3cCallado > 5 &&
-      // …y hablando corre mucho más
-      n3cHablando > n3cCallado * 5 &&
+    // en reposo el campo se MUEVE, y se mide en segundos, no en proporciones
+    n3cCruce(0) < 6 &&
+      // …y hablando, notoriamente más rápido
+      n3cCruce(1) < 2 &&
+      n3cHablando > n3cCallado * 2.5 &&
+      n3cCallado > 5 &&
       orbFieldSpeed(0) < orbFieldSpeed(0.5) &&
       orbFieldSpeed(0.5) < orbFieldSpeed(1) &&
       // monótono: el campo nunca retrocede, ni con un dt basura
@@ -29522,6 +29543,8 @@ assert(
     JSON.stringify({
       unMinutoCallado: +n3cCallado.toFixed(2),
       unMinutoHablando: +n3cHablando.toFixed(2),
+      cruceCallado: +n3cCruce(0).toFixed(2),
+      cruceHablando: +n3cCruce(1).toFixed(2),
     }),
   );
 
@@ -29545,6 +29568,16 @@ assert(
       // `fieldFlow` era la lectura de tela de SU técnica polar; la nuestra lee
       // por `fieldTex`, y el porte fiel conserva la suya.
       n3ShaderCode.includes("float fieldTex(") &&
+      // ── EL MUESTREO QUINTICO ────────────────────────────────────────────
+      // Parece cosmético y es la línea que separa «se funden perfecto» de
+      // «manchas super duras». La tela se magnifica cinco veces sobre el orbe
+      // (medido: un téxel ocupa 5 px en un teléfono) y el filtrado bilineal de
+      // la GPU interpola RECTO, así que a esa escala se ven los bordes de las
+      // celdas. Curvando la coordenada antes de muestrear, la interpolación
+      // pasa a ser continua en la segunda derivada y la rejilla desaparece.
+      // Lo pincho porque su mutación SOBREVIVIÓ al gate hasta esta ronda.
+      /f = f\*f\*f\*\(f\*\(f\*6\.0-15\.0\)\+10\.0\);\s*\n\s*return texture2D\(uPerlin,/u
+        .test(n3ShaderCode) &&
       n3cReferenceCode.includes("float flow(vec3 decomposed") &&
       // ── N3C r2 · RE-ANCLADO: los óvalos polares se fueron ────────────────
       // El pin exigía el bucle de siete óvalos, que es la técnica de su
@@ -29561,6 +29594,15 @@ assert(
       ) &&
       n3ShaderCode.includes("float fieldFbm(") &&
       n3ShaderCode.includes("float fieldGrain(") &&
+      // ── EL SEGUNDO CAMPO, el del COLOR ──────────────────────────────────
+      // Con una sola rampa el orbe es un tono con más y menos luz; los suyos
+      // funden varios colores. `fieldHue` es un campo independiente que corre
+      // el color intermedio entre el líquido y el acento, y sin él el material
+      // vuelve a leerse como un degradado de brillo. Su mutación también
+      // sobrevivió hasta esta ronda.
+      n3ShaderCode.includes("float fieldHue(") &&
+      n3ShaderCode.includes("vec3 mid = mix(uLiq, uAcc, hue);") &&
+      /fieldRamp\(fieldGray\([^)]*\), fieldHue\(/u.test(n3ShaderCode) &&
       // …y el CABLE del grano: existir no alcanza, tiene que SUMARSE al campo.
       // Es lo que más se nota en sus capturas y lo primero que se cae si
       // alguien "limpia" una línea que parece decorativa.

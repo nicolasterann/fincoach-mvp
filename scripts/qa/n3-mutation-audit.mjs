@@ -47,7 +47,7 @@ const mutations = [
     name: "N3-1",
     result: "la proyección miente: el alto visible deja de seguir a la cámara",
     file: CONTRACT,
-    from: "export const ORB_CAM_PITCH = -0.3;",
+    from: "export const ORB_CAM_PITCH = -0.11;",
     to: "export const ORB_CAM_PITCH = 0;",
   },
   {
@@ -322,8 +322,8 @@ const mutations = [
     name: "N3C-4",
     result: "el reloj del campo corre siempre igual: el orbe deja de acelerar cuando hablás",
     file: SIM,
-    from: "  return 0.1 + (1 - Math.pow(bounded - 1, 2)) * 0.9;",
-    to: "  return 0.55;",
+    from: "  return 1.05 + (1 - Math.pow(bounded - 1, 2)) * 2.55;",
+    to: "  return 1.05;",
   },
   {
     name: "N3C-4",
@@ -400,7 +400,7 @@ const mutations = [
     result:
       "muere la deformación de dominio: el campo vuelve a ser manchas redondas, que es lo que hace que NO se parezca al de ellos",
     file: SHADER,
-    from: "  float f = fieldFbm(p + amount*(q - 0.5) + vec2(1.7, 9.2));",
+    from: "  float f = fieldFbm(p + amount*(q - 0.5) + vec2(1.7, 9.2) + vec2(0.0, anim*0.021));",
     to: "  float f = fieldFbm(p + vec2(1.7, 9.2));",
   },
   {
@@ -409,6 +409,44 @@ const mutations = [
     file: SHADER,
     from: "    gField += fieldGrain(fq) * (0.055 + 0.02*uDay) * uEnv;",
     to: "",
+  },
+  // ── N3C ronda 3 · lo que el founder vio en el teléfono ────────────────────
+  {
+    name: "N3C-4",
+    result:
+      "vuelve el campo CASI QUIETO: la razón entre hablar y callar se conserva, pero una mancha tarda 45 s en cruzar — que es lo que se veía",
+    file: SIM,
+    from: "  return 1.05 + (1 - Math.pow(bounded - 1, 2)) * 2.55;",
+    to: "  return 0.1 + (1 - Math.pow(bounded - 1, 2)) * 0.9;",
+  },
+  {
+    name: "N3C-3",
+    result: "vuelve la SEGUNDA línea de agua: se dibuja también el borde cercano de la elipse y aparecen dos arcos paralelos",
+    file: SHADER,
+    from: "  ring *= (1.0 + uVoice * ringNoise * 2.2) * ringFar;",
+    to: "  ring *= (1.0 + uVoice * ringNoise * 2.2);",
+  },
+  {
+    name: "N3C-5",
+    result:
+      "se va el muestreo quintico y vuelve la REJILLA: la tela se magnifica 5x y el filtrado bilineal dibuja los bordes de las celdas — las «manchas duras»",
+    file: SHADER,
+    from: "  f = f*f*f*(f*(f*6.0-15.0)+10.0);\n  return texture2D(uPerlin, (i + f - 0.5) / FIELD_TEX).r;",
+    to: "  return texture2D(uPerlin, (i + f - 0.5) / FIELD_TEX).r;",
+  },
+  {
+    name: "N3C-5",
+    result: "muere el segundo campo: el color vuelve a moverse en un solo eje y las capas se leen como brillo, no como colores que se funden",
+    file: SHADER,
+    from: "  vec3 mid = mix(uLiq, uAcc, hue);",
+    to: "  vec3 mid = uLiq;",
+  },
+  {
+    name: "N3-1",
+    result: "la cámara vuelve a mirar el agua desde arriba y con poca agua se dibuja un CUENCO en vez de una superficie plana",
+    file: CONTRACT,
+    from: "export const ORB_CAM_PITCH = -0.11;",
+    to: "export const ORB_CAM_PITCH = -0.3;",
   },
 ];
 
