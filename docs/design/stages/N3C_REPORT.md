@@ -1777,3 +1777,95 @@ sin golpe es 0,0184, y contra los 0,075 de ellos seguimos **4× abajo**.
 
 Gate **891/891** · mutación **90 muertas, 0 fallas** · lint 0 errores · build verde.
 `ORB_FLUID_ENABLED = false`: producción intacta.
+
+---
+
+## Ronda 19 — los colores, medidos contra los suyos
+
+El founder aprobó el movimiento («ya se parece mucho al de ElevenLabs») y pidió
+lo último de esta fase: **los colores**, con el verde de saldo señalado — «los
+colores se parecen demasiado, entonces no se ve mucho cómo fluyen».
+
+### Los suyos, con la misma vara
+
+Recorrí su carrusel con las flechas y muestreé los seis orbes en HSL:
+
+| orbe | tono | ancho de tono | sat | luz | **recorrido de luz** |
+|---|---|---|---|---|---|
+| amarillo | 52 | 118° | 0,50 | 0,52 | 0,53 |
+| menta | 157 | 21° | 0,24 | 0,39 | 0,36 |
+| violeta (Characters) | 280 | 131° | 0,81 | 0,79 | 0,26 |
+| naranja (Narration) | 20 | 22° | 0,94 | 0,64 | 0,39 |
+| rojo (Conversational) | 5 | 15° | 0,47 | 0,27 | 0,56 |
+| verde (Social Media) | 111 | 158° | 0,45 | 0,68 | 0,32 |
+
+Dos estrategias conviven: **monocromo con mucho recorrido de luz** (15–22° de
+tono, 0,36–0,56 de luz) y **policromo** (118–158°). Ninguno hace las dos cosas
+poco.
+
+### Los nuestros
+
+| capa | tono | **ancho de tono** | **recorrido de luz** |
+|---|---|---|---|
+| saldo | 177 | **1°** | 0,13 |
+| reserva | 212 | 6° | 0,18 |
+| metas | 269 | 4° | 0,17 |
+| patrimonio | 195 | 4° | 0,23 |
+| deuda | 35 | 3° | 0,17 |
+
+**Ancho de tono medio: 3,6° contra 77,5° de ellos. Recorrido de luz: 0,18
+contra 0,40.** El ojo del founder tenía razón en las dos dimensiones, y señaló
+justo el peor orbe en ambas.
+
+### La causa, que es un poco vergonzosa
+
+Los tres colores de cada capa —líquido, acento y profundo— son **el mismo
+tono**: saldo 170/171/175, reserva 222/222/228, metas 261/259/258.
+
+El shader tiene un **segundo campo de color** (`fieldHue`) construido en la r3
+justamente para que «los orbes fundan varios colores», con su pin y su mutación.
+**Nunca hizo nada**: mezcla `uLiq` con `uAcc`, y los dos son el mismo tono. Una
+función viva, cableada y pinchada, **sin material con qué trabajar**.
+
+Y un problema de conjunto: **saldo (170°), patrimonio (199°) y reserva (222°)
+viven todas en la familia azul-turquesa** — tres de cinco capas en 52°.
+
+### La propuesta, derivada del SIGNIFICADO de cada capa
+
+| capa | qué es para el usuario | viaje de color |
+|---|---|---|
+| **Saldo** | permiso para disfrutar, HOY | turquesa → verde · el más vivo |
+| **Reserva** | lo que te protege | azul → índigo · la bóveda, el más profundo |
+| **Metas** | hacia dónde vas | violeta → magenta · luminoso |
+| **Patrimonio** | lo que construiste | bronce → arena · mineral, callado, poco saturado |
+| **Deuda** | lo que tira de vos | terracota → ciruela · cálido y grave, **sin alarma roja** |
+
+Las cinco se reparten la rueda (170 · 235 · 297 · 41 · 13) en vez de amontonarse
+en el azul, y cada una tiene 35–55° de separación real entre líquido y acento —
+recién ahí `fieldHue` tiene algo que mezclar.
+
+### Medido
+
+| | ancho de tono | recorrido de luz |
+|---|---|---|
+| hoy | 3,6° | 0,18 |
+| **propuesta (sólo colores)** | **31°** | 0,21 |
+| propuesta + rampa ensanchada | 31,8° | **0,27** |
+| ellos | 77,5° | 0,40 |
+
+Los colores solos multiplican el tono por nueve. El recorrido de luz **no se
+arregla con colores**: lo comprime la rampa (`c0 = mix(uDeep, mid, 0.30)`).
+Probado con `0.10` / `0.18`: 0,21 → **0,27**. Ese cambio se **revirtió** — es
+parte de la propuesta, no un cambio aprobado, y la rampa sí afecta producción.
+
+### Qué se commitea y qué no
+
+Se commitea sólo el **instrumento para decidir**: la probeta acepta una paleta a
+la fuerza y `/dev/vidrio?hoja=colores` muestra hoy contra propuesta, animadas,
+lado a lado. **Los tokens de producción no se tocaron.**
+
+Y se pincha que la comparación no pueda mentir: si la paleta forzada no llegara
+al orbe, las dos filas serían la misma mostrada como distinta — el peor tipo de
+instrumento.
+
+Gate **891/891** · mutación **91 muertas, 0 fallas** · lint 0 errores · build verde.

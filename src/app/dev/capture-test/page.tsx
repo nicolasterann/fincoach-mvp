@@ -30211,6 +30211,17 @@ assert(
       n3cSpecimenCode.includes("dibujar(time + (performance.now() - t0) / 1000);") &&
       n3cSpecimenCode.includes("cancelAnimationFrame(id);") &&
       !/setReloj/u.test(n3cSpecimenCode) &&
+      // ── N3C r19 · LA HOJA DE COLORES NO PUEDE MENTIR ─────────────────────
+      // Muestra «hoy» contra «propuesta» una al lado de la otra. Si la paleta
+      // forzada no llegara al orbe, las dos filas serían la MISMA y la
+      // comparación diría lo contrario de lo que muestra — el peor tipo de
+      // instrumento. Se exige el cable y que las cinco capas tengan propuesta.
+      n3cVidrioCode.includes('show("colores")') &&
+      n3cVidrioCode.includes("paleta={PALETA_PROPUESTA[kind]}") &&
+      n3cSpecimenCode.includes("paleta?.liquid ?? readCssColor(canvas,") &&
+      n3cSpecimenCode.includes("paleta?.deep ?? readCssColor(canvas,") &&
+      n3cSpecimenCode.includes("paleta?.accent ?? readCssColor(canvas,") &&
+      ORB_KINDS.every((k) => n3cVidrioCode.includes(`${k}: { liquid: [`)) &&
       n3cVidrioCode.includes('show("movimiento")') &&
       /<OrbSpecimen[^>]*\n\s*animado\n/u.test(n3cVidrioCode),
     JSON.stringify({

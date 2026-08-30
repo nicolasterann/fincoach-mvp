@@ -699,6 +699,14 @@ const mutations = [
   {
     name: "N3C-8",
     result:
+      "la hoja de colores MIENTE: la paleta propuesta no llega al orbe y las dos filas son la misma, mostradas como distintas",
+    file: SPEC,
+    from: "          liquid: paleta?.liquid ?? readCssColor(canvas, `--kipu-liquid-${kind}`),",
+    to: "          liquid: readCssColor(canvas, `--kipu-liquid-${kind}`),",
+  },
+  {
+    name: "N3C-8",
+    result:
       "se borra el GUARD del interruptor: el fluido se enciende en produccion aunque la constante diga que no, y apagado deja de ser distinguible de roto",
     file: FLUID,
     from: "  if (!ORB_FLUID_ENABLED && !forzar) return null;",

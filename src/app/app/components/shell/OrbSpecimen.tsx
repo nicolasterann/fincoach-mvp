@@ -244,6 +244,7 @@ export function OrbSpecimen({
   env = 1,
   voice = 0,
   animado = false,
+  paleta,
   label,
 }: {
   kind: OrbKind;
@@ -263,6 +264,15 @@ export function OrbSpecimen({
   voice?: number;
   /** N3C r13 · la probeta avanza su reloj con el del navegador, para JUZGAR movimiento. */
   animado?: boolean;
+  /**
+   * N3C r19 · TRES COLORES A LA FUERZA, para poder PROPONER una paleta sin
+   * tocar los tokens de producción.
+   *
+   * Sin esto, comparar «lo que hay» contra «lo que propongo» exigiría cambiar
+   * las variables CSS y mirar una cosa a la vez — y una paleta se juzga al lado
+   * de la otra, no de memoria.
+   */
+  paleta?: { liquid: OrbRgb; deep: OrbRgb; accent: OrbRgb };
   label?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -310,9 +320,9 @@ export function OrbSpecimen({
           // velocidad sale de `orbFieldSpeed`, no de un número escrito acá.
           field: tiempo * orbFieldSpeed(orbFieldDrive(voice, wave)),
           material: orbPresentationMaterial({ kind, matter, fill }),
-          liquid: readCssColor(canvas, `--kipu-liquid-${kind}`),
-          deep: readCssColor(canvas, `--kipu-deep-${kind}`),
-          accent: readCssColor(canvas, `--layer-${kind}`),
+          liquid: paleta?.liquid ?? readCssColor(canvas, `--kipu-liquid-${kind}`),
+          deep: paleta?.deep ?? readCssColor(canvas, `--kipu-deep-${kind}`),
+          accent: paleta?.accent ?? readCssColor(canvas, `--layer-${kind}`),
         },
       ],
       theme === "light" ? 1 : 0,
@@ -340,7 +350,7 @@ export function OrbSpecimen({
       vivo = false;
       cancelAnimationFrame(id);
     };
-  }, [kind, level, matter, fill, size, time, tilt, wave, bob, env, voice, animado, themeTick]);
+  }, [kind, level, matter, fill, size, time, tilt, wave, bob, env, voice, animado, paleta, themeTick]);
 
   return (
     <figure className="kipu-orb-specimen" data-orb-kind={kind}>

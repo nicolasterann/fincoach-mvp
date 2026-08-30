@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { OrbRgb } from "@/app/app/components/shell/orb-shader";
 import {
   OrbCompareSpecimen,
   OrbFieldSpecimen,
@@ -29,6 +30,7 @@ import {
 // Todo lo que se ve lo pinta `createOrbRenderer`, el mismo del santuario.
 
 const SHEETS = [
+  "colores",
   "movimiento",
   "comparacion",
   "vaso",
@@ -39,6 +41,42 @@ const SHEETS = [
   "profundidad",
 ] as const;
 type Sheet = (typeof SHEETS)[number];
+
+/**
+ * N3C r19 · LA PALETA PROPUESTA, derivada del SIGNIFICADO de cada capa.
+ *
+ * Dos reglas, y las dos salen de medir los suyos:
+ *  1. Cada orbe necesita un VIAJE de tono (los suyos van de 15° a 158°; los
+ *     nuestros valían 1–5°, o sea ninguno). Acá cada capa tiene un líquido y un
+ *     acento con 35–55° de separación real: recién ahí `fieldHue` tiene algo que
+ *     mezclar.
+ *  2. Cada orbe necesita RECORRIDO DE LUZ (los suyos ~0,38; los nuestros 0,18).
+ *     Los profundos bajan a l ≈ 0,13.
+ *
+ * Y una tercera que es de conjunto: las cinco capas tienen que repartirse la
+ * rueda. Hoy saldo (170°), patrimonio (199°) y reserva (222°) están todas en
+ * azul-turquesa.
+ */
+const PALETA_PROPUESTA: Record<OrbKind, { liquid: OrbRgb; deep: OrbRgb; accent: OrbRgb }> = {
+  // permiso para disfrutar, HOY: fresco y con energía, el más vivo de los cinco
+  saldo: { liquid: [0.14, 0.86, 0.716], accent: [0.354, 0.886, 0.4249], deep: [0.0195, 0.2184, 0.2405] },
+  // lo que te protege: profundo y sólido, una bóveda — el más oscuro
+  reserva: { liquid: [0.1012, 0.2926, 0.8188], accent: [0.5339, 0.352, 0.848], deep: [0.024, 0.0496, 0.216] },
+  // hacia dónde vas: luminoso y aspiracional — el más claro
+  metas: { liquid: [0.7294, 0.3464, 0.8936], accent: [0.934, 0.466, 0.7624], deep: [0.1536, 0.064, 0.256] },
+  // lo que construiste: mineral, callado, poco saturado — bronce, no azul
+  patrimonio: { liquid: [0.752, 0.6608, 0.448], accent: [0.8152, 0.6819, 0.6248], deep: [0.0812, 0.1478, 0.1988] },
+  // lo que tira de vos: cálido y grave, SIN alarma roja — terracota a ciruela
+  deuda: { liquid: [0.8988, 0.4204, 0.1812], accent: [0.808, 0.232, 0.376], deep: [0.221, 0.0754, 0.039] },
+};
+
+const ETIQUETA_PROPUESTA: Record<OrbKind, string> = {
+  saldo: "turquesa → verde · el permiso de hoy",
+  reserva: "azul → índigo · la bóveda",
+  metas: "violeta → magenta · lo que viene",
+  patrimonio: "bronce → arena · lo construido",
+  deuda: "terracota → ciruela · el peso, sin alarma",
+};
 
 export default async function VidrioPage({
   searchParams,
@@ -261,6 +299,64 @@ export default async function VidrioPage({
                   size={200}
                   wave={frame.wave}
                   label={frame.label}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {show("colores") && (
+        <section className="kipu-sistema-section">
+          <h2>Los colores — lo que hay contra lo que propongo</h2>
+          <p className="kipu-sistema-note">
+            El founder: «los colores se parecen demasiado, entonces no se ve
+            mucho cómo fluyen». Medido contra los seis orbes de ellos, con la
+            misma vara: su <b>ancho de tono</b> va de 15° a 158°; el nuestro
+            valía <b>1° a 5°</b>. Y su <b>recorrido de luz</b> ronda 0,38; el
+            nuestro, 0,18.
+          </p>
+          <p className="kipu-sistema-note">
+            La causa: los tres colores de cada capa —líquido, acento y
+            profundo— son <b>el mismo tono</b> (saldo: 170°, 171°, 175°). El
+            shader tiene un segundo campo de color, <code>fieldHue</code>, que
+            mezcla el líquido con el acento… y nunca hizo nada, porque los dos
+            colores que mezcla son el mismo. Función viva, cableada y pinchada,
+            sin material con qué trabajar.
+          </p>
+          <p className="kipu-sistema-note">
+            Arriba lo que hay. Abajo la propuesta: cada capa recibe un
+            <b> segundo tono de verdad</b> (un viaje de 35° a 55°) y un profundo
+            más profundo, y las cinco se reparten mejor la rueda — hoy saldo
+            (170°), patrimonio (199°) y reserva (222°) viven todas en la misma
+            familia azul-turquesa.
+          </p>
+          <p className="kipu-sistema-note">
+            Nada de esto toca los tokens de producción: la propuesta se le pasa
+            a la probeta a mano, para poder ver las dos al lado.
+          </p>
+          <h3 className="kipu-sistema-slot__name">Hoy</h3>
+          <div className="kipu-sistema-row">
+            {ORB_KINDS.map((kind: OrbKind) => (
+              <div key={`hoy-${kind}`} className="kipu-sistema-slot" data-slot-shape="orbe">
+                <p className="kipu-sistema-slot__name">{kind}</p>
+                <OrbSpecimen kind={kind} level={0.62} matter={orbMatter(kind)} size={168} animado />
+              </div>
+            ))}
+          </div>
+          <h3 className="kipu-sistema-slot__name">Propuesta</h3>
+          <div className="kipu-sistema-row">
+            {ORB_KINDS.map((kind: OrbKind) => (
+              <div key={`prop-${kind}`} className="kipu-sistema-slot" data-slot-shape="orbe">
+                <p className="kipu-sistema-slot__name">{kind}</p>
+                <OrbSpecimen
+                  kind={kind}
+                  level={0.62}
+                  matter={orbMatter(kind)}
+                  size={168}
+                  animado
+                  paleta={PALETA_PROPUESTA[kind]}
+                  label={ETIQUETA_PROPUESTA[kind]}
                 />
               </div>
             ))}
