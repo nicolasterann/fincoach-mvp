@@ -557,7 +557,7 @@ const mutations = [
     result:
       "el mapa material deja de relajarse: se aleja para siempre y a los pocos segundos el dibujo se deshilacha en filamentos",
     file: FLUID,
-    from: "export const ORB_FLUID_MAP_RELAX = 0.081;",
+    from: "export const ORB_FLUID_MAP_RELAX = 0.55;",
     to: "export const ORB_FLUID_MAP_RELAX = 0;",
   },
   {
@@ -613,8 +613,8 @@ const mutations = [
     result:
       "el mapa vuelve a guardar la COORDENADA absoluta: en media precision el escalon es el 62 % de la senal y el desplazamiento queda en escalones",
     file: FLUID,
-    from: "  vec4 d = vec4(r.xy - paso, r.zw - paso);",
-    to: "  vec4 d = vec4(r.xy, r.zw);",
+    from: "  vec2 d = r.xy - paso;",
+    to: "  vec2 d = r.xy;",
   },
   {
     name: "N3C-8",

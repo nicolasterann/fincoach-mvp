@@ -119,17 +119,7 @@ export const ORB_FLUID_VELOCITY_DISSIPATION = 0.2;
  */
 export const ORB_FLUID_MAX_SUBSTEPS = 4;
 
-/**
- * N3C r17 · CUÁNTO DURA UN CICLO DEL MAPA, en segundos.
- *
- * Las dos fases van desfasadas medio ciclo, así que ningún mapa vive más de
- * esto antes de volver a cero — y vuelve justo cuando su peso es cero, o sea
- * sin que se vea. Corto de más y el movimiento se siente entrecortado; largo de
- * más y el mapa tiene tiempo de plegarse, que es el defecto que esto ataca.
- */
-export const ORB_FLUID_CYCLE_SECONDS = 2.4;
-
-export const ORB_FLUID_MAP_RELAX = 0.081;
+export const ORB_FLUID_MAP_RELAX = 0.55;
 
 /**
  * N3C r15 · CUÁNTA VISCOSIDAD LLEVA EL MAPA, por cuadro.
@@ -342,10 +332,8 @@ type Gl = WebGLRenderingContext | WebGL2RenderingContext;
 export interface OrbFluid {
   /** Un paso de simulación. Devuelve la textura del rastro, ya avanzada. */
   step(dtSeconds: number, splats: readonly OrbFluidSplat[], iterations: number): void;
-  /** La textura que el orbe mira: xy = fase A del desplazamiento, zw = fase B. */
+  /** La textura que el orbe mira: xy = el desplazamiento acumulado. */
   texture: WebGLTexture;
-  /** Dónde va el ciclo del relevo, 0…1. El orbe la necesita para pesar las fases. */
-  phase: number;
   dispose(): void;
 }
 
@@ -422,7 +410,6 @@ vec4 bilerp(sampler2D sam, vec2 uv, vec2 ts){
   vec4 d = texture2D(sam, (iuv + vec2(1.5, 1.5)) * ts);
   return mix(mix(a, b, fuv.x), mix(c, d, fuv.x), fuv.y);
 }
-uniform vec2 uZero;
 void main(){
   vec2 paso = uDt * bilerp(uVelocity, vUv, uTexelSize).xy * uTexelSize;
   vec2 coord = vUv - paso;
@@ -445,20 +432,24 @@ void main(){
   // precisión da resolución RELATIVA: el escalón pasa a ser ~0,1 % de la señal.
   // La identidad ya no es vUv, es el cero, y el paso propio se resta acá:
   //   M(x) = D(x) + x  ⇒  D_nuevo(x) = D_viejo(x - v·dt) - v·dt
-  // ── N3C r17 · DOS FASES QUE SE RELEVAN ────────────────────────────────────
+  // ── N3C r18 · SE LLEVÓ UN RELEVO DE DOS FASES, Y SE QUITÓ ────────────────
   //
-  // Un mapa de flujo SIEMPRE termina plegándose: la velocidad se advecta a sí
-  // misma, forma choques, y el mapa los acumula hasta que dos téxeles vecinos
-  // vienen de puntos cruzados. Ese pliegue es el filo, y el filo es la ola. No
-  // hay parámetro que lo evite — sólo retrasarlo.
+  // En la r17 puse dos mapas desfasados medio ciclo, cada uno volviendo a cero
+  // cuando su peso era cero, para que ninguno envejeciera lo suficiente como
+  // para plegarse. La técnica es estándar y está bien implementada. **No servía
+  // de nada**: el pliegue no venía de la edad del mapa sino de la deformación
+  // del dominio, y eso se arregló en otro sitio.
   //
-  // La técnica estándar es no dejar que ningún mapa envejezca: se llevan DOS,
-  // desfasados medio ciclo, y cada uno vuelve a cero cuando su peso es CERO,
-  // así el reinicio es invisible. Ningún mapa vive más de un ciclo, y un mapa
-  // joven no alcanza a plegarse.
+  // Y traía su propio defecto. El founder: «cada 3 segundos hay una contracción
+  // de todo el orbe». Medido por autocorrelación: **2,40 s exactos, con
+  // armónico en 4,8** — el ciclo, clavado. La causa: dos campos independientes
+  // pesados al 50 % se cancelan parcialmente entre sí, así que la amplitud
+  // efectiva late con el ciclo aunque cada reinicio sea invisible.
   //
-  //   xy = fase A · zw = fase B · pesos w y 1-w, triangulares y complementarios
-  vec4 d = vec4(r.xy - paso, r.zw - paso);
+  // Un mecanismo que no arregla lo que decía arreglar y que introduce un
+  // artefacto propio se saca entero. El mapa vuelve a una sola fase, acotada
+  // por su relajación.
+  vec2 d = r.xy - paso;
   // ── N3C r15 · LA VISCOSIDAD QUE LE FALTABA AL MAPA ───────────────────────
   //
   // La velocidad SE ADVECTA A SÍ MISMA, y eso forma choques: es física, no un
@@ -472,18 +463,15 @@ void main(){
   // promedia con los cuatro vecinos, lo justo para redondear el filo sin
   // borrar el flujo. Va sólo en el mapa; la velocidad conserva su física.
   if(uDiffuse > 0.0){
-    vec4 vecinos = 0.25 * (
-      bilerp(uSource, coord + vec2(uSourceTexel.x, 0.0), uSourceTexel) +
-      bilerp(uSource, coord - vec2(uSourceTexel.x, 0.0), uSourceTexel) +
-      bilerp(uSource, coord + vec2(0.0, uSourceTexel.y), uSourceTexel) +
-      bilerp(uSource, coord - vec2(0.0, uSourceTexel.y), uSourceTexel));
-    d = mix(d, vec4(vecinos.xy - paso, vecinos.zw - paso), clamp(uDiffuse, 0.0, 1.0));
+    vec2 vecinos = 0.25 * (
+      bilerp(uSource, coord + vec2(uSourceTexel.x, 0.0), uSourceTexel).xy +
+      bilerp(uSource, coord - vec2(uSourceTexel.x, 0.0), uSourceTexel).xy +
+      bilerp(uSource, coord + vec2(0.0, uSourceTexel.y), uSourceTexel).xy +
+      bilerp(uSource, coord - vec2(0.0, uSourceTexel.y), uSourceTexel).xy);
+    d = mix(d, vecinos - paso, clamp(uDiffuse, 0.0, 1.0));
   }
-  d = mix(d, vec4(0.0), clamp(uRelax * uDt, 0.0, 1.0));
-  // el relevo: cada fase vuelve a cero cuando su peso ya es cero
-  d.xy = mix(d.xy, vec2(0.0), uZero.x);
-  d.zw = mix(d.zw, vec2(0.0), uZero.y);
-  gl_FragColor = d;
+  d = mix(d, vec2(0.0), clamp(uRelax * uDt, 0.0, 1.0));
+  gl_FragColor = vec4(d, 0.0, 1.0);
 }`;
 
 // N3C r12/r15 · EL MAPA MATERIAL EMPIEZA EN CERO: cada punto guarda cuánto se
@@ -764,19 +752,9 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
   }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
-  // El reloj del relevo. Vive acá porque el fluido es el dueño de su propio
-  // tiempo: si lo llevara el llamador, dos vistas del mismo fluido podrían
-  // pedirle fases distintas.
-  let fase = 0;
-  let ceroA = 0;
-  let ceroB = 0;
-
   return {
     get texture() {
       return dye.read.tex;
-    },
-    get phase() {
-      return fase;
     },
     /**
      * ── N3C r16 · EL PASO SE PARTE, PORQUE EL DEFECTO ERA EL TAMAÑO DEL PASO ──
@@ -803,12 +781,6 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       if (disposed || gl.isContextLost()) return;
       const total = Math.min(1 / 20, Math.max(1 / 240, Number.isFinite(dtSeconds) ? dtSeconds : 1 / 60));
       const tramos = Math.min(ORB_FLUID_MAX_SUBSTEPS, Math.max(1, Math.ceil(total * 60)));
-      // La fase avanza UNA vez por cuadro, no una por tramo.
-      const antes = fase;
-      fase = (fase + total / ORB_FLUID_CYCLE_SECONDS) % 1;
-      // A vuelve a cero al cruzar 0; B al cruzar 0,5. En ambos su peso vale 0.
-      ceroA = fase < antes ? 1 : 0;
-      ceroB = antes < 0.5 && (fase >= 0.5 || fase < antes) ? 1 : 0;
       const repartidos =
         tramos === 1
           ? splats
@@ -904,7 +876,6 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       gl.uniform1f(u(progs.advect, "uDissipation"), ORB_FLUID_VELOCITY_DISSIPATION);
       gl.uniform1f(u(progs.advect, "uRelax"), 0);
       gl.uniform1f(u(progs.advect, "uDiffuse"), 0);
-      gl.uniform2f(u(progs.advect, "uZero"), 0, 0);
       gl.uniform2f(u(progs.advect, "uSourceTexel"), velocity.read.texel[0], velocity.read.texel[1]);
       bindTex(progs.advect, "uVelocity", 2, velocity.read.tex);
       bindTex(progs.advect, "uSource", 3, velocity.read.tex);
@@ -920,9 +891,6 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       gl.uniform1f(u(progs.advect, "uDissipation"), 0);
       gl.uniform1f(u(progs.advect, "uRelax"), ORB_FLUID_MAP_RELAX);
       gl.uniform1f(u(progs.advect, "uDiffuse"), ORB_FLUID_MAP_DIFFUSE);
-      gl.uniform2f(u(progs.advect, "uZero"), ceroA, ceroB);
-      ceroA = 0;
-      ceroB = 0;
       gl.uniform2f(u(progs.advect, "uSourceTexel"), dye.read.texel[0], dye.read.texel[1]);
       bindTex(progs.advect, "uVelocity", 2, velocity.read.tex);
       bindTex(progs.advect, "uSource", 3, dye.read.tex);

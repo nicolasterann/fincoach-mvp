@@ -251,7 +251,6 @@ uniform sampler2D uPerlin;
 uniform sampler2D uFluid;
 uniform float uHasFluid;
 uniform vec2 uFluidTexel;
-uniform float uFluidPhase;
 const float KIPU_TIER = __KIPU_TIER__;
 const vec3 LKEY = vec3(-0.4082, 0.8367, 0.3646);
 const vec3 LFILL = vec3(0.6396, -0.2559, 0.7248);
@@ -802,7 +801,7 @@ void main(){
       // un téxel y promediadas son un pasabajos: la mitad del gradiente, con
       // el flujo de gran escala intacto — que es justo la parte que se ve como
       // movimiento. Deja de ser una calibración y pasa a ser un tope.
-      vec4 m4 = vec4(0.0);
+      vec3 m3 = vec3(0.0);
       for(int mj = 0; mj < 4; mj++){
         vec2 mo = mj == 0 ? vec2(-1.0, -1.0)
                 : mj == 1 ? vec2(1.0, -1.0)
@@ -811,21 +810,13 @@ void main(){
         vec2 mst2 = (fs0 + mo * uFluidTexel * 0.85) / uFluidTexel - 0.5;
         vec2 mi2 = floor(mst2);
         vec2 mf2 = fract(mst2);
-        vec4 ma = texture2D(uFluid, (mi2 + vec2(0.5, 0.5)) * uFluidTexel);
-        vec4 mb = texture2D(uFluid, (mi2 + vec2(1.5, 0.5)) * uFluidTexel);
-        vec4 mc = texture2D(uFluid, (mi2 + vec2(0.5, 1.5)) * uFluidTexel);
-        vec4 md = texture2D(uFluid, (mi2 + vec2(1.5, 1.5)) * uFluidTexel);
-        m4 += mix(mix(ma, mb, mf2.x), mix(mc, md, mf2.x), mf2.y) * 0.25;
+        vec3 ma = texture2D(uFluid, (mi2 + vec2(0.5, 0.5)) * uFluidTexel).xyz;
+        vec3 mb = texture2D(uFluid, (mi2 + vec2(1.5, 0.5)) * uFluidTexel).xyz;
+        vec3 mc = texture2D(uFluid, (mi2 + vec2(0.5, 1.5)) * uFluidTexel).xyz;
+        vec3 md = texture2D(uFluid, (mi2 + vec2(1.5, 1.5)) * uFluidTexel).xyz;
+        m3 += mix(mix(ma, mb, mf2.x), mix(mc, md, mf2.x), mf2.y) * 0.25;
       }
-      // ── N3C r17 · EL RELEVO DE LAS DOS FASES ─────────────────────────────
-      // Los pesos son triangulares y desfasados medio ciclo, así que SUMAN 1 en
-      // todo momento y cada uno vale 0 justo cuando su fase vuelve a cero: el
-      // reinicio es invisible y ningún mapa envejece lo suficiente para
-      // plegarse. Ése era el origen del filo.
-      float wA = 1.0 - abs(2.0 * uFluidPhase - 1.0);
-      float faseB = fract(uFluidPhase + 0.5);
-      float wB = 1.0 - abs(2.0 * faseB - 1.0);
-      vec3 fl = vec3(m4.xy * wA + m4.zw * wB, 0.0);
+      vec3 fl = m3;
       // Tope SUAVE en vez de recorte: un recorte pega el valor contra el
       // límite y ahí deja de variar — que es como se fabricó el patrón
       // trabado. Así siempre queda pendiente, por fuerte que sea el rastro.
@@ -1234,7 +1225,6 @@ interface ProgramBundle {
     fluid: WebGLUniformLocation | null;
     hasFluid: WebGLUniformLocation | null;
     fluidTexel: WebGLUniformLocation | null;
-    fluidPhase: WebGLUniformLocation | null;
     tilt: WebGLUniformLocation | null;
     liquid: WebGLUniformLocation | null;
     deep: WebGLUniformLocation | null;
@@ -1294,7 +1284,6 @@ function linkTierProgram(
       fluid: uniform("uFluid"),
       hasFluid: uniform("uHasFluid"),
       fluidTexel: uniform("uFluidTexel"),
-      fluidPhase: uniform("uFluidPhase"),
       tilt: uniform("uTilt"),
       liquid: uniform("uLiq"),
       deep: uniform("uDeep"),
@@ -1494,7 +1483,6 @@ export function createOrbRenderer(
       1 / ORB_FLUID_DYE_SIZE,
       1 / ORB_FLUID_DYE_SIZE,
     );
-    gl.uniform1f(bundle.locations.fluidPhase, fluid ? fluid.phase : 0);
   }
   if (reference) {
     // Los siete desfasajes son de SU componente, no del nuestro: nuestro campo

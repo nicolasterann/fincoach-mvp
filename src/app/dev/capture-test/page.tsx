@@ -106,7 +106,6 @@ import {
   ORB_FLUID_MAP_RELAX,
   ORB_FLUID_MAP_DIFFUSE,
   ORB_FLUID_MAX_SUBSTEPS,
-  ORB_FLUID_CYCLE_SECONDS,
   ORB_FLUID_STIRRERS,
   ORB_FLUID_DYE_SIZE,
   ORB_FLUID_SIM_SIZE,
@@ -29995,7 +29994,6 @@ assert(
       // de cero la media precisión da resolución RELATIVA: ~0,1 %.
       n3ShaderCode.includes("vec2 fw = fl.xy * 7.0;") &&
       n3cFluido.includes("gl_FragColor = vec4(0.0); }") &&
-      n3cFluido.includes("vec4 d = vec4(r.xy - paso, r.zw - paso);") &&
       // ── N3C r17 · EL RELEVO DE DOS FASES ─────────────────────────────────
       // Un mapa de flujo SIEMPRE termina plegándose: la velocidad se advecta a
       // sí misma y forma choques, y el mapa los acumula hasta que dos téxeles
@@ -30101,32 +30099,29 @@ assert(
       !/float fa = uMat \*/u.test(n3ShaderCode) &&
       n3LiveCode.includes("seed: slot.index,") &&
       n3cSpecimenCode.includes("seed: Math.max(0, ORB_KINDS.indexOf(kind)),") &&
-      n3ShaderCode.includes("m4 += mix(mix(ma, mb, mf2.x), mix(mc, md, mf2.x), mf2.y) * 0.25;") &&
+      n3ShaderCode.includes("m3 += mix(mix(ma, mb, mf2.x), mix(mc, md, mf2.x), mf2.y) * 0.25;") &&
       // …y el mapa es MÁS GRUESO que la velocidad: un mapa fino tiene gradiente
       // fino, y el gradiente es lo que pliega. 24 contra 128.
       ORB_FLUID_DYE_SIZE * 4 <= ORB_FLUID_SIM_SIZE &&
-      ORB_FLUID_CYCLE_SECONDS > 0.8 &&
-      ORB_FLUID_CYCLE_SECONDS < 8 &&
-      n3cFluido.includes("d.xy = mix(d.xy, vec2(0.0), uZero.x);") &&
-      n3cFluido.includes("d.zw = mix(d.zw, vec2(0.0), uZero.y);") &&
-      n3cFluido.includes("fase = (fase + total / ORB_FLUID_CYCLE_SECONDS) % 1;") &&
-      n3ShaderCode.includes("float wA = 1.0 - abs(2.0 * uFluidPhase - 1.0);") &&
-      n3ShaderCode.includes("float wB = 1.0 - abs(2.0 * faseB - 1.0);") &&
-      n3ShaderCode.includes("vec3 fl = vec3(m4.xy * wA + m4.zw * wB, 0.0);") &&
-      // y los pesos suman 1 SIEMPRE — se comprueba, no se afirma
-      (() => {
-        for (let i = 0; i <= 200; i += 1) {
-          const f = i / 200;
-          const wA = 1 - Math.abs(2 * f - 1);
-          const b = (f + 0.5) % 1;
-          const wB = 1 - Math.abs(2 * b - 1);
-          if (Math.abs(wA + wB - 1) > 1e-9) return false;
-          // y cada peso vale 0 justo donde su fase se reinicia
-          if (f === 0 && wA !== 0) return false;
-          if (Math.abs(f - 0.5) < 1e-9 && wB !== 0) return false;
-        }
-        return true;
-      })() &&
+      // ── N3C r18 · NO PUEDE VOLVER EL RELEVO DE DOS FASES ─────────────────
+      //
+      // La r17 llevaba dos mapas desfasados medio ciclo para que ninguno
+      // envejeciera lo suficiente como para plegarse. La técnica es estándar y
+      // estaba bien hecha, y NO SERVÍA: el pliegue venía de la deformación del
+      // dominio, no de la edad del mapa.
+      //
+      // Y traía su propio defecto. El founder: «cada 3 segundos hay una
+      // contracción de todo el orbe». Medido por autocorrelación: **2,40 s
+      // exactos con armónico en 4,8** — el ciclo, clavado. Dos campos
+      // independientes pesados al 50 % se cancelan parcialmente, así que la
+      // amplitud efectiva LATE con el ciclo aunque cada reinicio sea invisible.
+      //
+      // El mapa lleva UNA fase, acotada por su relajación. Si vuelve el relevo,
+      // vuelve el latido.
+      !/uFluidPhase|uZero|CYCLE_SECONDS/u.test(n3ShaderCode + n3cFluido) &&
+      n3cFluido.includes("vec2 d = r.xy - paso;") &&
+      ORB_FLUID_MAP_RELAX > 0.2 &&
+      ORB_FLUID_MAP_RELAX < 2 &&
       /uniform float uDt, uDissipation, uRelax, uDiffuse;/u.test(n3cFluido) &&
       ORB_FLUID_MAP_RELAX > 0.02 &&
       ORB_FLUID_MAP_RELAX < 1 &&

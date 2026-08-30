@@ -1698,3 +1698,82 @@ dos cosas.
 
 Gate **891/891** · lint 0 errores · build verde.
 `ORB_FLUID_ENABLED = false`: producción sigue intacta, a una línea de encenderse.
+
+---
+
+## Ronda 18 — el golpe cada 2,4 s era mi propio relevo
+
+El founder confirmó lo que importaba: **«las olas se fueron definitivamente».**
+Y reportó otra cosa: «cada 3 segundos hay como una contracción de todo el orbe o
+un golpe», constante y exacto.
+
+**Un período fijo es un reloj, y el único reloj nuevo era mío.**
+
+### Medido por autocorrelación, no estimado
+
+| | pico | armónico |
+|---|---|---|
+| antes | **2,40 s** (0,73) | **4,80 s** (0,64) |
+| después | ninguno | — |
+
+**2,40 s clavados** = `ORB_FLUID_CYCLE_SECONDS`, el relevo de dos fases que yo
+mismo había agregado esa misma jornada. El founder lo estimó en 3 s; el reloj
+dijo 2,4.
+
+### Por qué latía si cada reinicio era invisible
+
+El diseño era correcto en su propia lógica: dos mapas desfasados medio ciclo,
+cada uno volviendo a cero **cuando su peso vale cero**, así que ningún reinicio
+se ve. Lo que no vi es que **dos campos independientes pesados al 50 % se
+cancelan parcialmente entre sí**: en el cruce la amplitud efectiva cae a ~0,71
+de la de un campo solo, y en el reinicio vuelve a 1,0. La amplitud late con el
+ciclo aunque cada reinicio sea invisible. Un artefacto de la interpolación, no
+de los reinicios.
+
+### La decisión
+
+**Se quitó entero.** No es que se apagara: se borró el mecanismo — la constante,
+el reloj, los reinicios, el par de canales, los pesos del shader.
+
+Dos razones, y la primera es la que importa:
+
+1. **No arreglaba lo que decía arreglar.** Lo puse para que el mapa no
+   envejeciera hasta plegarse; el pliegue resultó venir de la deformación del
+   dominio, no de la edad del mapa. Cuando la r17 encontró la causa real, el
+   relevo quedó sin trabajo.
+2. **Traía su propio defecto** medible y visible.
+
+El mapa vuelve a una sola fase, acotada por su relajación (`MAP_RELAX` 0,081 →
+**0,55**, que es el bound que el relevo estaba haciendo por otra vía).
+
+### Verificado
+
+| | crestas (mediana / p999 / máx) | su suelo (p999 / máx) |
+|---|---|---|
+| saldo, 25 s | 0,0657 / 0,0768 / 0,0786 | 0,0887 / 0,0766 |
+| deuda, 30 s | 0,0741 / 0,1096 / 0,1118 | 0,0950 / 0,0962 |
+
+Saldo queda **por debajo** de su propio suelo. Los dos mapas de crestas son
+moteado uniforme, sin filamentos: **las olas siguen muertas.**
+
+Y sin picos periódicos: lo que queda en la autocorrelación (0,63–0,87 s,
+decayendo, sin armónicos) es la correlación natural de una señal suave.
+
+### El costo, dicho sin adornos
+
+El flujo bajó de 0,0264 a **0,0184** a un segundo. Y hay que decir de dónde
+venía la diferencia: **parte de aquel 0,0264 ERA el latido**. El número honesto
+sin golpe es 0,0184, y contra los 0,075 de ellos seguimos **4× abajo**.
+
+### Método
+
+- **Un período fijo es un reloj.** Cuando un defecto se repite con período
+  exacto, no se busca en la física: se busca en las constantes de tiempo del
+  código. La autocorrelación lo dio en una medición.
+- **Un mecanismo correcto puede ser un mecanismo inútil.** El relevo estaba bien
+  implementado y bien razonado; su premisa era falsa. Cuando la causa real
+  aparece, lo que se puso "por si acaso" se saca — sobre todo si tiene efectos
+  propios.
+
+Gate **891/891** · mutación **90 muertas, 0 fallas** · lint 0 errores · build verde.
+`ORB_FLUID_ENABLED = false`: producción intacta.
