@@ -1063,3 +1063,63 @@ lint 0 · build 0 · capture 891/891 · mutación 67/67 con nombre
 demasiado baja, el pin que se escribe para que no vuelva a bajar hay que
 escribirlo **con los dos extremos**. Yo escribí la mitad, y la otra mitad la
 pagó el founder mirando la app rota.
+
+---
+
+## Ronda 9 — las rayas no venían de la fuerza
+
+El founder volvió a ver la app dañada después del arreglo de la ronda 8. Y tenía
+razón: yo había corregido **la mitad** del problema.
+
+### La causa real
+
+La textura del fluido es `CLAMP_TO_EDGE`: **fuera de su borde repite la última
+fila**. Y el orbe la muestreaba con las coordenadas del **líquido** —desplazadas
+hacia abajo para anclar el campo al agua—, así que la parte de arriba del orbe
+caía fuera. Medido:
+
+```
+plano del agua −1,00 → muestreo v en [0,43 · 1,31]  ← FUERA
+plano del agua −0,30 → muestreo v en [0,30 · 1,18]  ← FUERA
+plano del agua  0,40 → muestreo v en [0,17 · 1,05]  ← FUERA
+```
+
+**Una fila repetida a lo largo de todo el ancho es literalmente una raya
+vertical.** Por eso aparecían arriba, en todos los orbes, y sin depender de la
+fuerza de la simulación. Sobrevivieron a la ronda 8 porque yo estaba mirando la
+magnitud del fluido y no dónde se lo muestreaba.
+
+Arreglo: se muestrea con las coordenadas **crudas** del orbe (`uv`, que dentro
+del disco vale como mucho 1) y con un factor de 0,40, así que el muestreo vive
+en **[0,10 · 0,90]** y nunca toca el borde.
+
+### Verificado con un instrumento nuevo
+
+Un detector de rayas: la **anisotropía del gradiente**. Una raya vertical tiene
+mucho gradiente horizontal y casi ninguno vertical, así que el cociente la
+delata aunque sea tenue.
+
+| | resultado |
+|---|---|
+| anisotropía del gradiente | **1,00** (isotrópico: sin rayas) |
+| saltos duros, 241 cuadros en 8 s | media **1,03 %**, máx **1,80 %**, ninguno > 2 % |
+| peor fila / peor columna | 1,8× y 1,5× la media, **y en el borde del disco** |
+
+La última fila importa: **no hay ninguna discontinuidad interna**. Lo que parecía
+una costura horizontal en una captura era compresión de la propia captura.
+
+### El pin
+
+Ahora el gate exige que el factor de muestreo mantenga el rango **dentro** de la
+textura —lo calcula, no lo supone— y que se usen las coordenadas crudas. Dos
+mutaciones nuevas reponen exactamente las rayas.
+
+```
+lint 0 · build 0 · capture 891/891
+```
+
+**La lección se repite, y por eso la escribo otra vez:** en la ronda 8 el defecto
+fue un umbral con un solo lado. En la 9 fue mirar la magnitud cuando el problema
+estaba en el muestreo. Las dos veces el error fue **corregir lo que ya tenía en
+la cabeza en vez de medir dónde estaba el defecto**. El detector de rayas existe
+ahora precisamente para no volver a discutirlo a ojo.

@@ -558,6 +558,21 @@ const mutations = [
     from: "  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.42;",
     to: "  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.0;",
   },
+  {
+    name: "N3C-8",
+    result:
+      "el orbe vuelve a muestrear el fluido FUERA de la textura: CLAMP_TO_EDGE repite la ultima fila y eso dibuja rayas verticales — las que el founder vio dos veces",
+    file: SHADER,
+    from: "      vec3 fl = texture2D(uFluid, fr * 0.40 + 0.5).xyz;",
+    to: "      vec3 fl = texture2D(uFluid, fr * 0.75 + 0.5).xyz;",
+  },
+  {
+    name: "N3C-8",
+    result: "el muestreo vuelve a las coordenadas del LIQUIDO, desplazadas: la parte de arriba del orbe cae fuera de la textura",
+    file: SHADER,
+    from: "      vec2 fr = vec2(fc*uv.x - fs*uv.y, fs*uv.x + fc*uv.y);",
+    to: "      vec2 fr = vec2(fc*fq.x - fs*fq.y, fs*fq.x + fc*fq.y);",
+  },
 ];
 
 function runGate() {

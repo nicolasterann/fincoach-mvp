@@ -671,8 +671,20 @@ void main(){
     if(uHasFluid > 0.5){
       float fa = uMat * 1.2566;
       float fc = cos(fa), fs = sin(fa);
-      vec2 fr = vec2(fc*fq.x - fs*fq.y, fs*fq.x + fc*fq.y);
-      vec3 fl = texture2D(uFluid, clamp(fr * 0.44 + 0.5, 0.015, 0.985)).xyz;
+      // ── SE MUESTREA CON LAS COORDENADAS CRUDAS DEL ORBE ──────────────────
+      //
+      // Y no con las del líquido. 'fq' viene desplazado hacia abajo para anclar
+      // el campo al agua, así que la parte de arriba del orbe caía en v > 1 —
+      // medido: hasta 1,31. La textura del fluido es CLAMP_TO_EDGE, o sea que
+      // fuera del borde REPITE la última fila, y una fila repetida a lo largo
+      // de todo el ancho es literalmente una raya vertical. Ésas eran las rayas
+      // que el founder vio en producción, y no venían de la fuerza: venían de
+      // pedirle a la textura un punto que no existe.
+      //
+      // 'uv' vale como mucho 1 dentro del disco, así que con 0,40 el muestreo
+      // vive en [0,10 · 0,90] y nunca toca el borde.
+      vec2 fr = vec2(fc*uv.x - fs*uv.y, fs*uv.x + fc*uv.y);
+      vec3 fl = texture2D(uFluid, fr * 0.40 + 0.5).xyz;
       // Tope SUAVE en vez de recorte: un recorte pega el valor contra el
       // límite y ahí deja de variar — que es como se fabricó el patrón
       // trabado. Así siempre queda pendiente, por fuerte que sea el rastro.

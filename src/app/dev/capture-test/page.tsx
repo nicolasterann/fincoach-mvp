@@ -29882,6 +29882,28 @@ assert(
       n3ShaderCode.includes("orbFluidSplats({") &&
       n3ShaderCode.includes("ORB_FLUID_ITERATIONS[frame.tier]") &&
       n3ShaderCode.includes("uniform float uHasFluid;") &&
+      // ── N3C r9 · EL ORBE NO PUEDE PEDIRLE A LA TEXTURA UN PUNTO QUE NO
+      // EXISTE ─────────────────────────────────────────────────────────────
+      // La textura del fluido es CLAMP_TO_EDGE: fuera del borde repite la
+      // última fila, y una fila repetida a lo largo de todo el ancho es
+      // literalmente una raya. El muestreo se hacía con las coordenadas del
+      // LÍQUIDO —desplazadas hacia abajo para anclar el campo al agua—, así que
+      // la parte de arriba del orbe caía en v = 1,31. Ésas eran las rayas que
+      // el founder vio en producción, y sobrevivieron a la ronda anterior
+      // porque yo estaba mirando la fuerza del fluido y no el muestreo.
+      //
+      // `uv` vale como mucho 1 dentro del disco; con un factor ≤ 0,45 el
+      // muestreo nunca toca el borde.
+      (() => {
+        const m = n3ShaderCode.match(
+          /texture2D\(uFluid, fr \* ([0-9.]+) \+ 0\.5\)/u,
+        );
+        if (m == null) return false;
+        const k = Number.parseFloat(m[1]!);
+        return k > 0 && 0.5 + k < 0.98 && 0.5 - k > 0.02;
+      })() &&
+      // …y con las coordenadas CRUDAS, no con las del líquido
+      /vec2 fr = vec2\(fc\*uv\.x - fs\*uv\.y, fs\*uv\.x \+ fc\*uv\.y\);/u.test(n3ShaderCode) &&
       n3ShaderCode.includes("if(uHasFluid > 0.5){") &&
       // …y el orbe vivo le pasa la voz de M5 y el chapoteo, no un número fijo
       n3LiveCode.includes("voice: animatedVoice,") &&
