@@ -998,3 +998,68 @@ Tres pines nuevos, y los tres nacieron de un defecto que **había sobrevivido**:
 ```
 lint 0 · build 0 · capture 891/891 · mutación 65/65 con nombre
 ```
+
+---
+
+## Ronda 8 — un retroceso mío, y el guardarraíl que lo permitió
+
+El founder abrió producción y la vio **rota**: rayas rectas, mota y cortes
+bruscos, peor al deslizar. Fue un defecto mío de la ronda 7, en el sentido
+contrario al que acababa de arreglar.
+
+### La causa
+
+`ORB_FLUID_GRID = 5200` inyectaba velocidades de **5.720**, y eso rompe la
+imagen por dos caminos a la vez:
+
+- **El solver recorta la velocidad a ±1000** (lo hace el paso de vorticidad).
+  Una salpicadura por encima del tope deja un **salto duro** justo donde
+  empujó — los cortes.
+- **La advección desplaza `dt × v × (1/128)`.** Con esa velocidad muestrea muy
+  fuera del dominio, donde la textura repite el borde — **las rayas rectas**.
+
+El demo clásico de fluidos inyecta 100–300. Yo estaba veinte veces por encima
+del techo del propio solver.
+
+### La causa de la causa
+
+Le había atado **todo** el desplazamiento al fluido, así que la única forma de
+que el movimiento se notara era subir la simulación hasta que reventara. Su
+propio shader no hace eso: tiene ruido animado (`uNoiseSpeed`, `uFbmSpeed`)
+**y** el fluido encima. Ahora igual — el fluido **suma** al desplazamiento
+propio en vez de sustituirlo. El fondo lo da la deformación propia, calma y sin
+artefactos; el fluido aporta lo orgánico y la voz.
+
+Y el gesto dejó de girar el campo: durante un deslizamiento `uSpin` salta, y el
+giro brusco se leía como un corte — por eso el founder lo vio «mucho más
+evidente» al deslizar. El orbe se mueve; su contenido no.
+
+### Medido después
+
+| | ellos | **nosotros** |
+|---|---|---|
+| magnitud | 5,99 | **5,85** |
+| coherencia | 0,12 | **0,19** |
+| saturación | 0,91 | **0,91** |
+| bordes duros | — | **0,4 %** |
+
+### El pin tenía UN SOLO LADO
+
+Y por eso dejó pasar esto. Exigía que la velocidad superara un mínimo —quedarse
+corto congela el fluido, que era el defecto de la ronda 7— y **no** exigía que
+estuviera por debajo del tope que el propio solver aplica. Un umbral con un lado
+deja pasar el otro, y el otro llegó a producción.
+
+Ahora comprueba **los dos**, sobre **todas** las salpicaduras, incluida la voz
+al máximo. Y dos pines más que nacieron de mutaciones que sobrevivieron: el
+factor con el que el fluido entra al tono y al color no puede ser cero — `* 0.0`
+conserva la forma de la línea y apaga el fluido entero.
+
+```
+lint 0 · build 0 · capture 891/891 · mutación 67/67 con nombre
+```
+
+**La lección, y es de método:** cuando una ronda corrige una magnitud que estaba
+demasiado baja, el pin que se escribe para que no vuelva a bajar hay que
+escribirlo **con los dos extremos**. Yo escribí la mitad, y la otra mitad la
+pagó el founder mirando la app rota.

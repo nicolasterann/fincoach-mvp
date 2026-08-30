@@ -29724,7 +29724,21 @@ assert(
       // Atarle todo el movimiento obligaba a subir la simulación hasta que
       // rompía la imagen; su propio shader también tiene ruido animado además
       // del fluido (`uNoiseSpeed`, `uFbmSpeed`).
-      /if\(uHasFluid > 0\.5\) q \+= gFlow \* [0-9.]+;/u.test(n3ShaderCode) &&
+      // …y con un factor que NO sea cero: `* 0.0` conserva la forma de la línea
+      // y apaga el fluido entero, que es como su mutación sobrevivía.
+      (() => {
+        const m = n3ShaderCode.match(/if\(uHasFluid > 0\.5\) q \+= gFlow \* ([0-9.]+);/u);
+        return m != null && Number.parseFloat(m[1]!) > 0.05;
+      })() &&
+      // y lo mismo para el campo del COLOR, que mira el mismo fluido girado un
+      // cuarto de vuelta: apagarlo deja el color quieto mientras el brillo se
+      // mueve, y eso se lee como dos capas distintas.
+      (() => {
+        const m = n3ShaderCode.match(
+          /if\(uHasFluid > 0\.5\) q \+= vec2\(-gFlow\.y, gFlow\.x\) \* ([0-9.]+);/u,
+        );
+        return m != null && Number.parseFloat(m[1]!) > 0.05;
+      })() &&
       // …y el factor tiene que SATURAR de verdad: con 1,0 la función existe y
       // no hace nada, que es como su mutación sobrevivía.
       (() => {

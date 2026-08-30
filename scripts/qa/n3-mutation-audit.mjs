@@ -323,7 +323,7 @@ const mutations = [
     name: "N3C-4",
     result: "el reloj del campo corre siempre igual: el orbe deja de acelerar cuando hablás",
     file: SIM,
-    from: "  return 1.10 + (1 - Math.pow(bounded - 1, 2)) * 2.20;",
+    from: "  return 1.55 + (1 - Math.pow(bounded - 1, 2)) * 2.60;",
     to: "  return 1.05;",
   },
   {
@@ -408,7 +408,7 @@ const mutations = [
     name: "N3C-5",
     result: "CABLE · el grano se calcula y no se suma: el campo pierde lo que más lo hace parecer material",
     file: SHADER,
-    from: "    gField += fieldGrain(fq) * (0.055 + 0.02*uDay) * uEnv;",
+    from: "    gField += fieldGrain(fq) * (0.030 + 0.012*uDay) * uEnv;",
     to: "",
   },
   // ── N3C ronda 3 · lo que el founder vio en el teléfono ────────────────────
@@ -417,7 +417,7 @@ const mutations = [
     result:
       "vuelve el campo CASI QUIETO: la razón entre hablar y callar se conserva, pero una mancha tarda 45 s en cruzar — que es lo que se veía",
     file: SIM,
-    from: "  return 1.10 + (1 - Math.pow(bounded - 1, 2)) * 2.20;",
+    from: "  return 1.55 + (1 - Math.pow(bounded - 1, 2)) * 2.60;",
     to: "  return 0.1 + (1 - Math.pow(bounded - 1, 2)) * 0.9;",
   },
   {
@@ -471,8 +471,8 @@ const mutations = [
     result:
       "vuelve el TRANSPORTE: el campo gira, y con rasgos seguibles cualquier giro se lee como «una capa que pasa» — el founder lo dijo con giro y con traslacion",
     file: SHADER,
-    from: "    q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),",
-    to: "    float a_=anim*0.16, c_=cos(a_), s_=sin(a_); p = vec2(c_*p.x - s_*p.y, s_*p.x + c_*p.y);\n    q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),",
+    from: "  vec2 q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),",
+    to: "  float a_=anim*0.16, c_=cos(a_), s_=sin(a_); p = vec2(c_*p.x - s_*p.y, s_*p.x + c_*p.y);\n  vec2 q = vec2(fieldFbm(p + vec2(anim*0.085, anim*0.052)),",
   },
   // ── N3C ronda 6 · el fluido ───────────────────────────────────────────────
   {
@@ -517,8 +517,8 @@ const mutations = [
     name: "N3C-5",
     result: "el shader deja de leer el fluido y vuelve al ruido aunque el solver este corriendo",
     file: SHADER,
-    from: "    q = 0.5 + gFlow;",
-    to: "    q = vec2(0.5);",
+    from: "  if(uHasFluid > 0.5) q += gFlow * 0.55;",
+    to: "  if(uHasFluid > 0.5) q += gFlow * 0.0;",
   },
   {
     name: "N3C-5",
@@ -532,7 +532,7 @@ const mutations = [
     name: "N3C-5",
     result: "muere el paso de saturacion: el mapeo tonal desatura y el color pasa de 0,91 a 0,50 — la mitad del de ellos",
     file: SHADER,
-    from: "), 1.62) * uEnv;",
+    from: "), 1.42) * uEnv;",
     to: "), 1.0) * uEnv;",
   },
   {
@@ -555,8 +555,8 @@ const mutations = [
     name: "N3C-5",
     result: "el fluido vuelve a SUSTITUIR el desplazamiento propio en vez de sumarle: el movimiento de fondo queda atado a la simulacion",
     file: SHADER,
-    from: "  if(uHasFluid > 0.5) q += gFlow * 0.55;",
-    to: "  if(uHasFluid > 0.5) q = 0.5 + gFlow;",
+    from: "  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.42;",
+    to: "  if(uHasFluid > 0.5) q += vec2(-gFlow.y, gFlow.x) * 0.0;",
   },
 ];
 
