@@ -28,6 +28,7 @@ const SAVE_ACTIONS = "src/app/onboarding/save-actions.ts";
 const NOISE = "src/app/app/components/shell/orb-noise-texture.ts";
 const REFERENCE = "src/app/app/components/shell/orb-reference-shader.ts";
 const FLUID = "src/app/app/components/shell/orb-fluid.ts";
+const SPEC = "src/app/app/components/shell/OrbSpecimen.tsx";
 
 const mutations = [
   // ── N3B · el vidrio y el agua ────────────────────────────────────────────
@@ -566,6 +567,14 @@ const mutations = [
     file: FLUID,
     from: '      gl.uniform1f(u(progs.advect, "uDissipation"), 0);',
     to: '      gl.uniform1f(u(progs.advect, "uDissipation"), 1);',
+  },
+  {
+    name: "N3C-8",
+    result:
+      "la mesa de luz vuelve a mostrar FOTOS donde hay que juzgar movimiento: el modo animado no avanza el reloj — «solo veo fotos»",
+    file: SPEC,
+    from: "      dibujar(time + (performance.now() - t0) / 1000);",
+    to: "      dibujar(time);",
   },
   {
     name: "N3C-8",

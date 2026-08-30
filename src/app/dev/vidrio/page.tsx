@@ -29,6 +29,7 @@ import {
 // Todo lo que se ve lo pinta `createOrbRenderer`, el mismo del santuario.
 
 const SHEETS = [
+  "movimiento",
   "comparacion",
   "vaso",
   "campo",
@@ -260,6 +261,42 @@ export default async function VidrioPage({
                   size={200}
                   wave={frame.wave}
                   label={frame.label}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {show("movimiento") && (
+        <section className="kipu-sistema-section">
+          <h2>El movimiento — esto SÍ se mueve</h2>
+          <p className="kipu-sistema-note">
+            El resto de esta página pinta <b>un solo cuadro</b> a propósito: así
+            se puede medir y comparar entre rondas. Pero para juzgar el
+            movimiento eso no sirve — se ven fotos. Acá los mismos orbes avanzan
+            con el reloj del navegador.
+          </p>
+          <p className="kipu-sistema-note">
+            <b>Qué mirar:</b> si el color <i>se va</i> y no vuelve, o si se
+            sacude en el sitio. En la r12 la textura del fluido pasó a guardar
+            <i> de dónde vino cada punto</i> en vez de un empujón con tope, y la
+            curva de decorrelación pasó de plana-y-que-vuelve (0,0196 → 0,0251 →
+            <b> 0,0157</b> a los 2 s) a creciente (0,0049 → 0,0078 → 0,0142 →
+            <b> 0,0246</b>). Falta amplitud: la de ellos llega a 0,075 al
+            segundo.
+          </p>
+          <div className="kipu-sistema-row">
+            {ORB_KINDS.map((kind: OrbKind) => (
+              <div key={kind} className="kipu-sistema-slot" data-slot-shape="orbe">
+                <p className="kipu-sistema-slot__name">{kind}</p>
+                <OrbSpecimen
+                  kind={kind}
+                  level={0.62}
+                  matter={orbMatter(kind)}
+                  size={186}
+                  animado
+                  label={kind}
                 />
               </div>
             ))}

@@ -211,6 +211,7 @@ export function OrbSpecimen({
   bob = 0,
   env = 1,
   voice = 0,
+  animado = false,
   label,
 }: {
   kind: OrbKind;
@@ -228,17 +229,31 @@ export function OrbSpecimen({
   env?: number;
   /** N3C · el volumen de M5, para fotografiar la onda de la voz sobre el agua. */
   voice?: number;
+  /** N3C r13 · la probeta avanza su reloj con el del navegador, para JUZGAR movimiento. */
+  animado?: boolean;
   label?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const themeTick = useThemeTick();
-
+  /**
+   * N3C r13 · LA PROBETA QUE SE MUEVE.
+   *
+   * Las probetas pintan UN cuadro a propósito: es lo que las hace medibles y
+   * comparables entre rondas. Pero el founder abrió la mesa de luz para juzgar
+   * el MOVIMIENTO y vio fotos — «solo veo fotos». Un instrumento que no muestra
+   * lo que hay que juzgar no sirve, por medible que sea.
+   *
+   * Con `animado` la misma probeta redibuja en el reloj de cuadros. El reloj NO
+   * pasa por el estado de React: cinco orbes re-renderizando el árbol sesenta
+   * veces por segundo se ve a tirones, y un instrumento que agrega su propio
+   * tirón al movimiento que hay que juzgar miente. Se llama al mismo `paint`.
+   */
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const theme = document.documentElement.dataset.theme ?? "dark";
-    const glVersion = paint(
+    const dibujar = (tiempo: number) => paint(
       canvas,
       size,
       size,
@@ -260,7 +275,7 @@ export function OrbSpecimen({
           env,
           // Un cuadro fijo, pero con el MISMO reloj que el santuario: la
           // velocidad sale de `orbFieldSpeed`, no de un número escrito acá.
-          field: time * orbFieldSpeed(orbFieldDrive(voice, wave)),
+          field: tiempo * orbFieldSpeed(orbFieldDrive(voice, wave)),
           material: orbPresentationMaterial({ kind, matter, fill }),
           liquid: readCssColor(canvas, `--kipu-liquid-${kind}`),
           deep: readCssColor(canvas, `--kipu-deep-${kind}`),
@@ -268,16 +283,31 @@ export function OrbSpecimen({
         },
       ],
       theme === "light" ? 1 : 0,
-      time,
+      tiempo,
       voice,
     );
+    const glVersion = dibujar(time);
     if (glVersion == null) {
       setFailure("sin contexto WebGL");
       return;
     }
     canvas.dataset.glVersion = String(glVersion);
     canvas.dataset.drawn = "1";
-  }, [kind, level, matter, fill, size, time, tilt, wave, bob, env, voice, themeTick]);
+    if (!animado) return;
+    let vivo = true;
+    let id = 0;
+    const t0 = performance.now();
+    const paso = () => {
+      if (!vivo) return;
+      dibujar(time + (performance.now() - t0) / 1000);
+      id = requestAnimationFrame(paso);
+    };
+    id = requestAnimationFrame(paso);
+    return () => {
+      vivo = false;
+      cancelAnimationFrame(id);
+    };
+  }, [kind, level, matter, fill, size, time, tilt, wave, bob, env, voice, animado, themeTick]);
 
   return (
     <figure className="kipu-orb-specimen" data-orb-kind={kind}>

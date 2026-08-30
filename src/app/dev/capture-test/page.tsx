@@ -29381,6 +29381,9 @@ assert(
     "utf8",
   );
   const n3cSpecimenCode = n1Code(n3Specimen);
+  const n3cVidrioCode = n1Code(
+    readFileSync(`${process.cwd()}/src/app/dev/vidrio/page.tsx`, "utf8"),
+  );
 
   // ── N3C r4 · EL EXPERIMENTO DEL CAMPO LLENO, SUJETO ────────────────────────
   //
@@ -29977,7 +29980,23 @@ assert(
       n3LiveCode.includes("wave: waveEnergy,") &&
       // …y se puede MEDIR si corrió, en vez de suponerlo mirando una foto
       n3LiveCode.includes('canvas.dataset.fluid = renderer.hasFluid() ? "1" : "0";') &&
-      n3cSpecimenCode.includes('target.dataset.fluid = renderer.hasFluid()'),
+      n3cSpecimenCode.includes('target.dataset.fluid = renderer.hasFluid()') &&
+      // ── N3C r13 · LA MESA DE LUZ TIENE QUE MOSTRAR LO QUE HAY QUE JUZGAR ──
+      // El founder abrió la mesa de luz para juzgar el MOVIMIENTO y vio fotos:
+      // «solo veo fotos». Las probetas pintan un cuadro a propósito —es lo que
+      // las hace medibles—, así que hacía falta un modo que avance. Un
+      // instrumento que no muestra lo que se le pide juzgar no es riguroso: es
+      // inútil.
+      //
+      // Y el reloj NO pasa por el estado de React: cinco orbes re-renderizando
+      // el árbol sesenta veces por segundo se ve a tirones, y un instrumento
+      // que agrega su propio tirón al movimiento que hay que juzgar MIENTE.
+      n3cSpecimenCode.includes("if (!animado) return;") &&
+      n3cSpecimenCode.includes("dibujar(time + (performance.now() - t0) / 1000);") &&
+      n3cSpecimenCode.includes("cancelAnimationFrame(id);") &&
+      !/setReloj/u.test(n3cSpecimenCode) &&
+      n3cVidrioCode.includes('show("movimiento")') &&
+      /<OrbSpecimen[^>]*\n\s*animado\n/u.test(n3cVidrioCode),
     JSON.stringify({
       empujeCallado: +orbFluidPush(n3cFluCallada).toFixed(4),
       empujeHablando: +orbFluidPush(n3cFluHablando).toFixed(4),

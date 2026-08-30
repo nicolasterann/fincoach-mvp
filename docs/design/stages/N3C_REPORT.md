@@ -1341,3 +1341,29 @@ founder.** El trabajo vive en `/dev/vidrio`, que es donde él lo va a mirar ante
 de que se despliegue nada.
 
 Gate **891/891** · mutación **74 muertas, 0 fallas** · lint 0 errores · build verde.
+
+---
+
+## Ronda 13 — «solo veo fotos»
+
+El founder abrió la mesa de luz para juzgar el movimiento de la r12 y vio
+exactamente eso: fotos. Y tenía razón — **las probetas pintan un solo cuadro a
+propósito**, porque es lo que las vuelve medibles y comparables entre rondas.
+
+Ahí hay una lección de método, no un olvido: **un instrumento riguroso que no
+muestra lo que se le pide juzgar no es riguroso, es inútil.** Toda la etapa se
+midió con probetas quietas y la queja del founder siempre fue sobre movimiento.
+
+`/dev/vidrio?hoja=movimiento`: los mismos cinco orbes, el mismo `paint`, el
+mismo renderer — avanzando con el reloj de cuadros.
+
+Un detalle que sí importa: el reloj **no pasa por el estado de React**. Cinco
+orbes re-renderizando el árbol sesenta veces por segundo se ve a tirones, y un
+instrumento que agrega su propio tirón al movimiento que hay que juzgar miente
+sobre lo que muestra. El lazo llama a `paint` directo.
+
+Pinchado: el modo animado avanza el reloj (una mutación que lo congela mata un
+test nombrado), se cancela al desmontar, y no reaparece el reloj por estado.
+
+Gate **891/891** · mutación **75 muertas, 0 fallas** · lint 0 errores · build verde.
+Producción sigue intacta: `ORB_FLUID_ENABLED = false`.
