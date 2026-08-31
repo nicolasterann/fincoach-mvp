@@ -212,6 +212,16 @@ export const ORB_FLUID_AMBIENT_FORCE = 6.2;
  * entre sí reparten el forzado, no vuelven a alinearse y el campo no se asienta.
  */
 export const ORB_FLUID_STIRRERS = 5;
+
+/**
+ * N3C r22 · A QUÉ DISTANCIA DEL CENTRO MIRA CADA CAPA su parte del fluido.
+ *
+ * Es el mismo número que el `fofs` del shader (`* 0.17`): cada capa muestrea
+ * una ventana centrada ahí, y cada agitador se planta en esa misma ventana para
+ * que las cinco reciban el mismo movimiento. Si los dos números se separan,
+ * unas capas se mueven al doble que otras — medido: razón 2,11.
+ */
+export const ORB_FLUID_WINDOW_R = 0.17;
 /** Y el de la voz, que es el que tiene que sentirse como una respuesta. */
 export const ORB_FLUID_VOICE_FORCE = 3.2;
 
@@ -268,9 +278,26 @@ export function orbFluidSplats(input: {
     const phase = i * 2.3999632;
     const w = giros[i]!;
     const sentido = i % 2 === 0 ? 1 : -1;
-    // el centro de ESTA órbita, en espiral áurea alrededor del medio
-    const cx = 0.5 + Math.cos(phase) * 0.10;
-    const cy = 0.5 + Math.sin(phase) * 0.10;
+    // ── N3C r22 · CADA AGITADOR VIVE DONDE MIRA SU CAPA ────────────────────
+    //
+    // El founder: «se ven un poco rápidos y bruscos, NO TODOS pero sí algunos
+    // colores». Medido, tenía razón y era grande: el cambio a 1 s por capa daba
+    // saldo 0,0123 · reserva 0,0236 · metas 0,0259 · patrimonio 0,0177 · deuda
+    // 0,0166 — metas se movía al DOBLE que saldo (razón 2,11).
+    //
+    // La causa: las cinco capas miran zonas DISTINTAS del mismo fluido
+    // (`fofs` en el shader, radio 0,17 en espiral áurea) y los agitadores
+    // orbitaban a 0,10 — o sea, ni cerca de donde mira cada una. Las capas que
+    // caían junto a un agitador se movían el doble.
+    //
+    // Ahora cada agitador se planta EN el centro de la ventana de su capa: el
+    // mismo ángulo áureo y el MISMO radio 0,17. Cada orbe tiene su propio
+    // remolino adentro, y las cinco reciben lo mismo.
+    //
+    // Este 0,17 y el del shader son EL MISMO NÚMERO: si uno se mueve sin el
+    // otro, vuelve el desbalance. El gate lo pincha atado.
+    const cx = 0.5 + Math.cos(phase) * ORB_FLUID_WINDOW_R;
+    const cy = 0.5 + Math.sin(phase) * ORB_FLUID_WINDOW_R;
     // el radio respira para que la órbita no deje un anillo fijo
     const radio = 0.115 + 0.045 * Math.sin(t * respiros[i]! + phase * 1.3);
     const ang = t * w * sentido + phase;

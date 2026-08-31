@@ -2044,3 +2044,67 @@ azul con veta cálida**; deuda con más rojos y rosados, «menos desértico, má
 místico».
 
 Gate **891/891** · mutación **96 muertas, 0 fallas** · lint 0 errores · build verde.
+
+---
+
+## Ronda 22 — cada agitador vive donde mira su capa, y la luminancia igualada
+
+Cierre de la tarea larga. El founder había dicho dos cosas más que resultaron
+ser la misma: *«se ven un poco rápidos y bruscos, **no todos** pero sí algunos
+colores»*.
+
+### Medido: las capas NO se movían igual
+
+Cambio a 1 s por capa: saldo **0,0123** · reserva 0,0236 · metas **0,0259** ·
+patrimonio 0,0177 · deuda 0,0166. **Metas se movía al doble que saldo**
+(razón 2,11). Su ojo otra vez.
+
+### Causa 1 · los agitadores no estaban donde miran las capas
+
+Las cinco capas muestrean **zonas distintas** del mismo fluido (`fofs`, radio
+0,17 en espiral áurea) y los agitadores orbitaban a **0,10** — o sea ni cerca.
+Las capas que caían junto a un agitador se movían el doble.
+
+Ahora cada agitador se planta EN el centro de la ventana de su capa: mismo
+ángulo áureo y **mismo radio**. Cada orbe tiene su propio remolino adentro.
+Razón: **2,11 → 1,75**.
+
+Los dos números son el mismo (`ORB_FLUID_WINDOW_R` y el `0.17` del shader): si
+se separan, vuelve el desbalance.
+
+### Causa 2 · estaba igualando la claridad equivocada
+
+Lo que quedaba no era movimiento sino **contraste**. Normalizando el cambio por
+el contraste propio de cada capa, la dispersión bajaba de 1,92 a 1,59: buena
+parte de «algunos se ven más rápidos» era la paleta.
+
+Y ahí estaba mi error: las paletas v2/v3 igualaban la **claridad HSL**, que no
+es lo que ve el ojo. Un verde y un azul con la misma «L» tienen brillos muy
+distintos — el verde pesa 0,7152 en la luminancia y el azul 0,0722. Medido, la
+v3 dispersaba **2,47×**.
+
+La v5 iguala la **luminancia real** (Y = 0,030 / 0,300 / 0,760 para las tres
+paradas de las cinco capas), conservando los tonos que el founder aprobó y el
+registro sobrio que pidió:
+
+| paleta | dispersión del movimiento aparente |
+|---|---|
+| hoy | 1,92 |
+| v3 (claridad HSL igualada) | 2,47 |
+| v4 (luminancia igualada, oscura) | 1,62 |
+| **v5 (luminancia igualada, sobria)** | **1,59** |
+
+La misma física se ve por fin igual en las cinco capas.
+
+### Estado del movimiento contra el suyo
+
+| | nuestro | de ellos |
+|---|---|---|
+| cambio borde ÷ centro | **2,0** | 2,17 |
+| concentricidad de la estructura | **0,725** | 0,648 (azar: 0,50) |
+| viaje radial | hacia el centro | — |
+| flujo a 1 s (calma) | 0,011 | su calma es estática |
+| crestas (olas duras) | en el suelo | — |
+| latido periódico | ninguno | — |
+
+Gate **891/891** · mutación **96 muertas, 0 fallas** · lint 0 errores · build verde.

@@ -58,18 +58,26 @@ type Sheet = (typeof SHEETS)[number];
  * azul-turquesa.
  */
 const PALETA_PROPUESTA: Record<OrbKind, { liquid: OrbRgb; deep: OrbRgb; accent: OrbRgb }> = {
-  // v3 · «un toque más de tipos de verdes, un verde pino, manteniendo el agua/menta»
-  saldo: { liquid: [0.27, 0.73, 0.638], accent: [0.804, 0.916, 0.8451], deep: [0.052, 0.208, 0.1352] },
-  // v3 · «casi perfecto porque tiene varios tonos de azul»: se conserva
-  reserva: { liquid: [0.184, 0.4528, 0.856], accent: [0.838, 0.9227, 0.962], deep: [0.0216, 0.061, 0.2184] },
-  // v3 · «más azules, amarillos, rosados» — el registro de su Characters
-  metas: { liquid: [0.437, 0.2824, 0.7976], accent: [0.9064, 0.7336, 0.82], deep: [0.1248, 0.052, 0.208] },
-  // v3 · «demasiado parecido a saldo, debe cambiar de gama»: sale del verde y
-  // pasa a piedra azul-grafito con veta cálida — mineral, no líquido
-  patrimonio: { liquid: [0.3432, 0.4142, 0.5368], accent: [0.86, 0.804, 0.74], deep: [0.066, 0.0924, 0.154] },
-  // v3 · «más rojos o rosados, menos desértico, más místico»
-  deuda: { liquid: [0.768, 0.2688, 0.192], accent: [0.89, 0.67, 0.7433], deep: [0.1896, 0.0504, 0.069] },
-};const ETIQUETA_PROPUESTA: Record<OrbKind, string> = {
+  // v5 · MISMA ESCALERA DE LUMINANCIA para las cinco (Y = 0,030 / 0,300 / 0,760),
+  // en el registro SOBRIO: saturaciones bajas, claros altos.
+  //
+  // La v3 igualaba la CLARIDAD HSL, que no es lo que ve el ojo: un verde y un
+  // azul con la misma «L» tienen brillos muy distintos, porque el verde pesa
+  // 0,7152 en la luminancia y el azul 0,0722. Resultado medido: el movimiento
+  // aparente se dispersaba 2,47× entre capas — el founder lo vio como «algunos
+  // colores se ven más rápidos». Con la luminancia igualada, la misma física se
+  // ve igual en las cinco.
+  //
+  // Los TONOS son los que él aprobó; lo único que cambia es a qué claridad se
+  // ponen para que las cinco pesen lo mismo.
+  saldo: { liquid: [0.167, 0.3391, 0.3047], accent: [0.6447, 0.8002, 0.7017], deep: [0.0113, 0.0359, 0.0269] },
+  reserva: { liquid: [0.1641, 0.3182, 0.5197], accent: [0.6348, 0.7873, 0.858], deep: [0.015, 0.0289, 0.0848] },
+  metas: { liquid: [0.347, 0.256, 0.5973], accent: [0.8696, 0.7228, 0.806], deep: [0.0429, 0.0221, 0.0701] },
+  patrimonio: { liquid: [0.2544, 0.3053, 0.3816], accent: [0.8108, 0.7532, 0.6779], deep: [0.0217, 0.0306, 0.0484] },
+  deuda: { liquid: [0.5071, 0.2488, 0.1972], accent: [0.8758, 0.7236, 0.7794], deep: [0.0623, 0.0208, 0.0263] },
+};
+
+const ETIQUETA_PROPUESTA: Record<OrbKind, string> = {
   saldo: "agua → verde pino · el permiso de hoy",
   reserva: "azul puro → celeste casi blanco · la bóveda",
   metas: "morado azulado → rosa · lo que viene",
