@@ -2217,3 +2217,141 @@ Medido, hoy → propuesta: saldo 176°/0,68 → **137°/0,16** · reserva 212°/
 **212°/0,08** · deuda 36°/0,54 → **5°/0,30**.
 
 Gate **891/891** · mutación **98 muertas, 0 fallas** · lint 0 errores · build verde.
+
+---
+
+## Ronda 26 — las ondas de voz: medidas en su página, no imitadas
+
+El founder pidió «las ondas de voz que tiene ElevenLabs, ese efecto de que al
+hablar las ondas reaccionan exacto al sonido», y que lo dejara en la propuesta
+de voz «para poder interactuar y ver exactamente cómo los orbes reaccionan al
+sonido, así lo audito».
+
+### Cómo se averiguó (y por qué no fue mirar)
+
+Mirar su orbe hablando no dice qué hace, porque falta la mitad de la ecuación:
+**la señal que entra**. Así que la fui a buscar. Enganché
+`AnalyserNode.getByteFrequencyData` en su propia página —el método que su orbe
+llama cada cuadro— y capturé sus píxeles en el MISMO cuadro. Con eso el
+experimento deja de ser «se parece» y pasa a ser una función de transferencia:
+**1.081 cuadros pareados**, entrada y salida, del mismo instante.
+
+Tres hechos salieron de ahí, y ninguno se podía adivinar:
+
+**1 · La medida no es el volumen.** Su shader declara `uAudioAverage`, y el
+método enganchado dice cuál es: el **promedio del espectro**, no el RMS de la
+onda. No es un detalle: el RMS pesa los graves, así que un zumbido movía el
+orbe tanto como una voz. Nosotros usábamos RMS.
+
+**2 · Dos relojes, no uno.** El movimiento del orbe sigue el sonido con
+τ ≈ 25 ms y **retraso cero**; el brillo lo sigue con τ ≈ 900 ms (r = 0,75,
+peor a los dos lados: 0,72 a 500 ms, 0,69 a 1.600). Un solo envolvente no
+puede ser las dos cosas — y el nuestro era uno solo, de ~196 ms, o sea
+perezoso para arrancar y nervioso para parar.
+
+También probé envolventes **asimétricos** (ataque rápido, caída lenta), que es
+lo que uno esperaría de un medidor de audio. **No ganan:** 0,729 contra 0,745
+en brillo, 0,627 contra 0,633 en movimiento. Los suyos son simétricos. Una
+suposición razonable murió contra el dato.
+
+**3 · El dipolo radial — la firma que faltaba.** Al hablar, el centro se
+**apaga** y aparece un **anillo brillante afuera**. El orbe se ahueca. Promediando
+el 12% de cuadros más callados contra el 12% más fuertes:
+
+| r | 0,05 | 0,23 | 0,42 | 0,52 | 0,61 | 0,80 | 0,89 | 0,98 |
+|---|---|---|---|---|---|---|---|---|
+| Δ luz | −17,6% | −16,0% | −7,0% | −2,2% | +1,9% | **+13,0%** | +11,4% | +6,2% |
+
+Meseta oscura en el centro, **nodo en r ≈ 0,58**, **máximo en r ≈ 0,82** y de
+vuelta abajo hacia la silueta: un anillo de verdad, no una rampa hacia el borde.
+La silueta casi no se mueve (1,2%): el orbe **no se infla**, redistribuye. Y no
+hay onda viajera — correlacioné el perfil radial contra sí mismo desplazado y
+salió plano.
+
+### Qué se construyó
+
+`spectrumAverage()` (su medida), `advanceVoiceTau()` en **segundos y no en
+cuadros**, y `uVoiceSlow` junto a `uVoice`: la turbulencia y el menisco van con
+el rápido, el halo y el dipolo con el lento. El dipolo se aplica como la capa
+de volumen de la r23 —multiplica el color ya compuesto al final—, así que no
+toca el fluido, ni el campo, ni el muestreo.
+
+Y el micrófono de producción perdió su suavizado escondido
+(`smoothingTimeConstant = 0,72`): era una tercera constante de tiempo dentro
+del instrumento, que nadie eligió y no se podía leer.
+
+### La trampa del tonemap, y las dos mediciones que hicieron falta
+
+Primera pasada, verificada con **7.390 cuadros**: forma perfecta (nodo 0,56
+contra su 0,58, pico 0,79 contra su 0,82) y **magnitud a la mitad** (−11,0% y
++5,0% contra −17,6% y +13,0%).
+
+La causa: el factor multiplica **antes** del tonemap ACES, que en el punto de
+trabajo del orbe comprime ~0,55 — un +10% de entrada sale como +5,5% en
+pantalla. Poner el −17,6% medido como constante da la mitad. **Las ganancias
+del shader no son los porcentajes medidos: son los que los producen.** Por eso
+viven en TypeScript, donde el gate las ejecuta y la mesa de luz las muestra sin
+copiarlas a mano.
+
+Antes de eso hubo una medición mía que era ruido: 30 cuadros de un fluido en
+movimiento daban −3,9% en el centro y un nodo en 0,16. La forma real sólo
+aparece con miles de cuadros binados por envolvente — el mismo instrumento que
+había usado con el suyo, que yo mismo no apliqué al nuestro la primera vez.
+
+### El otro hueco: cuánto se ABRE al hablar
+
+Con el dipolo puesto quedaba una diferencia que sólo se ve moviéndose. Medido
+en su página con el mismo enganche: su orbe **multiplica su movimiento por 4,2**
+al hablar (0,00115 → 0,00481 de cambio por píxel y cuadro). El nuestro, por
+**1,8**.
+
+La fuerza por salpicadura no se podía subir: a voz 1 vale 960 y el solver
+recorta en 1.000 — pasarse deja un salto duro donde empujó y rayas rectas al
+muestrear fuera del dominio, que es la lección de la r8 que el founder pagó
+viendo la app rota. Así que en vez de empujar más fuerte, **se empuja en más
+sitios y en dos sentidos**: la voz pasó de tres agitadores a seis, la mitad
+abriendo desde el centro y la mitad girando en tangencial más afuera. Dos
+corrientes que se cruzan hacen **cizalla**, y la cizalla es lo que se ve; un
+empujón radial solo, por fuerte que sea, mueve la tela en bloque.
+
+Con eso, y midiendo con un nivel **modulado como habla** (ráfagas a 4,3 Hz, que
+es lo que su orbe recibía y lo que un tono plano no reproduce): **3,72× contra
+su 4,18×**. Con un tono sostenido el nuestro queda en 2,29×, más calmo que el
+suyo — y eso es correcto, porque un tono sostenido no es una voz.
+
+### El resultado
+
+Cinco pasadas de medición sobre el código que se despliega, cada una de ~2.700
+cuadros por estado, tomando sólo cuadros con el envolvente ya asentado, a la
+envolvente de la referencia:
+
+| r | 0,05 | 0,14 | 0,23 | 0,33 | 0,42 | 0,52 | 0,61 | 0,70 | 0,80 | 0,89 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| ellos | −17,6 | −17,2 | −16,0 | −12,3 | −7,0 | −2,2 | +1,9 | +7,2 | +13,0 | +11,4 |
+| nosotros | −19,2 | −19,3 | −18,5 | −14,8 | −9,8 | −4,2 | +1,0 | +5,8 | +11,9 | +12,0 |
+
+**Error medio 1,75 puntos porcentuales, máximo 2,8.** Nodo 0,60 contra 0,58;
+pico 0,84 contra 0,82.
+
+(Una pasada intermedia, ANTES de la cizalla, dio 0,89 pp de error medio. La
+cizalla costó fidelidad en el dipolo porque más fluido cambia también el fondo
+contra el que se mide, y las dos cosas se suman en lo que se ve. El número que
+vale es el del código que se despliega: 1,75.)
+
+### Y los dos relojes, verificados en píxeles
+
+Respuesta al escalón sobre el orbe renderizado, no sobre la fórmula:
+**movimiento τ = 17 ms** (un cuadro) y **hueco τ = 1.150 ms**. Un factor 68
+entre los dos. Es exactamente la conducta que medí en el suyo: la turbulencia
+arranca con la voz y la forma tarda casi un segundo en abrirse — y otro tanto
+en cerrarse.
+
+### El banco, que es lo que él pidió
+
+`/dev/vidrio?hoja=voz` dejó de ser cuatro fotos con `voice = 0,75` —que muestran
+el RÉGIMEN, no la respuesta— y es un banco al que se le **habla**. Micrófono
+real, la misma medida, las mismas dos constantes, el mismo shader; los números
+de nivel y de los dos envolventes se mueven con la voz. Sin micrófono lo dice y
+deja el deslizador: un banco que se mueve sin entrada es una animación
+disfrazada de medición.
+

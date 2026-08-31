@@ -85,6 +85,18 @@ export type OrbRgb = readonly [number, number, number];
 /** Cuánto sobra alrededor del radio para el halo y la sombra propia. */
 export const ORB_SPAN = 1.62;
 
+/**
+ * N3C r26 · EL DIPOLO RADIAL DE LA VOZ. Ver el comentario largo en el shader:
+ * el centro se apaga y aparece un anillo, y estos números son los que PRODUCEN
+ * en pantalla el cambio medido en la referencia — no el cambio medido.
+ */
+export const ORB_VOICE_RING_R = 0.82;
+export const ORB_VOICE_RING_W = 0.165;
+export const ORB_VOICE_RING_GAIN = 1.62;
+export const ORB_VOICE_CORE_GAIN = 1.33;
+export const ORB_VOICE_CORE_IN = 0.15;
+export const ORB_VOICE_CORE_OUT = 0.685;
+
 export interface OrbDrawCall {
   /** Centro del orbe en píxeles CSS, desde la esquina superior izquierda. */
   centerX: number;
@@ -97,6 +109,18 @@ export interface OrbDrawCall {
   waterline: number;
   energy: number;
   voice: number;
+  /**
+   * N3C r26 · LA MISMA VOZ, PERO LENTA (τ = 900 ms).
+   *
+   * Medido en la referencia: su orbe responde al sonido con DOS relojes. El
+   * movimiento sigue el nivel casi al instante (τ ≈ 25 ms, retraso cero) y el
+   * brillo lo sigue con un envolvente muy lento (τ ≈ 900 ms). Un solo valor no
+   * puede ser las dos cosas — por eso `voice` es el rápido y éste el lento.
+   *
+   * Va en la MISMA escala de `voiceTarget`, así que el halo que ya estaba
+   * calibrado no cambia de tamaño: cambia de reloj.
+   */
+  voiceSlow: number;
   /** Inclinación del plano de agua: gesto + giroscopio, sumados por el caller. */
   tiltX: number;
   tiltZ: number;
@@ -243,6 +267,7 @@ const FRAGMENT_SOURCE = `
 precision highp float;
 varying vec2 vP;
 uniform float uTime, uLevel, uEnergy, uDay, uMat, uVoice, uPresence, uSpin;
+uniform float uVoiceSlow;
 uniform float uSeed;
 uniform float uWave, uBob, uDepth, uEnv, uField;
 uniform vec2 uTilt;
@@ -305,6 +330,57 @@ const float ORB_RIM_CALM = 0.30;
 // bola de billar en vez de un cuerpo de luz.
 const float ORB_SHADE_RIM = 0.16;
 const float ORB_SHADE_KEY = 0.07;
+// ── N3C r26 · EL DIPOLO RADIAL DE LA VOZ, MEDIDO EN LA REFERENCIA ────────────
+//
+// Es LA firma de su orbe hablando, y no la teníamos: al subir el sonido, el
+// centro se APAGA y aparece un ANILLO brillante afuera. El orbe se ahueca.
+//
+// Los números salen de 1.081 cuadros pareados (su audio enganchado + sus
+// píxeles), promediando el 12% de cuadros más callados contra el 12% más
+// fuertes. El cambio de luminancia por radio:
+//
+//     r      0,05   0,23   0,42   0,52   0,61   0,80   0,89   0,98
+//     Δ%    -17,6  -16,0   -7,0   -2,2   +1,9  +13,0  +11,4   +6,2
+//
+// O sea: una meseta oscura en el centro, un NODO en r ≈ 0,58, un máximo en
+// r ≈ 0,82 y vuelta a bajar hacia la silueta — un anillo de verdad, no una
+// rampa hacia el borde. Ajustado por bandas de volumen, las ganancias por
+// unidad de envolvente son -0,43…-0,55 en el centro y +0,37…+0,44 en el anillo.
+//
+// La silueta casi no se mueve: 1,2% de variación. El orbe NO se infla; lo que
+// cambia es cómo se reparte la luz adentro. Y no hay onda viajera: medí la
+// correlación del perfil radial contra sí mismo desplazado y salió plana, así
+// que es una redistribución QUIETA, no un tren de ondas hacia afuera.
+//
+// ── LAS GANANCIAS NO SON LOS PORCENTAJES MEDIDOS, Y LA DIFERENCIA IMPORTA ────
+//
+// Este factor multiplica el color ANTES del tonemap, y el tonemap comprime: en
+// el punto de trabajo del orbe, un +10% de entrada sale como +5,5% en pantalla.
+// Poner 0,176 acá para conseguir el -17,6% medido daría la mitad — y así fue la
+// primera pasada, verificada con 7.390 cuadros: forma perfecta (nodo 0,56
+// contra su 0,58, pico 0,79 contra su 0,82) y magnitud a la mitad (-11,0% y
+// +5,0% contra -17,6% y +13,0%).
+//
+// Estos números son los que PRODUCEN lo medido, no lo medido. Por eso viven en
+// TypeScript: el gate puede leerlos y ejecutar la fórmula, y la mesa de luz
+// puede mostrar el mismo número sin copiarlo a mano.
+const float VOICE_RING_R = ${ORB_VOICE_RING_R.toFixed(3)};
+const float VOICE_RING_W = ${ORB_VOICE_RING_W.toFixed(3)};
+const float VOICE_RING_GAIN = ${ORB_VOICE_RING_GAIN.toFixed(3)};
+const float VOICE_CORE_GAIN = ${ORB_VOICE_CORE_GAIN.toFixed(3)};
+const float VOICE_CORE_IN = ${ORB_VOICE_CORE_IN.toFixed(3)};
+const float VOICE_CORE_OUT = ${ORB_VOICE_CORE_OUT.toFixed(3)};
+// El piso de voiceTarget("calm"). Restarlo es lo que hace que un orbe callado
+// tenga el dipolo en CERO EXACTO en vez de quedar ahuecado para siempre.
+const float VOICE_CALM_FLOOR = 0.05;
+// voiceTarget("listening", L) = 0.75 * L sin piso, así que dividir por 0,75
+// devuelve EXACTAMENTE la escala en la que medí sus ganancias. No es un número
+// de ajuste: es la inversa de la única función que toca el nivel en el camino.
+const float VOICE_TARGET_GAIN = 0.75;
+// Tope. Los estados «pensando» y «respondiendo» no salen de un micrófono: son
+// constantes (0,42 y 0,46) que, sin tope, pedirían un dipolo 2,5x más hondo que
+// el más fuerte que medí en la referencia (0,217).
+const float VOICE_SHAPE_MAX = 0.28;
 // N3C r21 · la ola que entra desde el borde. K = cuántas ondas caben en el
 // radio; W = qué tan rápido entra (0,62 rad/s ≈ 10 s de período: el registro
 // «tranquilo, con tiempo» que pidió el founder); A = qué tan honda, en unidades
@@ -930,7 +1006,11 @@ void main(){
     float n1 = fbm(dir*1.5 + vec2(uTime*0.040, uTime*0.028));
     float n2 = fbm(dir*2.9 - vec2(uTime*0.029, uTime*0.019));
     float breath = 0.5 + 0.5*sin(uTime*0.31);
-    float energy = 0.15 + 0.055*breath + uVoice*0.26;
+    // N3C r26 · el ALCANCE del halo va con el reloj lento. Medido: el brillo de
+    // su orbe sigue una envolvente de 900 ms (r = 0,75), no el nivel al
+    // instante — un halo que parpadea por sílaba es exactamente lo que ellos NO
+    // hacen. La amplitud no cambia: la escala de uVoiceSlow es la de uVoice.
+    float energy = 0.15 + 0.055*breath + uVoiceSlow*0.26;
     float reach = 1.0 + energy*(0.95 + (n1-0.5)*1.05 + (n2-0.5)*0.55);
     float nearGlow = 1.0 - smoothstep(1.0, reach, r);
     float farGlow = 1.0 - smoothstep(1.0, 1.0 + (reach - 1.0)*3.1, r);
@@ -940,8 +1020,8 @@ void main(){
     // N3C · el halo toma el color que el campo tiene AHORA, así que respira con
     // él en vez de ser una capa aparte pegada al borde.
     vec3 sc = mix(mix(uAcc, uLiq, 0.45), gField * 2.2, 0.45 * uEnv);
-    soul = sc * halo * (0.055 + 0.24*uVoice);
-    soulA = clamp(halo*(0.030 + 0.15*uVoice) * mix(1.0, 0.50, uDay), 0.0, 1.0);
+    soul = sc * halo * (0.055 + 0.24*uVoiceSlow);
+    soulA = clamp(halo*(0.030 + 0.15*uVoiceSlow) * mix(1.0, 0.50, uDay), 0.0, 1.0);
   }
 
   float shadow = 0.0;
@@ -1239,7 +1319,25 @@ void main(){
   vec2 luzDir = vec2(-0.34, -0.36);
   float realce = exp(-dot(uv - luzDir, uv - luzDir) * 2.6);
   vec3 volumen = vec3(apaga + ORB_SHADE_KEY * realce);
-  vec3 outCol = tonemap((col*edge + soul) * volumen);
+  // ── N3C r26 · LA VOZ AHUECA EL ORBE ───────────────────────────────────────
+  //
+  // El dipolo medido, aplicado como la capa de volumen: multiplica el color ya
+  // compuesto, así que no toca el fluido ni el campo. Lo mueve uVoiceShape —el
+  // envolvente LENTO (900 ms)— porque lo que ellos mueven despacio es
+  // exactamente el brillo; la turbulencia sigue yendo por uVoice.
+  //
+  // Con el orbe callado el factor es 1,0 EXACTO —se le resta el piso de
+  // voiceTarget("calm")—, así que un orbe en silencio se ve como antes de esta
+  // ronda, sin una sola cuenta de diferencia.
+  float rVoz = min(r, 1.0);
+  float vAnillo = exp(-pow((rVoz - VOICE_RING_R) / VOICE_RING_W, 2.0));
+  float vNucleo = 1.0 - smoothstep(VOICE_CORE_IN, VOICE_CORE_OUT, rVoz);
+  float vozLenta = clamp(
+    max(uVoiceSlow - VOICE_CALM_FLOOR, 0.0) / VOICE_TARGET_GAIN,
+    0.0, VOICE_SHAPE_MAX);
+  float voz = 1.0 + vozLenta
+    * (VOICE_RING_GAIN * vAnillo - VOICE_CORE_GAIN * vNucleo);
+  vec3 outCol = tonemap((col*edge + soul) * volumen * max(voz, 0.0));
   float outA = clamp(alpha*edge + soulA + shadow*(1.0-edge), 0.0, 1.0);
   gl_FragColor = vec4(outCol * uPresence, outA * uPresence);
 }`;
@@ -1293,6 +1391,7 @@ interface ProgramBundle {
     material: WebGLUniformLocation | null;
     seed: WebGLUniformLocation | null;
     voice: WebGLUniformLocation | null;
+    voiceSlow: WebGLUniformLocation | null;
     presence: WebGLUniformLocation | null;
     spin: WebGLUniformLocation | null;
     wave: WebGLUniformLocation | null;
@@ -1352,6 +1451,7 @@ function linkTierProgram(
       material: uniform("uMat"),
       seed: uniform("uSeed"),
       voice: uniform("uVoice"),
+      voiceSlow: uniform("uVoiceSlow"),
       presence: uniform("uPresence"),
       spin: uniform("uSpin"),
       wave: uniform("uWave"),
@@ -1664,6 +1764,7 @@ export function createOrbRenderer(
         gl.uniform1f(locations.material, orb.material);
         gl.uniform1f(locations.seed, orb.seed);
         gl.uniform1f(locations.voice, orb.voice);
+        gl.uniform1f(locations.voiceSlow, orb.voiceSlow);
         gl.uniform1f(locations.presence, orb.presence);
         gl.uniform1f(locations.spin, orb.spin);
         gl.uniform1f(locations.wave, orb.wave);

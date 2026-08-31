@@ -8,7 +8,7 @@ import {
 } from "react";
 import type { ChatDeliveryResult } from "../../transaction-actions";
 import {
-  rmsFromTimeDomain,
+  spectrumAverage,
   selectVoiceRecordingFormat,
   stopMediaStreamTracks,
   voiceDeliverySucceeded,
@@ -342,20 +342,30 @@ export function useVoiceCapture({
       }
       const analyser = context.createAnalyser();
       analyser.fftSize = 1024;
-      analyser.smoothingTimeConstant = 0.72;
+      // N3C r26 · SIN SUAVIZADO EN EL ANALIZADOR. Era 0,72, que es un envolvente
+      // escondido dentro del instrumento: la señal llegaba ya redondeada y las
+      // dos constantes de tiempo que sí medimos —25 ms y 900 ms— se sumaban a
+      // una tercera que nadie eligió. El analizador ahora entrega el nivel
+      // crudo y el suavizado vive donde se puede leer, en `advanceVoiceTau`.
+      analyser.smoothingTimeConstant = 0;
       const source = context.createMediaStreamSource(stream);
       source.connect(analyser);
       analyserRef.current = analyser;
       sourceRef.current = source;
-      const samples = new Float32Array(analyser.fftSize);
-      const sampleRms = () => {
+      // N3C r26 · el promedio del ESPECTRO, que es la medida que consume el
+      // orbe de la referencia (`uAudioAverage` ← `getByteFrequencyData`). El RMS
+      // de la onda que había acá pesa los graves y la sonoridad general; el
+      // promedio de bandas hace que una voz —banda ancha— suba mucho más que un
+      // zumbido del mismo volumen, que es lo que uno quiere de un orbe que
+      // reacciona a que le HABLEN.
+      const bins = new Uint8Array(analyser.frequencyBinCount);
+      const sampleLevel = () => {
         if (recorderRef.current?.state !== "recording") return;
-        analyser.getFloatTimeDomainData(samples);
-        const measuredEnvelope = Math.min(1, rmsFromTimeDomain(samples) * 4);
-        setAuraRef.current("listening", measuredEnvelope);
-        analyserFrameRef.current = window.requestAnimationFrame(sampleRms);
+        analyser.getByteFrequencyData(bins);
+        setAuraRef.current("listening", spectrumAverage(bins));
+        analyserFrameRef.current = window.requestAnimationFrame(sampleLevel);
       };
-      analyserFrameRef.current = window.requestAnimationFrame(sampleRms);
+      analyserFrameRef.current = window.requestAnimationFrame(sampleLevel);
       recorder.start(250);
     } catch {
       void stopRecorder(false);

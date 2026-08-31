@@ -30,21 +30,30 @@
   --kipu-shell-cord: rgba(140, 175, 195, 0.24);
   --kipu-shell-shadow: var(--kipu-el-2);
 
-  --layer-saldo: #4fead2;
-  --layer-reserva: #87abff;
-  --layer-metas: #c0a2ff;
-  --layer-patrimonio: #bfe6f8;
-  --layer-deuda: #ffbd8e;
-  --kipu-liquid-saldo: #2fe3c4;
-  --kipu-deep-saldo: #07564f;
-  --kipu-liquid-reserva: #5b8cff;
-  --kipu-deep-reserva: #152c86;
-  --kipu-liquid-metas: #a97bff;
-  --kipu-deep-metas: #3a1e7e;
-  --kipu-liquid-patrimonio: #8fcfec;
-  --kipu-deep-patrimonio: #0f3350;
-  --kipu-liquid-deuda: #ff9a5c;
-  --kipu-deep-deuda: #6b2e0c;
+  /* ── N3C · LA PALETA DEL ORBE, APROBADA POR EL FOUNDER (2026-08-31) ──────
+     Las tres paradas de cada capa comparten la MISMA escalera de luminancia
+     (Y = 0,058 / 0,300 / 0,760). Igualar la claridad HSL no sirve: un verde y
+     un azul con la misma «L» tienen brillos muy distintos —el verde pesa
+     0,7152 en la luminancia y el azul 0,0722— y por eso unas capas parecían
+     moverse más rápido que otras. Con la luminancia igualada, la dispersión
+     del movimiento aparente bajó de 2,47 a 1,59.
+     Si se toca UN color, se recalcula su luminancia: mover una capa sola
+     rompe el emparejamiento. */
+  --layer-saldo: #b0cb9e;
+  --layer-reserva: #88cfe3;
+  --layer-metas: #b7c3d3;
+  --layer-patrimonio: #c7c1bb;
+  --layer-deuda: #e0bab3;
+  --kipu-liquid-saldo: #2b564e;
+  --kipu-deep-saldo: #07110e;
+  --kipu-liquid-reserva: #28537d;
+  --kipu-deep-reserva: #090f1f;
+  --kipu-liquid-metas: #5a40a4;
+  --kipu-deep-metas: #140c20;
+  --kipu-liquid-patrimonio: #3a4f67;
+  --kipu-deep-patrimonio: #0c0f14;
+  --kipu-liquid-deuda: #933a37;
+  --kipu-deep-deuda: #170c0d;
 
   --good: #35e39a;
   --watch: #ffc96b;
@@ -143,11 +152,14 @@
   --kipu-el-1: 0 2px 10px -4px rgba(16, 42, 60, 0.16);
   --kipu-el-2: 0 16px 34px -18px rgba(16, 42, 60, 0.34);
 
-  --layer-saldo: #0b8b78;
-  --layer-reserva: #2a55cc;
-  --layer-metas: #6a3fd4;
-  --layer-patrimonio: #256b8c;
-  --layer-deuda: #a2551d;
+  /* Tema claro: el acento cumple el rol INVERSO —oscuro sobre fondo claro—,
+     así que conserva su luminancia y adopta el TONO nuevo de su capa. El
+     founder juzgó la paleta en oscuro; esto la transpone sin inventar. */
+  --layer-saldo: #0b8b71;
+  --layer-reserva: #2a7bcc;
+  --layer-metas: #673fd4;
+  --layer-patrimonio: #25558c;
+  --layer-deuda: #a2211d;
   --good: #12b87c;
   --watch: #d9922b;
   --over: #e05f4f;
@@ -1593,6 +1605,19 @@ a.kipu-perspective-module__head:focus-visible { background: var(--kipu-shell-gla
 .kipu-sistema-orb { display: block; width: 132px; }
 .kipu-sistema-orb .kipu-shell-orb { width: 132px; }
 .kipu-sistema-slot__name { color: var(--kipu-shell-ink-3); font-size: var(--kipu-fs-micro); font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+
+/* N3C r26 · el banco de voz en vivo de /dev/vidrio. */
+.kipu-voz-viva { display: grid; gap: var(--kipu-sp-4); }
+.kipu-voz-viva__mando { display: flex; flex-wrap: wrap; align-items: center; gap: var(--kipu-sp-3); }
+.kipu-voz-viva__mando button { border: 1px solid var(--kipu-shell-line); border-radius: 999px; background: var(--kipu-shell-surface-2); color: var(--kipu-shell-ink-1); padding: 0.55rem 1.15rem; font: inherit; font-weight: 650; cursor: pointer; }
+.kipu-voz-viva__mando button[data-voz-boton="oyendo"] { background: var(--layer-reserva); color: #07110e; }
+.kipu-voz-viva__mando span { color: var(--kipu-shell-ink-3); font-size: var(--kipu-fs-micro); }
+.kipu-voz-viva__mando label { display: inline-flex; align-items: center; gap: var(--kipu-sp-2); color: var(--kipu-shell-ink-3); font-size: var(--kipu-fs-micro); }
+.kipu-voz-viva__mando label b { color: var(--kipu-shell-ink-1); font-variant-numeric: tabular-nums; }
+.kipu-voz-viva__medidas { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: var(--kipu-sp-3); margin: 0; }
+.kipu-voz-viva__medidas dt { color: var(--kipu-shell-ink-3); font-size: var(--kipu-fs-micro); letter-spacing: 0.08em; text-transform: uppercase; }
+.kipu-voz-viva__medidas dd { margin: 0.15rem 0 0; color: var(--kipu-shell-ink-1); font-variant-numeric: tabular-nums; font-weight: 650; }
+.kipu-voz-viva__orbes { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: var(--kipu-sp-4); align-items: start; }
 
 /* N0 · FIN REGION SISTEMA */
 

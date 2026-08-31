@@ -110,6 +110,7 @@ import {
   ORB_FLUID_DYE_SIZE,
   ORB_FLUID_SIM_SIZE,
   ORB_FLUID_VELOCITY_DISSIPATION,
+  ORB_FLUID_VOICE_STIRRERS,
   orbFluidPush,
   orbFluidSplats,
 } from "@/app/app/components/shell/orb-fluid";
@@ -524,15 +525,24 @@ import {
   STATEMENT_SESSION_MARKER,
 } from "@/lib/capture/evidence-capture";
 import {
-  advanceVoiceEnvelope,
+  ORB_VOICE_CORE_GAIN,
+  ORB_VOICE_CORE_IN,
+  ORB_VOICE_CORE_OUT,
+  ORB_VOICE_RING_GAIN,
+  ORB_VOICE_RING_R,
+  ORB_VOICE_RING_W,
+} from "@/app/app/components/shell/orb-shader";
+import {
+  advanceVoiceTau,
   baseAudioMime,
   selectVoiceRecordingFormat,
+  spectrumAverage,
   stopMediaStreamTracks,
   voiceDeliverySucceeded,
   voiceTarget,
-  VOICE_ATTACK,
-  VOICE_FALL,
   VOICE_MAX_DURATION_MS,
+  VOICE_MOTION_TAU_MS,
+  VOICE_SHAPE_TAU_MS,
 } from "@/app/app/components/shell/voice-capture-contract";
 import { normalizeCandidates } from "@/lib/capture/evidence-extraction";
 import {
@@ -25988,10 +25998,30 @@ assert(
       voiceTarget("listening", Number.NaN) === 0 &&
       voiceTarget("thinking", 1) === 0.42 &&
       voiceTarget("responding", 1) === 0.46 &&
-      VOICE_ATTACK === 0.085 &&
-      VOICE_FALL === 0.04 &&
-      advanceVoiceEnvelope(0.1, 0.8) - 0.1 >
-        0.8 - advanceVoiceEnvelope(0.8, 0.1) &&
+      // ── N3C r26 · RE-ANCLADO, y hay que decir qué se soltó ──────────────
+      //
+      // Este pin exigía `VOICE_ATTACK`/`VOICE_FALL` y que el envolvente SUBIERA
+      // más rápido de lo que baja. Los dos se fueron, y no por comodidad: medí
+      // la referencia y sus envolventes son SIMÉTRICOS. El mejor ajuste
+      // asimétrico da 0,729 contra 0,745 del simétrico en brillo y 0,627 contra
+      // 0,633 en movimiento — la asimetría que yo había supuesto no está en el
+      // material que estamos copiando.
+      //
+      // Lo que el pin sujetaba de verdad —que el envolvente CONVERJA hacia su
+      // destino y no se pase— sigue acá, y ahora además se le exige lo que
+      // aquel no tenía: que no dependa de a cuántos hercios vaya la pantalla.
+      advanceVoiceTau(0.1, 0.8, 1 / 60, 200) > 0.1 &&
+      advanceVoiceTau(0.1, 0.8, 1 / 60, 200) < 0.8 &&
+      advanceVoiceTau(0.8, 0.1, 1 / 60, 200) < 0.8 &&
+      advanceVoiceTau(0.8, 0.1, 1 / 60, 200) > 0.1 &&
+      // el mismo TIEMPO llega al mismo sitio, vaya la pantalla a 60 o a 120
+      Math.abs(
+        advanceVoiceTau(advanceVoiceTau(0, 1, 1 / 120, 200), 1, 1 / 120, 200) -
+          advanceVoiceTau(0, 1, 1 / 60, 200),
+      ) < 1e-9 &&
+      // y el rápido llega mucho antes que el lento, que es el punto entero
+      advanceVoiceTau(0, 1, 1 / 60, VOICE_MOTION_TAU_MS) >
+        4 * advanceVoiceTau(0, 1, 1 / 60, VOICE_SHAPE_TAU_MS) &&
       m5SetVoiceBody.includes("voiceRef.current =") &&
       !m5SetVoiceBody.includes("setSignal(") &&
       !m5SetVoiceBody.includes("renderInputs.current.level") &&
@@ -29549,12 +29579,233 @@ assert(
       // ── y el VOLUMEN es el de M5, no uno inventado: lo que llega al lienzo
       // sale del envolvente que alimenta el medidor real ──
       n3LiveCode.includes("voice: isActive ? animatedVoice : 0,") &&
-      n3LiveCode.includes("advanceVoiceEnvelope(") &&
+      n3LiveCode.includes("advanceVoiceTau(") &&
       n3LiveCode.includes("voiceTarget(voice.state, voice.level)") &&
-      // el nivel de escucha sale del RMS del analizador, no de un reloj
+      // el nivel de escucha sale del analizador, no de un reloj
       voiceTarget("listening", 0.8) > voiceTarget("listening", 0.2) &&
       voiceTarget("calm") < voiceTarget("listening", 0.5),
     JSON.stringify({ altura: n3cVoiceHeight, normal: n3cVoiceNormal }),
+  );
+
+  // N3C-9 · LA VOZ SE MIDE COMO ELLOS Y AHUECA EL ORBE COMO ELLOS.
+  //
+  // El founder pidió «las ondas de voz que tiene ElevenLabs, que al hablar las
+  // ondas reaccionen exacto al sonido». No se copió de memoria: enganché
+  // `AnalyserNode.getByteFrequencyData` en su página para leer la MISMA señal
+  // que su orbe consume y capturé sus píxeles en el mismo cuadro, 1.081 veces.
+  // De ahí salen tres hechos, y los tres se pinchan acá.
+  //
+  // 1 · LA MEDIDA. Su shader declara `uAudioAverage` y el método enganchado
+  //     confirma cuál es: el promedio del ESPECTRO, no el RMS de la onda. No es
+  //     un detalle de gusto — el RMS pesa los graves, así que un zumbido movía
+  //     el orbe tanto como una voz.
+  //
+  // 2 · DOS RELOJES. El movimiento sigue el sonido con τ ≈ 25 ms y retraso
+  //     CERO; el brillo lo sigue con τ ≈ 900 ms (r = 0,75, cayendo a los dos
+  //     lados). Un solo envolvente no puede ser las dos cosas.
+  //
+  // 3 · EL DIPOLO RADIAL. Al hablar, el centro se APAGA y aparece un anillo
+  //     brillante afuera: −17,6 % en r = 0,05, cero en r ≈ 0,58, +13,0 % en
+  //     r ≈ 0,82 y de vuelta +6,2 % en la silueta. El orbe se ahueca. Ésa es
+  //     la firma que faltaba, y la que el gate EJECUTA — no alcanza con que los
+  //     números estén escritos: se evalúa la fórmula y se le exige la FORMA.
+  const n3cVozContrato = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/voice-capture-contract.ts`,
+    "utf8",
+  );
+  const n3cVozMic = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/useVoiceCapture.ts`,
+    "utf8",
+  );
+  const n3cVozBanco = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/OrbVozViva.tsx`,
+    "utf8",
+  );
+  const n3cGlsl = (nombre: string): number | null => {
+    const m = n3ShaderCode.match(
+      new RegExp(`const float ${nombre} = ([0-9.]+);`, "u"),
+    );
+    return m == null ? null : Number.parseFloat(m[1]!);
+  };
+  const n3cDipolo = (() => {
+    // Las constantes REALES, importadas — no un número copiado del GLSL. El
+    // shader las interpola desde acá, así que el gate ejecuta exactamente la
+    // fórmula que corre en la GPU.
+    const anilloR = ORB_VOICE_RING_R;
+    const anilloW = ORB_VOICE_RING_W;
+    const anilloG = ORB_VOICE_RING_GAIN;
+    const nucleoG = ORB_VOICE_CORE_GAIN;
+    const nucleoIn = ORB_VOICE_CORE_IN;
+    const nucleoOut = ORB_VOICE_CORE_OUT;
+    const suave = (a: number, b: number, x: number) => {
+      const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+      return t * t * (3 - 2 * t);
+    };
+    // la MISMA expresión del shader, evaluada acá
+    const delta = (r: number) =>
+      anilloG * Math.exp(-Math.pow((r - anilloR) / anilloW, 2)) -
+      nucleoG * (1 - suave(nucleoIn, nucleoOut, r));
+    const muestras: { r: number; d: number }[] = [];
+    for (let i = 0; i <= 100; i += 1) {
+      const r = i / 100;
+      muestras.push({ r, d: delta(r) });
+    }
+    const pico = muestras.reduce((a, b) => (b.d > a.d ? b : a));
+    let nodo = Number.NaN;
+    for (let i = 1; i < muestras.length; i += 1) {
+      const antes = muestras[i - 1]!;
+      const ahora = muestras[i]!;
+      if (antes.d < 0 && ahora.d >= 0) {
+        nodo = antes.r + (ahora.r - antes.r) * (-antes.d / (ahora.d - antes.d));
+        break;
+      }
+    }
+    return { delta, pico, nodo, anilloG, nucleoG };
+  })();
+  const n3cBins = new Uint8Array(256);
+  n3cBins.fill(255);
+  const n3cBinsMedios = new Uint8Array(256);
+  n3cBinsMedios.fill(128);
+  assert(
+    "N3C-9 · la voz se mide como el promedio del espectro, corre en dos relojes, y ahueca el orbe con el dipolo medido en la referencia",
+    // ── 1 · LA MEDIDA ──
+    spectrumAverage(new Uint8Array(0)) === 0 &&
+      spectrumAverage(new Uint8Array(256)) === 0 &&
+      spectrumAverage(n3cBins) === 1 &&
+      Math.abs(spectrumAverage(n3cBinsMedios) - 128 / 255) < 1e-12 &&
+      // y es la que USA el micrófono de producción: el RMS de la onda se fue
+      n3cVozMic.includes("analyser.getByteFrequencyData(bins)") &&
+      n3cVozMic.includes('setAuraRef.current("listening", spectrumAverage(bins))') &&
+      !n3cVozMic.includes("getFloatTimeDomainData") &&
+      !n3cVozMic.includes("rmsFromTimeDomain") &&
+      // …y el analizador NO trae su propio suavizado escondido: si lo trajera,
+      // habría una tercera constante de tiempo que nadie eligió ni puede leer
+      n3cVozMic.includes("analyser.smoothingTimeConstant = 0;") &&
+      n3cVozBanco.includes("analyser.smoothingTimeConstant = 0;") &&
+      // …y el envolvente POR CUADRO se fue del contrato: mientras siga
+      // exportado, alguien lo puede volver a usar y la voz vuelve a depender
+      // de a cuántos hercios vaya la pantalla
+      n3cVozContrato.includes("export function advanceVoiceTau(") &&
+      n3cVozContrato.includes("export function spectrumAverage(") &&
+      !n3cVozContrato.includes("VOICE_ATTACK") &&
+      !n3cVozContrato.includes("VOICE_FALL") &&
+      !/frameScale\s*[=:)]/u.test(n3cVozContrato) &&
+      // …y el RMS de la onda no se queda de adorno: sin consumidores, un
+      // exportado es una invitación a volver a medir distinto en otro sitio
+      !n3cVozContrato.includes("rmsFromTimeDomain") &&
+      // el paso entra en SEGUNDOS y sale de una exponencial, no de una fracción
+      n3cVozContrato.includes("(1 - Math.exp(-dt / tau))") &&
+
+      // ── 2 · DOS RELOJES, y muy separados ──
+      VOICE_MOTION_TAU_MS > 0 &&
+      VOICE_MOTION_TAU_MS <= 60 &&
+      VOICE_SHAPE_TAU_MS >= 500 &&
+      VOICE_SHAPE_TAU_MS <= 1600 &&
+      VOICE_SHAPE_TAU_MS > VOICE_MOTION_TAU_MS * 10 &&
+      // el rápido llega al 60 % del destino en 25 ms y el lento no llega al 5 %
+      advanceVoiceTau(0, 1, 0.025, VOICE_MOTION_TAU_MS) > 0.6 &&
+      advanceVoiceTau(0, 1, 0.025, VOICE_SHAPE_TAU_MS) < 0.05 &&
+      // …y cada uno mueve LO SUYO: el rápido la turbulencia, el lento la forma
+      n3LiveCode.includes("VOICE_MOTION_TAU_MS,") &&
+      n3LiveCode.includes("VOICE_SHAPE_TAU_MS,") &&
+      n3LiveCode.includes("voiceSlow: isActive ? slowVoice : 0,") &&
+      n3ShaderCode.includes("uniform float uVoiceSlow;") &&
+      n3ShaderCode.includes("gl.uniform1f(locations.voiceSlow, orb.voiceSlow);") &&
+      // el HALO es brillo, así que va con el reloj lento; la superficie y el
+      // menisco son movimiento, así que siguen con el rápido
+      n3ShaderCode.includes("float energy = 0.15 + 0.055*breath + uVoiceSlow*0.26;") &&
+      n3ShaderCode.includes("soul = sc * halo * (0.055 + 0.24*uVoiceSlow);") &&
+      n3ShaderCode.includes("ring *= (1.0 + uVoice * ringNoise * 2.2) * ringFar;") &&
+
+      // ── 3 · EL DIPOLO, EJECUTADO ──
+      n3cDipolo != null &&
+      // el centro se APAGA: en r = 0 el factor es negativo, y fuerte
+      n3cDipolo.delta(0) < -0.35 &&
+      n3cDipolo.delta(0.05) < -0.35 &&
+      // …y el shader usa ESTAS constantes, interpoladas, no una copia a mano
+      n3ShaderCode.includes("const float VOICE_RING_GAIN = ${ORB_VOICE_RING_GAIN.toFixed(3)};") &&
+      n3ShaderCode.includes("const float VOICE_CORE_GAIN = ${ORB_VOICE_CORE_GAIN.toFixed(3)};") &&
+      // ── …Y ESTÁ CABLEADO A LO QUE SALE ───────────────────────────────────
+      // Lo encontró la auditoría de mutación: borrar el factor del color final
+      // mataba el gate, pero por el pin del VOLUMEN (N3C-8), no por éste. Un
+      // pin que describe una fórmula y no comprueba que esté conectada declara
+      // una intención, no un hecho — y es la misma familia de agujeros que este
+      // bloque ya cerró siete veces.
+      n3ShaderCode.includes("* volumen * max(voz, 0.0));") &&
+      n3ShaderCode.includes("float vAnillo = exp(-pow((rVoz - VOICE_RING_R) / VOICE_RING_W, 2.0));") &&
+      n3ShaderCode.includes(
+        "float vNucleo = 1.0 - smoothstep(VOICE_CORE_IN, VOICE_CORE_OUT, rVoz);",
+      ) &&
+      // hay un NODO, y cae donde lo medí (0,58) con margen
+      n3cDipolo.nodo > 0.45 &&
+      n3cDipolo.nodo < 0.72 &&
+      // el máximo es un ANILLO adentro del disco, no una rampa hacia el borde:
+      // pica en ~0,82 y VUELVE A BAJAR antes de la silueta
+      n3cDipolo.pico.r > 0.70 &&
+      n3cDipolo.pico.r < 0.92 &&
+      n3cDipolo.delta(1) < n3cDipolo.pico.d * 0.75 &&
+      // ── LAS GANANCIAS, con los dos topes ─────────────────────────────
+      // NO son los porcentajes medidos: multiplican ANTES del tonemap, que
+      // comprime ~0,55 en el punto de trabajo del orbe. Poner acá el -17,6%
+      // medido da la mitad en pantalla, y eso fue exactamente la primera
+      // pasada — forma perfecta, magnitud a la mitad, verificado con 7.390
+      // cuadros. Lo que se acota es que sigan siendo un EFECTO y no una
+      // máscara: por encima de ~1,5 el centro se apagaría del todo con la voz
+      // fuerte, y por debajo de 0,5 el cambio no se ve.
+      n3cDipolo.nucleoG > 0.5 &&
+      n3cDipolo.nucleoG < 1.5 &&
+      n3cDipolo.anilloG > 0.5 &&
+      n3cDipolo.anilloG < 1.7 &&
+      // …y el factor nunca se va a negro ni al doble, ni con la voz al tope
+      (() => {
+        const tope = n3cGlsl("VOICE_SHAPE_MAX") ?? 0;
+        for (let i = 0; i <= 100; i += 1) {
+          const f = 1 + tope * n3cDipolo.delta(i / 100);
+          if (!(f > 0.55 && f < 1.55)) return false;
+        }
+        return true;
+      })() &&
+      // ── CALLADO, CERO EXACTO ──
+      // Se le resta el piso de `voiceTarget("calm")`, así que un orbe en
+      // silencio se ve EXACTAMENTE como antes de esta ronda. Sin esta resta
+      // quedaría ahuecado para siempre, que es un cambio de aspecto disfrazado
+      // de respuesta a la voz.
+      n3ShaderCode.includes("max(uVoiceSlow - VOICE_CALM_FLOOR, 0.0) / VOICE_TARGET_GAIN") &&
+      n3cGlsl("VOICE_CALM_FLOOR") === voiceTarget("calm") &&
+      n3cGlsl("VOICE_TARGET_GAIN") === voiceTarget("listening", 1) &&
+      // y con tope: «pensando» y «respondiendo» son constantes, no un micrófono
+      (n3cGlsl("VOICE_SHAPE_MAX") ?? 9) > 0.2 &&
+      (n3cGlsl("VOICE_SHAPE_MAX") ?? 9) < 0.4 &&
+
+      // ── 4 · EL BANCO SE PUEDE AUDITAR HABLÁNDOLE ──
+      // El founder pidió «poder interactuar y ver exactamente cómo los orbes
+      // reaccionan al sonido». Una foto con voice = 0,75 muestra el RÉGIMEN, no
+      // la respuesta. Y el banco no puede moverse SOLO: sin entrada, un banco
+      // que se mueve es una animación disfrazada de medición.
+      n3cVozBanco.includes("navigator.mediaDevices.getUserMedia({ audio: true })") &&
+      n3cVozBanco.includes("spectrumAverage(bins)") &&
+      n3cVozBanco.includes("advanceVoiceTau(rapida, objetivo, dt, VOICE_MOTION_TAU_MS)") &&
+      n3cVozBanco.includes("advanceVoiceTau(lenta, objetivo, dt, VOICE_SHAPE_TAU_MS)") &&
+      n3cVozBanco.includes('setEstado("negado")') &&
+      n3cVozBanco.includes('setEstado("sin-soporte")') &&
+      // el nivel que leen las probetas es el MEDIDO, o el del deslizador — y
+      // nunca un reloj
+      !/nivelRef\.current = [^;]*(Math\.sin|performance\.now|Date\.now)/u
+        .test(n3cVozBanco) &&
+      n3cVozBanco.includes("nivelVivo={nivelVivo}") &&
+      // …y la probeta integra con la MISMA función pura que el santuario, no
+      // con una copia suya
+      n3cSpecimenCode.includes("advanceVoiceTau(vozRapida, objetivo, dt, VOICE_MOTION_TAU_MS)") &&
+      n3cSpecimenCode.includes("advanceVoiceTau(vozLenta, objetivo, dt, VOICE_SHAPE_TAU_MS)") &&
+      // y la hoja de voz lo muestra
+      n3cVidrioCode.includes("<OrbVozViva />"),
+    JSON.stringify({
+      nodo: n3cDipolo == null ? null : +n3cDipolo.nodo.toFixed(3),
+      picoEnR: n3cDipolo == null ? null : n3cDipolo.pico.r,
+      picoValor: n3cDipolo == null ? null : +n3cDipolo.pico.d.toFixed(3),
+      centro: n3cDipolo == null ? null : +n3cDipolo.delta(0).toFixed(3),
+      silueta: n3cDipolo == null ? null : +n3cDipolo.delta(1).toFixed(3),
+    }),
   );
 
   // N3C-4 · EL RELOJ DEL CAMPO ES PURO, ACELERA CON LA VOZ, Y ESTÁ CABLEADO.
@@ -29877,7 +30128,22 @@ assert(
       // importa: que la voz AÑADA mucho más de lo que ya había, no un cociente.
       orbFluidPush(n3cFluHablando) - orbFluidPush(n3cFluCallada) >
         orbFluidPush(n3cFluCallada) * 1.5 &&
-      n3cFluHablando.length === n3cFluCallada.length + 3 &&
+      // N3C r26 · re-anclado a la constante, no a un 3 escrito a mano: la voz
+      // pasó de tres agitadores a seis (mitad radiales, mitad tangenciales) al
+      // medir que su orbe se abre 4,2x hablando y el nuestro 1,8x.
+      n3cFluHablando.length === n3cFluCallada.length + ORB_FLUID_VOICE_STIRRERS &&
+      ORB_FLUID_VOICE_STIRRERS % 2 === 0 &&
+      // …y las dos mitades empujan en sentidos distintos: sin eso son seis
+      // empujones radiales, que mueven la tela en bloque en vez de hacer cizalla
+      (() => {
+        const voz = n3cFluHablando.slice(n3cFluCallada.length);
+        const radial = voz.filter((sp) => {
+          const rx = sp.x - 0.5, ry = sp.y - 0.5;
+          const n = Math.hypot(rx, ry) * Math.hypot(sp.dx, sp.dy);
+          return n > 0 && Math.abs((rx * sp.dx + ry * sp.dy) / n) > 0.9;
+        }).length;
+        return radial === ORB_FLUID_VOICE_STIRRERS / 2;
+      })() &&
       // ── LA FUERZA VA POR SEGUNDO, NO POR CUADRO ──
       // Sin esto un teléfono de 120 Hz revuelve el fluido al doble que uno de
       // 60, y «responde exacto» pasa a depender del aparato.
@@ -30227,7 +30493,13 @@ assert(
       // el árbol sesenta veces por segundo se ve a tirones, y un instrumento
       // que agrega su propio tirón al movimiento que hay que juzgar MIENTE.
       n3cSpecimenCode.includes("if (!animado) return;") &&
-      n3cSpecimenCode.includes("dibujar(time + (performance.now() - t0) / 1000);") &&
+      // N3C r26 · re-anclado a la MISMA invariante con otra letra: el bucle lee
+      // el reloj del navegador y se lo pasa al dibujo, sin pasar por React. La
+      // línea se partió porque el mismo instante ahora también mide el paso de
+      // tiempo que necesitan los dos envolventes de la voz.
+      n3cSpecimenCode.includes("const ahora = performance.now();") &&
+      n3cSpecimenCode.includes("dibujar(time + (ahora - t0) / 1000);") &&
+      !/dibujar\([^)]*Date\.now/u.test(n3cSpecimenCode) &&
       n3cSpecimenCode.includes("cancelAnimationFrame(id);") &&
       !/setReloj/u.test(n3cSpecimenCode) &&
       // ── N3C r19 · LA HOJA DE COLORES NO PUEDE MENTIR ─────────────────────
@@ -30274,7 +30546,11 @@ assert(
       //
       // «Sutil» va con los dos topes. Pasado ahí el orbe se vuelve una bola de
       // billar en vez de un cuerpo de luz.
-      /vec3 outCol = tonemap\(\(col\*edge \+ soul\) \* volumen\);/u.test(n3ShaderCode) &&
+      // N3C r26 · el dipolo de la voz entra por la MISMA puerta y por la misma
+      // razón: multiplica el color ya compuesto al final. Se exigen los dos
+      // factores juntos, así que ninguno de los dos puede colarse antes.
+      /vec3 outCol = tonemap\(\(col\*edge \+ soul\) \* volumen \* max\(voz, 0\.0\)\);/u
+        .test(n3ShaderCode) &&
       (() => {
         const rim = n3ShaderCode.match(/const float ORB_SHADE_RIM = ([0-9.]+);/u);
         const key = n3ShaderCode.match(/const float ORB_SHADE_KEY = ([0-9.]+);/u);

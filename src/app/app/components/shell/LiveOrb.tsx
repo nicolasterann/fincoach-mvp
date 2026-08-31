@@ -35,8 +35,10 @@ import {
   type OrbWaterState,
 } from "./orb-water-sim";
 import {
-  advanceVoiceEnvelope,
+  advanceVoiceTau,
   voiceTarget,
+  VOICE_MOTION_TAU_MS,
+  VOICE_SHAPE_TAU_MS,
   type OrbVoiceState,
 } from "./voice-capture-contract";
 import type { DeviceTiltHandle } from "./useDeviceTilt";
@@ -483,6 +485,9 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
 
     let animatedLevel = orbWaterline(renderInputs.current.orbs[renderInputs.current.activeIndex]?.level ?? 0);
     let animatedVoice = voiceTarget("calm");
+    // N3C r26 · el segundo reloj de la voz. Arranca en el mismo sitio que el
+    // rápido: en silencio los dos valen el piso de «calm» y el dipolo es cero.
+    let slowVoice = voiceTarget("calm");
     let animationKey = signalAnimationKey(renderInputs.current);
     let animationFrom = animatedLevel;
     let animationAt = startAt;
@@ -644,7 +649,6 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
 
       const input = renderInputs.current;
       const position = readPosition.current();
-      const step = frameDelta == null ? 1 : Math.min(3, frameDelta / (1000 / 60));
 
       // EL AGUA RESPONDE AL MOVIMIENTO, con peso: el desplazamiento la empuja,
       // un resorte la devuelve a su nivel y el rozamiento la frena. Sale de la
@@ -691,10 +695,25 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
           ? Math.max(0, 1 - (now - animationAt) / 1_100)
           : 0;
       const voice = voiceRef.current;
-      animatedVoice = advanceVoiceEnvelope(
+      // N3C r26 · UNA voz, DOS relojes, los dos medidos en la referencia: la
+      // turbulencia sigue el sonido casi al instante y el brillo lo sigue casi
+      // un segundo después. El paso viene en segundos, así que ninguno de los
+      // dos depende de a cuántos hercios vaya la pantalla.
+      const voiceTargetLevel = voiceTarget(voice.state, voice.level);
+      const voiceDt = frameDelta == null
+        ? 1 / 60
+        : Math.max(0.001, frameDelta / 1_000);
+      animatedVoice = advanceVoiceTau(
         animatedVoice,
-        voiceTarget(voice.state, voice.level),
-        step,
+        voiceTargetLevel,
+        voiceDt,
+        VOICE_MOTION_TAU_MS,
+      );
+      slowVoice = advanceVoiceTau(
+        slowVoice,
+        voiceTargetLevel,
+        voiceDt,
+        VOICE_SHAPE_TAU_MS,
       );
 
       // ── UN CUADRO DE LÍQUIDO ─────────────────────────────────────────────
@@ -767,6 +786,7 @@ export const LiveOrb = forwardRef<LiveOrbHandle, LiveOrbProps>(function LiveOrb(
           waterline: isActive ? animatedLevel : orbWaterline(orb.level),
           energy: isActive ? energy : 0,
           voice: isActive ? animatedVoice : 0,
+          voiceSlow: isActive ? slowVoice : 0,
           tiltX: water.tiltX,
           tiltZ: water.tiltZ,
           spin: water.spin,

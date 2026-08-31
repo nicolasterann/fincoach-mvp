@@ -26,6 +26,12 @@ import {
   orbWaveEnergy,
   type OrbWaterState,
 } from "./orb-water-sim";
+import {
+  advanceVoiceTau,
+  voiceTarget,
+  VOICE_MOTION_TAU_MS,
+  VOICE_SHAPE_TAU_MS,
+} from "./voice-capture-contract";
 
 // Bloque N3 · La probeta del orbe.
 //
@@ -271,6 +277,7 @@ export function OrbSpecimen({
   voice = 0,
   animado = false,
   paleta,
+  nivelVivo,
   label,
 }: {
   kind: OrbKind;
@@ -299,6 +306,16 @@ export function OrbSpecimen({
    * de la otra, no de memoria.
    */
   paleta?: { liquid: OrbRgb; deep: OrbRgb; accent: OrbRgb };
+  /**
+   * N3C r26 · LA VOZ EN VIVO. Devuelve el nivel de ESTE instante —el promedio
+   * del espectro, la misma medida que consume el orbe de la referencia— y la
+   * probeta integra sola los dos envolventes.
+   *
+   * Existe porque «reacciona al sonido» no se puede juzgar con una foto ni con
+   * un deslizador: hay que hablarle. Una probeta sin esto muestra una voz
+   * SOSTENIDA, que es el régimen, no la respuesta.
+   */
+  nivelVivo?: () => number;
   label?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -321,6 +338,12 @@ export function OrbSpecimen({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const theme = document.documentElement.dataset.theme ?? "dark";
+    // N3C r26 · los dos relojes de la voz, integrados acá con la MISMA función
+    // pura que usa el santuario. Sin voz en vivo los dos valen el nivel fijo de
+    // la probeta, que es lo que significa una voz sostenida.
+    let vozRapida = voice;
+    let vozLenta = voice;
+    let ultimoMs = -1;
     const dibujar = (tiempo: number) => paint(
       canvas,
       size,
@@ -334,7 +357,8 @@ export function OrbSpecimen({
           presence: 1,
           waterline: orbWaterline(level),
           energy: 0,
-          voice,
+          voice: vozRapida,
+          voiceSlow: vozLenta,
           tiltX: tilt,
           tiltZ: 0,
           spin: 0,
@@ -344,7 +368,7 @@ export function OrbSpecimen({
           env,
           // Un cuadro fijo, pero con el MISMO reloj que el santuario: la
           // velocidad sale de `orbFieldSpeed`, no de un número escrito acá.
-          field: tiempo * orbFieldSpeed(orbFieldDrive(voice, wave)),
+          field: tiempo * orbFieldSpeed(orbFieldDrive(vozRapida, wave)),
           material: orbPresentationMaterial({ kind, matter, fill }),
           liquid: paleta?.liquid ?? readCssColor(canvas, `--kipu-liquid-${kind}`),
           deep: paleta?.deep ?? readCssColor(canvas, `--kipu-deep-${kind}`),
@@ -353,7 +377,7 @@ export function OrbSpecimen({
       ],
       theme === "light" ? 1 : 0,
       tiempo,
-      voice,
+      vozRapida,
     );
     const glVersion = dibujar(time);
     if (glVersion == null) {
@@ -368,7 +392,17 @@ export function OrbSpecimen({
     const t0 = performance.now();
     const paso = () => {
       if (!vivo) return;
-      dibujar(time + (performance.now() - t0) / 1000);
+      const ahora = performance.now();
+      if (nivelVivo) {
+        const dt = ultimoMs < 0
+          ? 1 / 60
+          : Math.min(1 / 20, Math.max(1 / 240, (ahora - ultimoMs) / 1_000));
+        const objetivo = voiceTarget("listening", nivelVivo());
+        vozRapida = advanceVoiceTau(vozRapida, objetivo, dt, VOICE_MOTION_TAU_MS);
+        vozLenta = advanceVoiceTau(vozLenta, objetivo, dt, VOICE_SHAPE_TAU_MS);
+      }
+      ultimoMs = ahora;
+      dibujar(time + (ahora - t0) / 1000);
       id = requestAnimationFrame(paso);
     };
     id = requestAnimationFrame(paso);
@@ -376,7 +410,7 @@ export function OrbSpecimen({
       vivo = false;
       cancelAnimationFrame(id);
     };
-  }, [kind, level, matter, fill, size, time, tilt, wave, bob, env, voice, animado, paleta, themeTick]);
+  }, [kind, level, matter, fill, size, time, tilt, wave, bob, env, voice, animado, paleta, nivelVivo, themeTick]);
 
   return (
     <figure className="kipu-orb-specimen" data-orb-kind={kind}>
@@ -444,6 +478,7 @@ export function OrbFieldSpecimen({
           waterline: orbWaterline(levels[kind] ?? 0.55),
           energy: 0,
           voice: 0,
+          voiceSlow: 0,
           tiltX: 0,
           tiltZ: 0,
           spin: 0,
@@ -640,6 +675,9 @@ export function OrbCompareSpecimen({
             presence: 1,
             waterline: orbWaterline(slot.level ?? null),
             energy,
+            // Una viñeta fija muestra una voz SOSTENIDA, y en régimen los dos
+            // relojes valen lo mismo: el lento ya convergió al nivel.
+            voiceSlow: voice,
             voice,
             tiltX: 0,
             tiltZ: 0,

@@ -224,6 +224,12 @@ export const ORB_FLUID_STIRRERS = 5;
 export const ORB_FLUID_WINDOW_R = 0.17;
 /** Y el de la voz, que es el que tiene que sentirse como una respuesta. */
 export const ORB_FLUID_VOICE_FORCE = 3.2;
+/**
+ * N3C r26 · CUÁNTOS AGITADORES SUMA LA VOZ. Par: la mitad abre desde el centro
+ * y la otra mitad gira en tangencial más afuera, para que se crucen. Ver el
+ * comentario largo en `orbFluidSplats`.
+ */
+export const ORB_FLUID_VOICE_STIRRERS = 6;
 
 /**
  * EL CALENDARIO DE SALPICADURAS — puro, y por eso auditable.
@@ -321,21 +327,40 @@ export function orbFluidSplats(input: {
   }
 
   if (voice > 0.02) {
-    for (let i = 0; i < 3; i += 1) {
-      const phase = i * 2.0943951;
-      const spin = t * (0.83 + i * 0.31) + phase;
-      const reach = 0.20 + 0.16 * voice;
+    for (let i = 0; i < ORB_FLUID_VOICE_STIRRERS; i += 1) {
+      // N3C r26 · MEDIDO EN LA REFERENCIA, y era el hueco que quedaba: su orbe
+      // multiplica su movimiento por 4,2 al hablar (0,00115 → 0,00481 de cambio
+      // por píxel y cuadro) y el nuestro sólo por 1,8.
+      //
+      // La fuerza por salpicadura NO se puede subir: a voz 1 vale 960 y el
+      // solver recorta en 1.000 — pasarse deja un salto duro donde empujó y
+      // rayas rectas al muestrear fuera del dominio (la lección de la r8, que
+      // el founder pagó viendo la app rota).
+      //
+      // Así que en vez de empujar más fuerte, se empuja en más sitios Y en dos
+      // sentidos: la mitad abre desde el centro y la otra mitad, más afuera,
+      // gira en tangencial. Dos corrientes que se cruzan producen CIZALLA, y la
+      // cizalla es lo que se ve — un empujón radial solo, por fuerte que sea,
+      // mueve la tela en bloque.
+      const anillo = i >= ORB_FLUID_VOICE_STIRRERS / 2;
+      const j = anillo ? i - ORB_FLUID_VOICE_STIRRERS / 2 : i;
+      const phase = j * 2.0943951 + (anillo ? 1.0471976 : 0);
+      const spin = t * (0.83 + j * 0.31) * (anillo ? -0.74 : 1) + phase;
+      const reach = anillo ? 0.34 + 0.10 * voice : 0.20 + 0.16 * voice;
       const force = ORB_FLUID_VOICE_FORCE * voice;
       const ux = Math.cos(spin), uy = Math.sin(spin);
+      // radial las de adentro; tangencial las de afuera
+      const px = anillo ? -uy : ux;
+      const py = anillo ? ux : uy;
       splats.push({
         x: 0.5 + reach * ux,
         y: 0.5 + reach * uy,
         // empuja hacia AFUERA desde el centro: la voz abre el fluido, no lo
         // arrastra hacia un lado
-        dx: ux * force * ORB_FLUID_GRID * dt * 60,
-        dy: uy * force * ORB_FLUID_GRID * dt * 60,
-        tx: ux * ORB_FLUID_TRAIL * force * 1.6,
-        ty: uy * ORB_FLUID_TRAIL * force * 1.6,
+        dx: px * force * ORB_FLUID_GRID * dt * 60,
+        dy: py * force * ORB_FLUID_GRID * dt * 60,
+        tx: px * ORB_FLUID_TRAIL * force * 1.6,
+        ty: py * ORB_FLUID_TRAIL * force * 1.6,
         tz: ORB_FLUID_TRAIL * force,
         radius: 0.0180 + 0.016 * voice,
       });

@@ -6,6 +6,7 @@ import {
   OrbSloshStrip,
   OrbSpecimen,
 } from "@/app/app/components/shell/OrbSpecimen";
+import { OrbVozViva } from "@/app/app/components/shell/OrbVozViva";
 import {
   ORB_KINDS,
   ORB_WATERLINE_CEILING,
@@ -252,32 +253,37 @@ export default async function VidrioPage({
 
       {show("voz") && (
         <section className="kipu-sistema-section">
-          <h2>G8 — la onda de la voz vive en la superficie del agua</h2>
+          <h2>G8 — los orbes reaccionan al sonido</h2>
           <p className="kipu-sistema-note">
-            Lo que más le gustó al founder de la referencia: «cómo se mueven las
-            ondas de adentro mientras habla». Acá la onda <b>no está pegada
-            encima</b>: es el mismo líquido que ya tiene masa, con un tren de
-            ondas concéntrico en la superficie y un menisco que se vuelve
-            irregular. Sin voz el término vale cero exacto y la superficie
-            vuelve a ser el espejo de N3B. El volumen es el de M5.
+            <b>Habláles.</b> Dale al botón, decí cualquier cosa y mirá. Lo que
+            responde no es una animación de demostración: es el mismo camino que
+            corre en el santuario —el mismo analizador, la misma medida y el
+            mismo shader—, así que lo que veas acá es lo que va a pasar cuando le
+            hables a Kipu de verdad. Si no hay micrófono, lo dice y queda el
+            deslizador.
           </p>
-          <div className="kipu-sistema-row">
-            {[0, 0.35, 0.75, 1].map((voice) => (
-              <div key={voice} className="kipu-sistema-slot" data-slot-shape="orbe">
-                <p className="kipu-sistema-slot__name">voz {voice}</p>
-                <OrbSpecimen
-                  kind="saldo"
-                  level={0.6}
-                  size={200}
-                  voice={voice}
-                  label={voice === 0 ? "callado" : `${Math.round(voice * 100)}%`}
-                />
-              </div>
-            ))}
-          </div>
+          <OrbVozViva />
           <p className="kipu-sistema-note">
-            Y el mismo volumen en el suyo, que lo lleva a los anillos del borde
-            del disco:
+            <b>Qué mirar.</b> Al hablar el orbe <b>se ahueca</b>: el centro se
+            apaga y aparece un anillo brillante afuera, a ~⅘ del radio. Eso es la
+            firma de la referencia, medida cuadro a cuadro en su propia página —
+            enganché la señal de audio que su orbe consume y capturé sus píxeles
+            en el mismo cuadro, 1.081 veces. El cambio de luz por radio les da
+            −17,6% en el centro, cero en r ≈ 0,58 y +13% en r ≈ 0,82.
+          </p>
+          <p className="kipu-sistema-note">
+            <b>Y dos relojes, no uno.</b> La turbulencia sigue tu voz al
+            instante (25 ms) y el brillo la sigue casi un segundo después
+            (900 ms). Por eso el hueco <b>tarda en abrirse y tarda en cerrarse</b>{" "}
+            mientras el líquido ya se está revolviendo: son los mismos números
+            que medí en el suyo, donde el movimiento correlaciona con retraso
+            cero y el brillo recién a los 900 ms. Los números de arriba se mueven
+            con tu voz: mirá cómo la columna «rápida» salta por sílaba y la
+            «lenta» dibuja la frase entera.
+          </p>
+          <p className="kipu-sistema-note">
+            Y el mismo volumen sostenido en el suyo y en el nuestro, para
+            comparar el régimen:
           </p>
           <OrbCompareSpecimen
             size={186}

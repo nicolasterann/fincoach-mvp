@@ -51,8 +51,30 @@ const VOICE_RECORDING_FORMATS: readonly VoiceRecordingFormat[] = [
 
 export const VOICE_MAX_DURATION_MS = 120_000;
 export const VOICE_MAX_BYTES = MAX_EVIDENCE_BYTES;
-export const VOICE_ATTACK = 0.085;
-export const VOICE_FALL = 0.04;
+
+/**
+ * N3C r26 · LAS DOS CONSTANTES DE TIEMPO DE LA VOZ, MEDIDAS EN LA REFERENCIA.
+ *
+ * Enganché `AnalyserNode.getByteFrequencyData` en la página de ElevenLabs para
+ * leer la MISMA señal que su orbe consume, y capturé sus píxeles en el mismo
+ * cuadro. Con 1.081 cuadros pareados, ajustando exponenciales de una constante:
+ *
+ *   · el MOVIMIENTO del orbe sigue al sonido con τ ≈ 15–30 ms (r = 0,63) y con
+ *     retraso CERO — la turbulencia es prácticamente instantánea;
+ *   · el BRILLO sigue una envolvente MUCHO más lenta, τ ≈ 900 ms (r = 0,75),
+ *     con el ajuste cayendo a los dos lados (0,72 a 500 ms, 0,69 a 1.600).
+ *
+ * Un solo envolvente no puede ser las dos cosas, y por eso el orbe de N3C-3
+ * —que movía todo con uno de ~196 ms— se sentía a la vez perezoso al empezar a
+ * hablar y nervioso al callarse.
+ *
+ * También probé envolventes ASIMÉTRICOS (ataque rápido, caída lenta), que es lo
+ * que uno esperaría de un medidor de audio: NO ganan. El mejor asimétrico da
+ * 0,729 contra 0,745 del simétrico en brillo, y 0,627 contra 0,633 en
+ * movimiento. Los suyos son exponenciales simétricos, y por eso acá también.
+ */
+export const VOICE_MOTION_TAU_MS = 25;
+export const VOICE_SHAPE_TAU_MS = 900;
 
 export function baseAudioMime(mime: string): string | null {
   const base = mime.toLowerCase().split(";", 1)[0]?.trim() ?? "";
@@ -75,11 +97,24 @@ export function voiceFilename(format: VoiceRecordingFormat): string {
   return `nota-kipu.${format.extension}`;
 }
 
-export function rmsFromTimeDomain(samples: Float32Array): number {
-  if (samples.length === 0) return 0;
+/**
+ * N3C r26 · EL NIVEL QUE MIDEN ELLOS: el promedio del espectro.
+ *
+ * Su shader declara `uAudioAverage`, y el método que enganché confirma de dónde
+ * sale: `getByteFrequencyData`, promediado y dividido por 255. No es el RMS de
+ * la onda —que pesa sobre todo los graves y la sonoridad general—: es el
+ * promedio de TODAS las bandas, así que una voz (que es de banda ancha) sube
+ * mucho más que un zumbido grave del mismo volumen.
+ *
+ * La escala importa y por eso esta función NO la reescala: las ganancias del
+ * dipolo radial están calibradas contra ESTOS números. En su muestra, hablando
+ * normal, el promedio instantáneo llegó a 0,36 y su envolvente lenta a 0,217.
+ */
+export function spectrumAverage(bins: Uint8Array): number {
+  if (bins.length === 0) return 0;
   let sum = 0;
-  for (const sample of samples) sum += sample * sample;
-  return Math.min(1, Math.max(0, Math.sqrt(sum / samples.length)));
+  for (const bin of bins) sum += bin;
+  return Math.min(1, Math.max(0, sum / (bins.length * 255)));
 }
 
 export function voiceTarget(
@@ -95,14 +130,24 @@ export function voiceTarget(
   return level * 0.75;
 }
 
-export function advanceVoiceEnvelope(
+/**
+ * N3C r26 · UN ENVOLVENTE EXPONENCIAL EN SEGUNDOS, NO EN CUADROS.
+ *
+ * El anterior avanzaba una fracción fija POR CUADRO y compensaba con un
+ * `frameScale`, que es la misma trampa que N3C-8 mató en el fluido: un teléfono
+ * de 120 Hz llegaba al mismo destino en la mitad del tiempo. Acá la constante
+ * de tiempo es física —τ en milisegundos— y el paso sale del reloj, así que la
+ * voz se siente igual en cualquier pantalla.
+ */
+export function advanceVoiceTau(
   current: number,
   target: number,
-  frameScale = 1,
+  dtSeconds: number,
+  tauMs: number,
 ): number {
-  const baseRate = target > current ? VOICE_ATTACK : VOICE_FALL;
-  const rate = 1 - Math.pow(1 - baseRate, Math.max(0, frameScale));
-  return current + (target - current) * rate;
+  const dt = Math.max(0, dtSeconds);
+  const tau = Math.max(0.001, tauMs / 1_000);
+  return current + (target - current) * (1 - Math.exp(-dt / tau));
 }
 
 export function stopMediaStreamTracks(

@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 // build no prueba nada: prueba que el código no compila, no que alguien estaba
 // mirando.
 
-const TOTAL = 891;
+const TOTAL = 892;
 const runner = ["scripts/qa/run-capture-gate.mjs"];
 
 const CONTRACT = "src/app/app/components/shell/shell-orb-contract.ts";
@@ -28,6 +28,9 @@ const SAVE_ACTIONS = "src/app/onboarding/save-actions.ts";
 const NOISE = "src/app/app/components/shell/orb-noise-texture.ts";
 const REFERENCE = "src/app/app/components/shell/orb-reference-shader.ts";
 const FLUID = "src/app/app/components/shell/orb-fluid.ts";
+const VOZ = "src/app/app/components/shell/voice-capture-contract.ts";
+const MIC = "src/app/app/components/shell/useVoiceCapture.ts";
+const BANCO = "src/app/app/components/shell/OrbVozViva.tsx";
 const SPEC = "src/app/app/components/shell/OrbSpecimen.tsx";
 
 const mutations = [
@@ -514,6 +517,112 @@ const mutations = [
     from: "        voice: animatedVoice,\n        wave: waveEnergy,",
     to: "        voice: 0,\n        wave: 0,",
   },
+  // ── N3C-9 · LAS ONDAS DE VOZ, MEDIDAS EN LA REFERENCIA ────────────────────
+  {
+    name: "N3C-9",
+    result:
+      "el orbe deja de ahuecarse al hablar: se apaga el anillo y queda la firma que el founder señalo en el de ellos",
+    file: SHADER,
+    from: "export const ORB_VOICE_RING_GAIN = 1.62;",
+    to: "export const ORB_VOICE_RING_GAIN = 0.0;",
+  },
+  {
+    name: "N3C-9",
+    result: "el centro deja de apagarse: el orbe solo brilla mas, no se ahueca",
+    file: SHADER,
+    from: "export const ORB_VOICE_CORE_GAIN = 1.33;",
+    to: "export const ORB_VOICE_CORE_GAIN = 0.0;",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "el anillo se corre al borde: deja de ser un anillo y pasa a ser una rampa hacia la silueta",
+    file: SHADER,
+    from: "export const ORB_VOICE_RING_R = 0.82;",
+    to: "export const ORB_VOICE_RING_R = 1.35;",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "el dipolo se aplica ANTES del volumen y del tonemap: toca el color compuesto a mitad de camino",
+    file: SHADER,
+    from: "  vec3 outCol = tonemap((col*edge + soul) * volumen * max(voz, 0.0));",
+    to: "  vec3 outCol = tonemap((col*edge + soul) * volumen);",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "un orbe CALLADO queda ahuecado para siempre: no se resta el piso de voiceTarget('calm')",
+    file: SHADER,
+    from: "    max(uVoiceSlow - VOICE_CALM_FLOOR, 0.0) / VOICE_TARGET_GAIN,",
+    to: "    uVoiceSlow / VOICE_TARGET_GAIN,",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "el reloj lento se vuelve rapido: el brillo deja de seguir la envolvente de 900 ms que medi en el suyo",
+    file: VOZ,
+    from: "export const VOICE_SHAPE_TAU_MS = 900;",
+    to: "export const VOICE_SHAPE_TAU_MS = 30;",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "el reloj rapido se vuelve lento: la turbulencia deja de responder al instante y el orbe se siente perezoso",
+    file: VOZ,
+    from: "export const VOICE_MOTION_TAU_MS = 25;",
+    to: "export const VOICE_MOTION_TAU_MS = 700;",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "el envolvente vuelve a avanzar POR CUADRO: la voz se siente distinta en un telefono de 120 Hz",
+    file: VOZ,
+    from: "  return current + (target - current) * (1 - Math.exp(-dt / tau));",
+    to: "  return current + (target - current) * 0.085;",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "el nivel deja de ser el promedio del espectro: vuelve a pesar los graves y un zumbido mueve el orbe como una voz",
+    file: MIC,
+    from: "        analyser.getByteFrequencyData(bins);",
+    to: "        bins.fill(0);",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "vuelve el suavizado escondido dentro del analizador: una tercera constante de tiempo que nadie eligio",
+    file: MIC,
+    from: "      analyser.smoothingTimeConstant = 0;",
+    to: "      analyser.smoothingTimeConstant = 0.72;",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "CABLE · el orbe vivo deja de mandar el reloj lento: el dipolo nunca se abre por mas que hables",
+    file: LIVE,
+    from: "          voiceSlow: isActive ? slowVoice : 0,",
+    to: "          voiceSlow: 0,",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "el banco de voz deja de escuchar el microfono: se mueve solo, que es una animacion disfrazada de medicion",
+    file: BANCO,
+    from: "      const nivel = spectrumAverage(bins);",
+    to: "      const nivel = 0.3;",
+  },
+  {
+    // La cizalla es una propiedad del FLUIDO y su comprobación vive en N3C-8,
+    // que es el pin del fluido. La auditoría lo señaló: murió sin este nombre.
+    name: "N3C-8",
+    result:
+      "la voz deja de hacer CIZALLA: los seis agitadores empujan todos hacia afuera y la tela se mueve en bloque",
+    file: FLUID,
+    from: "      const px = anillo ? -uy : ux;\n      const py = anillo ? ux : uy;",
+    to: "      const px = ux;\n      const py = uy;",
+  },
   {
     name: "N3C-5",
     result: "el shader deja de leer el fluido: el orbe queda con su ruido aunque el solver corra",
@@ -573,7 +682,7 @@ const mutations = [
     result:
       "la mesa de luz vuelve a mostrar FOTOS donde hay que juzgar movimiento: el modo animado no avanza el reloj — «solo veo fotos»",
     file: SPEC,
-    from: "      dibujar(time + (performance.now() - t0) / 1000);",
+    from: "      dibujar(time + (ahora - t0) / 1000);",
     to: "      dibujar(time);",
   },
   {
