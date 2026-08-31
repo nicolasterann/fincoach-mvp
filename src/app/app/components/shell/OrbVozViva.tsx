@@ -8,9 +8,13 @@ import {
 import { OrbSpecimen } from "./OrbSpecimen";
 import { ORB_KINDS } from "./shell-orb-contract";
 import {
+  advanceVoiceFloor,
   advanceVoiceTau,
   spectrumAverage,
+  voiceAboveFloor,
   voiceTarget,
+  VOICE_ANALYSER_FFT_SIZE,
+  VOICE_ANALYSER_SMOOTHING,
   VOICE_MOTION_TAU_MS,
   VOICE_SHAPE_TAU_MS,
 } from "./voice-capture-contract";
@@ -47,7 +51,7 @@ const TONEMAP_GAIN = 0.55;
 export function OrbVozViva({ size = 168 }: { size?: number }) {
   const [estado, setEstado] = useState<EstadoMic>("apagado");
   const [manual, setManual] = useState(NIVEL_MANUAL_INICIAL);
-  const [medidas, setMedidas] = useState({ nivel: 0, rapida: 0, lenta: 0 });
+  const [medidas, setMedidas] = useState({ nivel: 0, rapida: 0, lenta: 0, piso: 0 });
 
   const nivelRef = useRef(0);
   const manualRef = useRef(manual);
@@ -107,28 +111,32 @@ export function OrbVozViva({ size = 168 }: { size?: number }) {
     contextRef.current = context;
     if (context.state === "suspended") await context.resume();
     const analyser = context.createAnalyser();
-    analyser.fftSize = 1024;
-    // El mismo cero que el santuario: el suavizado vive en `advanceVoiceTau`,
-    // donde se puede leer, y no escondido dentro del instrumento.
-    analyser.smoothingTimeConstant = 0;
+    // Los mismos que el santuario, que son los de la referencia.
+    analyser.fftSize = VOICE_ANALYSER_FFT_SIZE;
+    analyser.smoothingTimeConstant = VOICE_ANALYSER_SMOOTHING;
     context.createMediaStreamSource(stream).connect(analyser);
     const bins = new Uint8Array(analyser.frequencyBinCount);
     setEstado("oyendo");
 
     let rapida = 0;
     let lenta = 0;
+    let piso = -1;
     let ultimoMs = -1;
     let ultimoAviso = 0;
     const leer = () => {
       analyser.getByteFrequencyData(bins);
-      const nivel = spectrumAverage(bins);
-      nivelRef.current = nivel;
+      const crudo = spectrumAverage(bins);
       const ahora = performance.now();
       const dt =
         ultimoMs < 0
           ? 1 / 60
           : Math.min(1 / 20, Math.max(1 / 240, (ahora - ultimoMs) / 1_000));
       ultimoMs = ahora;
+      // el piso de ESTA sala, restado: sin esto el silencio de un cuarto vale
+      // 0,25 —el mismo número que su voz— y el orbe vive arriba de su rango
+      piso = piso < 0 ? crudo : advanceVoiceFloor(piso, crudo, dt);
+      const nivel = voiceAboveFloor(crudo, piso);
+      nivelRef.current = nivel;
       const objetivo = voiceTarget("listening", nivel);
       rapida = advanceVoiceTau(rapida, objetivo, dt, VOICE_MOTION_TAU_MS);
       lenta = advanceVoiceTau(lenta, objetivo, dt, VOICE_SHAPE_TAU_MS);
@@ -137,7 +145,7 @@ export function OrbVozViva({ size = 168 }: { size?: number }) {
       // que juzgar. Los orbes NO pasan por acá — leen `nivelVivo` en su rAF.
       if (ahora - ultimoAviso > 100) {
         ultimoAviso = ahora;
-        setMedidas({ nivel, rapida, lenta });
+        setMedidas({ nivel, rapida, lenta, piso });
       }
       rafRef.current = requestAnimationFrame(leer);
     };
@@ -187,9 +195,21 @@ export function OrbVozViva({ size = 168 }: { size?: number }) {
 
       <dl className="kipu-voz-viva__medidas">
         <div>
-          <dt>nivel</dt>
+          <dt>nivel sobre el piso</dt>
           <dd data-voz-medida="nivel">
             {(oyendo ? medidas.nivel : manual).toFixed(3)}
+          </dd>
+        </div>
+        <div>
+          {/*
+            El piso de ruido de TU sala, medido y restado. Un micrófono nunca
+            entrega cero: `getByteFrequencyData` reparte decibelios, así que un
+            cuarto callado marca ~0,25 — el mismo número que una voz. Se muestra
+            para que se vea que se está midiendo y no adivinando.
+          */}
+          <dt>piso de la sala</dt>
+          <dd data-voz-medida="piso">
+            {oyendo ? medidas.piso.toFixed(3) : "—"}
           </dd>
         </div>
         <div>

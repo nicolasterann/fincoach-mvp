@@ -541,8 +541,14 @@ import {
   voiceDeliverySucceeded,
   voiceTarget,
   VOICE_MAX_DURATION_MS,
+  VOICE_ANALYSER_FFT_SIZE,
+  VOICE_ANALYSER_SMOOTHING,
+  VOICE_FLOOR_FALL_TAU_MS,
+  VOICE_FLOOR_RISE_TAU_MS,
   VOICE_MOTION_TAU_MS,
   VOICE_SHAPE_TAU_MS,
+  voiceAboveFloor,
+  advanceVoiceFloor,
 } from "@/app/app/components/shell/voice-capture-contract";
 import { normalizeCandidates } from "@/lib/capture/evidence-extraction";
 import {
@@ -29554,8 +29560,14 @@ assert(
   // era una superficie. Un relieve que no cambia la NORMAL no cambia cómo entra
   // la luz, así que no se refleja distinto: es un dibujo, no una onda. Por eso
   // el pin exige el término en las DOS funciones, con las mismas constantes.
-  const n3cVoiceHeight = /w \+= WAVE_AMP \* VOICE_AMP \* uVoice/u.test(n3ShaderCode);
-  const n3cVoiceNormal = /g \+= \(p\.xz \/ rho\) \* WAVE_AMP \* VOICE_AMP \* uVoice \* VOICE_FREQ/u
+  // N3C r27 · RE-ANCLADO A `uVoiceSlow`, y la razón es la que arregló el
+  // temblor: la AMPLITUD de la onda no puede colgar del reloj de las sílabas.
+  // Una amplitud que sube y baja cuatro veces por segundo mueve la imagen para
+  // adelante y para atrás — medido, coherencia entre cuadros −0,466 contra los
+  // +0,358 del suyo. Lo que el pin sujeta no cambia: la onda vive en la ALTURA
+  // y en la NORMAL, con las mismas constantes, y sin voz vale cero exacto.
+  const n3cVoiceHeight = /w \+= WAVE_AMP \* VOICE_AMP \* uVoiceSlow/u.test(n3ShaderCode);
+  const n3cVoiceNormal = /g \+= \(p\.xz \/ rho\) \* WAVE_AMP \* VOICE_AMP \* uVoiceSlow \* VOICE_FREQ/u
     .test(n3ShaderCode);
   assert(
     "N3C-3 · la onda de la voz está en la ALTURA y en la NORMAL del agua, y sin voz vale cero exacto",
@@ -29574,7 +29586,7 @@ assert(
       // paralelos no existen en un vaso — el founder los vio como líneas
       // dibujadas. Lo que el pin sujeta sigue siendo lo mismo: con voz el
       // menisco se vuelve irregular, y sin voz el factor del ruido es 1 exacto.
-      n3ShaderCode.includes("ring *= (1.0 + uVoice * ringNoise * 2.2) * ringFar;") &&
+      n3ShaderCode.includes("ring *= (1.0 + uVoiceSlow * ringNoise * 2.2) * ringFar;") &&
       n3ShaderCode.includes("float ringFar = smoothstep(") &&
       // ── y el VOLUMEN es el de M5, no uno inventado: lo que llega al lienzo
       // sale del envolvente que alimenta el medidor real ──
@@ -29675,13 +29687,60 @@ assert(
       Math.abs(spectrumAverage(n3cBinsMedios) - 128 / 255) < 1e-12 &&
       // y es la que USA el micrófono de producción: el RMS de la onda se fue
       n3cVozMic.includes("analyser.getByteFrequencyData(bins)") &&
-      n3cVozMic.includes('setAuraRef.current("listening", spectrumAverage(bins))') &&
+      // el nivel que sale al orbe es el que está POR ENCIMA del piso, no el crudo
+      n3cVozMic.includes("const crudo = spectrumAverage(bins);") &&
       !n3cVozMic.includes("getFloatTimeDomainData") &&
       !n3cVozMic.includes("rmsFromTimeDomain") &&
       // …y el analizador NO trae su propio suavizado escondido: si lo trajera,
       // habría una tercera constante de tiempo que nadie eligió ni puede leer
-      n3cVozMic.includes("analyser.smoothingTimeConstant = 0;") &&
-      n3cVozBanco.includes("analyser.smoothingTimeConstant = 0;") &&
+      // ── N3C r27 · LOS AJUSTES DEL ANALIZADOR SON LOS SUYOS ───────────────
+      //
+      // RE-ANCLADO, y hay que decir por qué se soltó lo anterior. La r26 exigía
+      // `smoothingTimeConstant = 0` razonando que «el suavizado debe vivir donde
+      // se pueda leer». Sonaba a principio y era un error de hecho: los 25 ms
+      // que medí son los que ellos agregan ENCIMA de su analizador, y el suyo ya
+      // trae 0,8 (~75 ms más). Leído del analizador vivo de su página.
+      //
+      // Quitarlo dejó nuestra señal ~4x más nerviosa que la suya, y eso fue
+      // literalmente lo que el founder vio: «apenas prendo el micrófono todos
+      // los orbes empiezan a vibrar y titilar». Medido con la coherencia entre
+      // cuadros consecutivos: el suyo pasa de +0,271 callado a +0,358 hablando
+      // (el movimiento se ORGANIZA) y el nuestro caía a **−0,466** (se invierte
+      // cada cuadro, que es la definición de temblar).
+      VOICE_ANALYSER_SMOOTHING === 0.8 &&
+      VOICE_ANALYSER_FFT_SIZE === 256 &&
+      n3cVozMic.includes("analyser.fftSize = VOICE_ANALYSER_FFT_SIZE;") &&
+      n3cVozMic.includes(
+        "analyser.smoothingTimeConstant = VOICE_ANALYSER_SMOOTHING;",
+      ) &&
+      n3cVozBanco.includes(
+        "analyser.smoothingTimeConstant = VOICE_ANALYSER_SMOOTHING;",
+      ) &&
+      // ── EL PISO DE RUIDO, que un archivo no tiene y un micrófono siempre sí ─
+      //
+      // `getByteFrequencyData` reparte DECIBELIOS entre −100 y −30, no amplitud.
+      // El silencio de un archivo es cero digital; el de una sala no. Medido
+      // acá: ruido de banda ancha a −40 dB (micrófono de laptop en un cuarto
+      // normal) da **0,249**, que es el nivel de su VOZ hablando (0,217). Toda
+      // la ley de la r26 quedó calibrada contra un archivo y cableada a un
+      // micrófono — «como ya están vibrando todo el tiempo, casi no se alcanza
+      // a distinguir».
+      voiceAboveFloor(0.25, 0.25) === 0 &&
+      voiceAboveFloor(0.05, 0.25) === 0 &&
+      voiceAboveFloor(1, 0) === 1 &&
+      voiceAboveFloor(0.6, 0.25) > 0 &&
+      voiceAboveFloor(0.6, 0.25) < 0.6 &&
+      // el piso BAJA rápido y SUBE despacio: encontrar el silencio es urgente,
+      // confundir una frase con un cuarto más ruidoso sería sordera
+      advanceVoiceFloor(0.3, 0.1, 0.4) < advanceVoiceFloor(0.3, 0.1, 0.05) &&
+      // en el mismo paso de tiempo, baja veinte veces más de lo que sube
+      0.3 - advanceVoiceFloor(0.3, 0.0, 0.05) >
+        20 * (advanceVoiceFloor(0.3, 0.9, 0.05) - 0.3) &&
+      VOICE_FLOOR_RISE_TAU_MS > 20 * VOICE_FLOOR_FALL_TAU_MS &&
+      n3cVozMic.includes("advanceVoiceFloor(piso, crudo, dt)") &&
+      n3cVozMic.includes('setAuraRef.current("listening", voiceAboveFloor(crudo, piso))') &&
+      n3cVozBanco.includes("advanceVoiceFloor(piso, crudo, dt)") &&
+      n3cVozBanco.includes("voiceAboveFloor(crudo, piso)") &&
       // …y el envolvente POR CUADRO se fue del contrato: mientras siga
       // exportado, alguien lo puede volver a usar y la voz vuelve a depender
       // de a cuántos hercios vaya la pantalla
@@ -29715,7 +29774,23 @@ assert(
       // menisco son movimiento, así que siguen con el rápido
       n3ShaderCode.includes("float energy = 0.15 + 0.055*breath + uVoiceSlow*0.26;") &&
       n3ShaderCode.includes("soul = sc * halo * (0.055 + 0.24*uVoiceSlow);") &&
-      n3ShaderCode.includes("ring *= (1.0 + uVoice * ringNoise * 2.2) * ringFar;") &&
+      // ── N3C r27 · EL RELOJ RÁPIDO CAMBIA VELOCIDADES, NUNCA AMPLITUDES ──
+      //
+      // Es el principio que faltaba y su ausencia fue el temblor: «apenas prendo
+      // el micrófono todos los orbes vibran y titilan». Una amplitud colgada del
+      // reloj de las sílabas crece y se encoge cuatro veces por segundo, o sea
+      // mueve la imagen para adelante y para atrás. Medido con la coherencia
+      // entre cuadros consecutivos: el suyo hablando +0,358, el nuestro −0,466,
+      // y el nuestro con nivel CONSTANTE +0,372 — el dibujo estaba bien.
+      //
+      // Por eso el shader ya no recibe el reloj rápido: NADA que desplace un
+      // píxel puede colgar de él. Lo rápido son la fuerza del fluido y el ritmo
+      // del reloj del campo, y los dos viven fuera del shader.
+      !/uniform float[^;]*\buVoice\b/u.test(n3ShaderCode) &&
+      n3LiveCode.includes("orbFieldDrive(animatedVoice, waveEnergy)") &&
+      n3LiveCode.includes("voice: animatedVoice,") &&
+      n3ShaderCode.includes("ring *= (1.0 + uVoiceSlow * ringNoise * 2.2) * ringFar;") &&
+      n3ShaderCode.includes("float drive = clamp(uVoiceSlow * 0.9 + uWave * 0.25, 0.0, 1.0);") &&
 
       // ── 3 · EL DIPOLO, EJECUTADO ──
       n3cDipolo != null &&
@@ -29793,6 +29868,20 @@ assert(
       !/nivelRef\.current = [^;]*(Math\.sin|performance\.now|Date\.now)/u
         .test(n3cVozBanco) &&
       n3cVozBanco.includes("nivelVivo={nivelVivo}") &&
+      // ── N3C r27 · EL RELOJ DEL CAMPO SE INTEGRA TAMBIÉN EN LA PROBETA ───
+      //
+      // La probeta decía «el MISMO reloj que el santuario» y hacía otra cosa: el
+      // santuario INTEGRA (`advanceOrbField`, monótono) y ella multiplicaba el
+      // tiempo acumulado por la velocidad de ESTE instante. Con la voz quieta da
+      // igual; con la voz cambiando, a los 20 s un cambio de velocidad del 10%
+      // movía el reloj DOS SEGUNDOS de golpe, y hacia ATRÁS al bajar.
+      //
+      // O sea que la mesa de luz exageraba una sacudida que el santuario no
+      // tiene — tercera vez en el bloque que el instrumento miente. Medido: la
+      // coherencia entre cuadros pasó de −0,463 a +0,362 con sólo arreglar esto.
+      n3cSpecimenCode.includes("field: relojCampo,") &&
+      n3cSpecimenCode.includes("relojCampo = advanceOrbField(") &&
+      !/field: tiempo \* orbFieldSpeed/u.test(n3cSpecimenCode) &&
       // …y la probeta integra con la MISMA función pura que el santuario, no
       // con una copia suya
       n3cSpecimenCode.includes("advanceVoiceTau(vozRapida, objetivo, dt, VOICE_MOTION_TAU_MS)") &&

@@ -266,7 +266,7 @@ const FRAGMENT_SOURCE = `
 #endif
 precision highp float;
 varying vec2 vP;
-uniform float uTime, uLevel, uEnergy, uDay, uMat, uVoice, uPresence, uSpin;
+uniform float uTime, uLevel, uEnergy, uDay, uMat, uPresence, uSpin;
 uniform float uVoiceSlow;
 uniform float uSeed;
 uniform float uWave, uBob, uDepth, uEnv, uField;
@@ -769,8 +769,10 @@ float waterHeight(vec3 p, float detail){
   }
   // LA VOZ, EN LA SUPERFICIE. Un tren de ondas concéntrico que sale del centro
   // del líquido: la misma superficie que ya refleja y refracta, moviéndose. Con
-  // uVoice = 0 este término es cero exacto — no hay onda de adorno.
-  w += WAVE_AMP * VOICE_AMP * uVoice
+  // uVoiceSlow = 0 este término es cero exacto — no hay onda de adorno.
+  // r27 · la AMPLITUD va con el reloj lento (ver el principio en 'drive'); la
+  // fase sigue corriendo sola, que es lo que la hace una onda y no un latido.
+  w += WAVE_AMP * VOICE_AMP * uVoiceSlow
      * sin(length(p.xz) * VOICE_FREQ - uTime * VOICE_SPEED);
   // EL MENISCO: una película fina que trepa la pared, y que se APAGA cuando
   // queda poca agua. Un charco no tiene menisco de vaso lleno.
@@ -805,7 +807,7 @@ vec3 waterNormal(vec3 p, float detail){
   // Es la misma trampa que N3B pagó con el 'sheen': un relieve que no cambia
   // cómo entra la luz no es un relieve, es un dibujo.
   float rho = max(length(p.xz), 0.0004);
-  g += (p.xz / rho) * WAVE_AMP * VOICE_AMP * uVoice * VOICE_FREQ
+  g += (p.xz / rho) * WAVE_AMP * VOICE_AMP * uVoiceSlow * VOICE_FREQ
      * cos(rho * VOICE_FREQ - uTime * VOICE_SPEED);
   return normalize(vec3(-g.x, 1.0, -g.y));
 }
@@ -824,7 +826,27 @@ void main(){
   // sube la distorsión del flujo, que es lo que en su orbe hace que las ondas
   // «se muevan mientras habla». Le sumamos un poco de la agitación del líquido,
   // porque un chapoteo también mueve el color.
-  float drive = clamp(uVoice * 0.9 + uWave * 0.25, 0.0, 1.0);
+  //
+  // ── N3C r27 · EL RELOJ RÁPIDO CAMBIA VELOCIDADES, NUNCA AMPLITUDES ────────
+  //
+  // Éste es el principio que faltaba, y su ausencia es el temblor que el founder
+  // vio: «apenas prendo el micrófono todos los orbes vibran y titilan».
+  //
+  // 'drive' entra en 'amount', que es CUÁNTO se deforma el dominio del ruido: o
+  // sea, cuánto se desplaza cada píxel respecto de donde muestrearía en reposo.
+  // Colgado del reloj rápido, ese desplazamiento crecía y se encogía con CADA
+  // SÍLABA — y una amplitud que sube y baja cuatro veces por segundo mueve la
+  // imagen para adelante y para atrás. Eso no es una ola: es una vibración.
+  //
+  // Medido con la correlación entre cuadros consecutivos (si el cambio sigue en
+  // la misma dirección, hay flujo; si se invierte, hay temblor):
+  //   · el suyo, hablando ....... +0,358
+  //   · el nuestro, hablando .... −0,466   ← se invertía cada cuadro
+  //   · el nuestro, con nivel CONSTANTE ... +0,372
+  // O sea que el dibujo estaba bien y lo que fallaba era colgar amplitudes del
+  // reloj de las sílabas. Una VELOCIDAD sí puede ir con el rápido —acelerar un
+  // flujo no lo invierte—; una AMPLITUD no.
+  float drive = clamp(uVoiceSlow * 0.9 + uWave * 0.25, 0.0, 1.0);
   {
     // EL CENTRO DEL CAMPO ES EL CENTRO DEL LÍQUIDO, no el del vidrio. Es la
     // diferencia entre «su campo, recortado por una línea de agua» y «su campo,
@@ -1180,8 +1202,8 @@ void main(){
   float ringFar = smoothstep(-0.30, 0.42, -qSurf.z / max(wallR, 0.001));
   float ringAng = atan(qSurf.z, qSurf.x) * 0.15915494;
   float ringNoise = texture2D(uPerlin, vec2(ringAng + uField * 0.35, 0.5)).r - 0.5;
-  ring *= (1.0 + uVoice * ringNoise * 2.2) * ringFar;
-  body += mix(uAcc, vec3(1.0), 0.55) * ring * surfaceSeen * (0.20 + 0.55*uVoice);
+  ring *= (1.0 + uVoiceSlow * ringNoise * 2.2) * ringFar;
+  body += mix(uAcc, vec3(1.0), 0.55) * ring * surfaceSeen * (0.20 + 0.55*uVoiceSlow);
 
   vec3 R = reflect(-V, N);
   float schlick = 0.04 + 0.96*pow(1.0 - ndv, 5.0);
@@ -1324,7 +1346,9 @@ void main(){
   // El dipolo medido, aplicado como la capa de volumen: multiplica el color ya
   // compuesto, así que no toca el fluido ni el campo. Lo mueve uVoiceShape —el
   // envolvente LENTO (900 ms)— porque lo que ellos mueven despacio es
-  // exactamente el brillo; la turbulencia sigue yendo por uVoice.
+  // exactamente el brillo. La turbulencia NO pasa por el shader: va por la
+  // fuerza del fluido y por el ritmo del reloj del campo, las dos con el reloj
+  // rápido y las dos fuera de acá — que es el principio de la r27.
   //
   // Con el orbe callado el factor es 1,0 EXACTO —se le resta el piso de
   // voiceTarget("calm")—, así que un orbe en silencio se ve como antes de esta
@@ -1390,7 +1414,6 @@ interface ProgramBundle {
     day: WebGLUniformLocation | null;
     material: WebGLUniformLocation | null;
     seed: WebGLUniformLocation | null;
-    voice: WebGLUniformLocation | null;
     voiceSlow: WebGLUniformLocation | null;
     presence: WebGLUniformLocation | null;
     spin: WebGLUniformLocation | null;
@@ -1450,7 +1473,6 @@ function linkTierProgram(
       day: uniform("uDay"),
       material: uniform("uMat"),
       seed: uniform("uSeed"),
-      voice: uniform("uVoice"),
       voiceSlow: uniform("uVoiceSlow"),
       presence: uniform("uPresence"),
       spin: uniform("uSpin"),
@@ -1763,7 +1785,6 @@ export function createOrbRenderer(
         gl.uniform1f(locations.energy, orb.energy);
         gl.uniform1f(locations.material, orb.material);
         gl.uniform1f(locations.seed, orb.seed);
-        gl.uniform1f(locations.voice, orb.voice);
         gl.uniform1f(locations.voiceSlow, orb.voiceSlow);
         gl.uniform1f(locations.presence, orb.presence);
         gl.uniform1f(locations.spin, orb.spin);

@@ -8,7 +8,11 @@ import {
 } from "react";
 import type { ChatDeliveryResult } from "../../transaction-actions";
 import {
+  advanceVoiceFloor,
   spectrumAverage,
+  voiceAboveFloor,
+  VOICE_ANALYSER_FFT_SIZE,
+  VOICE_ANALYSER_SMOOTHING,
   selectVoiceRecordingFormat,
   stopMediaStreamTracks,
   voiceDeliverySucceeded,
@@ -341,13 +345,12 @@ export function useVoiceCapture({
         throw new Error("audio context unavailable");
       }
       const analyser = context.createAnalyser();
-      analyser.fftSize = 1024;
-      // N3C r26 · SIN SUAVIZADO EN EL ANALIZADOR. Era 0,72, que es un envolvente
-      // escondido dentro del instrumento: la señal llegaba ya redondeada y las
-      // dos constantes de tiempo que sí medimos —25 ms y 900 ms— se sumaban a
-      // una tercera que nadie eligió. El analizador ahora entrega el nivel
-      // crudo y el suavizado vive donde se puede leer, en `advanceVoiceTau`.
-      analyser.smoothingTimeConstant = 0;
+      // N3C r27 · LOS AJUSTES SON LOS SUYOS, leídos del analizador vivo de su
+      // página. La r26 los puso en 1024/0 razonando que el suavizado debe vivir
+      // donde se pueda leer — y así quitó los ~75 ms que ellos SÍ tienen, con lo
+      // que nuestra señal quedó cuatro veces más nerviosa. Ése era el temblor.
+      analyser.fftSize = VOICE_ANALYSER_FFT_SIZE;
+      analyser.smoothingTimeConstant = VOICE_ANALYSER_SMOOTHING;
       const source = context.createMediaStreamSource(stream);
       source.connect(analyser);
       analyserRef.current = analyser;
@@ -359,10 +362,22 @@ export function useVoiceCapture({
       // zumbido del mismo volumen, que es lo que uno quiere de un orbe que
       // reacciona a que le HABLEN.
       const bins = new Uint8Array(analyser.frequencyBinCount);
+      // N3C r27 · el piso de ESTA sala. Arranca en el primer nivel medido, no en
+      // cero: partir de cero haría que los primeros segundos leyeran «gritando»
+      // hasta que el seguidor bajara.
+      let piso = -1;
+      let ultimoMs = -1;
       const sampleLevel = () => {
         if (recorderRef.current?.state !== "recording") return;
         analyser.getByteFrequencyData(bins);
-        setAuraRef.current("listening", spectrumAverage(bins));
+        const crudo = spectrumAverage(bins);
+        const ahora = performance.now();
+        const dt = ultimoMs < 0
+          ? 1 / 60
+          : Math.min(1 / 20, Math.max(1 / 240, (ahora - ultimoMs) / 1_000));
+        ultimoMs = ahora;
+        piso = piso < 0 ? crudo : advanceVoiceFloor(piso, crudo, dt);
+        setAuraRef.current("listening", voiceAboveFloor(crudo, piso));
         analyserFrameRef.current = window.requestAnimationFrame(sampleLevel);
       };
       analyserFrameRef.current = window.requestAnimationFrame(sampleLevel);

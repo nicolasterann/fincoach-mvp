@@ -19,6 +19,7 @@ import {
   type OrbMatter,
 } from "./shell-orb-contract";
 import {
+  advanceOrbField,
   advanceOrbWater,
   createOrbWaterState,
   orbFieldDrive,
@@ -343,6 +344,7 @@ export function OrbSpecimen({
     // la probeta, que es lo que significa una voz sostenida.
     let vozRapida = voice;
     let vozLenta = voice;
+    let relojCampo = time * orbFieldSpeed(orbFieldDrive(voice, wave));
     let ultimoMs = -1;
     const dibujar = (tiempo: number) => paint(
       canvas,
@@ -366,9 +368,20 @@ export function OrbSpecimen({
           bob,
           depth: 0,
           env,
-          // Un cuadro fijo, pero con el MISMO reloj que el santuario: la
-          // velocidad sale de `orbFieldSpeed`, no de un número escrito acá.
-          field: tiempo * orbFieldSpeed(orbFieldDrive(vozRapida, wave)),
+          // N3C r27 · EL RELOJ DEL CAMPO SE INTEGRA, NO SE MULTIPLICA.
+          //
+          // Decía «el MISMO reloj que el santuario» y no lo era: el santuario
+          // INTEGRA (`advanceOrbField`, monótono) y acá se multiplicaba el
+          // tiempo acumulado por la velocidad de ESTE instante. Con la voz
+          // quieta da lo mismo; con la voz cambiando, no: a los 20 segundos, un
+          // cambio de velocidad del 10% mueve el reloj DOS SEGUNDOS de golpe, y
+          // cuando la velocidad baja lo mueve dos segundos HACIA ATRÁS.
+          //
+          // O sea que la mesa de luz mostraba una sacudida que el santuario no
+          // tiene, y encima proporcional a cuánto llevaba abierta. Es la tercera
+          // vez en este bloque que el instrumento miente: un instrumento que
+          // exagera lo que hay que juzgar es tan inútil como uno que lo esconde.
+          field: relojCampo,
           material: orbPresentationMaterial({ kind, matter, fill }),
           liquid: paleta?.liquid ?? readCssColor(canvas, `--kipu-liquid-${kind}`),
           deep: paleta?.deep ?? readCssColor(canvas, `--kipu-deep-${kind}`),
@@ -400,6 +413,11 @@ export function OrbSpecimen({
         const objetivo = voiceTarget("listening", nivelVivo());
         vozRapida = advanceVoiceTau(vozRapida, objetivo, dt, VOICE_MOTION_TAU_MS);
         vozLenta = advanceVoiceTau(vozLenta, objetivo, dt, VOICE_SHAPE_TAU_MS);
+        relojCampo = advanceOrbField(
+          relojCampo,
+          orbFieldDrive(vozRapida, wave),
+          dt,
+        );
       }
       ultimoMs = ahora;
       dibujar(time + (ahora - t0) / 1000);

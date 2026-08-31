@@ -313,7 +313,7 @@ const mutations = [
     name: "N3C-3",
     result: "vuelve el pecado del 'sheen' de N3B: la onda vive en la ALTURA y no en la NORMAL, así que no refleja distinto",
     file: SHADER,
-    from: "  float rho = max(length(p.xz), 0.0004);\n  g += (p.xz / rho) * WAVE_AMP * VOICE_AMP * uVoice * VOICE_FREQ\n     * cos(rho * VOICE_FREQ - uTime * VOICE_SPEED);\n",
+    from: "  float rho = max(length(p.xz), 0.0004);\n  g += (p.xz / rho) * WAVE_AMP * VOICE_AMP * uVoiceSlow * VOICE_FREQ\n     * cos(rho * VOICE_FREQ - uTime * VOICE_SPEED);\n",
     to: "",
   },
   {
@@ -428,7 +428,7 @@ const mutations = [
     name: "N3C-3",
     result: "vuelve la SEGUNDA línea de agua: se dibuja también el borde cercano de la elipse y aparecen dos arcos paralelos",
     file: SHADER,
-    from: "  ring *= (1.0 + uVoice * ringNoise * 2.2) * ringFar;",
+    from: "  ring *= (1.0 + uVoiceSlow * ringNoise * 2.2) * ringFar;",
     to: "  ring *= (1.0 + uVoice * ringNoise * 2.2);",
   },
   {
@@ -521,6 +521,54 @@ const mutations = [
   {
     name: "N3C-9",
     result:
+      "vuelve el piso de ruido sin restar: el silencio de una sala vale 0,25 —el nivel de una VOZ— y el orbe vive arriba de su rango",
+    file: MIC,
+    from: "        setAuraRef.current(\"listening\", voiceAboveFloor(crudo, piso));",
+    to: "        setAuraRef.current(\"listening\", crudo);",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "el piso deja de bajar: nunca encuentra el silencio y el orbe se queda encendido para siempre",
+    file: VOZ,
+    from: "export const VOICE_FLOOR_FALL_TAU_MS = 400;",
+    to: "export const VOICE_FLOOR_FALL_TAU_MS = 25000;",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "el piso sube tan rapido como baja: una frase larga se lo lleva puesto y el orbe se apaga mientras hablas",
+    file: VOZ,
+    from: "export const VOICE_FLOOR_RISE_TAU_MS = 25_000;",
+    to: "export const VOICE_FLOOR_RISE_TAU_MS = 400;",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "vuelve el analizador sin suavizado: la senal queda 4x mas nerviosa que la suya y el orbe TIEMBLA",
+    file: VOZ,
+    from: "export const VOICE_ANALYSER_SMOOTHING = 0.8;",
+    to: "export const VOICE_ANALYSER_SMOOTHING = 0;",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "una AMPLITUD vuelve al reloj de las silabas: la deformacion crece y se encoge 4 veces por segundo — coherencia −0,46",
+    file: SHADER,
+    from: "  float drive = clamp(uVoiceSlow * 0.9 + uWave * 0.25, 0.0, 1.0);",
+    to: "  float drive = clamp(uVoice * 0.9 + uWave * 0.25, 0.0, 1.0);",
+  },
+  {
+    name: "N3C-9",
+    result:
+      "la probeta vuelve a MULTIPLICAR el reloj del campo: exagera una sacudida que el santuario no tiene, peor cuanto mas lleva abierta",
+    file: SPEC,
+    from: "          field: relojCampo,",
+    to: "          field: tiempo * orbFieldSpeed(orbFieldDrive(vozRapida, wave)),",
+  },
+  {
+    name: "N3C-9",
+    result:
       "el orbe deja de ahuecarse al hablar: se apaga el anillo y queda la firma que el founder señalo en el de ellos",
     file: SHADER,
     from: "export const ORB_VOICE_RING_GAIN = 1.62;",
@@ -592,10 +640,10 @@ const mutations = [
   {
     name: "N3C-9",
     result:
-      "vuelve el suavizado escondido dentro del analizador: una tercera constante de tiempo que nadie eligio",
+      "el microfono deja de usar los ajustes de la referencia: vuelve a ser 4x mas nervioso que el suyo",
     file: MIC,
-    from: "      analyser.smoothingTimeConstant = 0;",
-    to: "      analyser.smoothingTimeConstant = 0.72;",
+    from: "      analyser.smoothingTimeConstant = VOICE_ANALYSER_SMOOTHING;",
+    to: "      analyser.smoothingTimeConstant = 0;",
   },
   {
     name: "N3C-9",
@@ -610,7 +658,7 @@ const mutations = [
     result:
       "el banco de voz deja de escuchar el microfono: se mueve solo, que es una animacion disfrazada de medicion",
     file: BANCO,
-    from: "      const nivel = spectrumAverage(bins);",
+    from: "      const nivel = voiceAboveFloor(crudo, piso);",
     to: "      const nivel = 0.3;",
   },
   {

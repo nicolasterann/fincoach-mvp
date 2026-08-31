@@ -362,7 +362,12 @@ export function orbFluidSplats(input: {
         tx: px * ORB_FLUID_TRAIL * force * 1.6,
         ty: py * ORB_FLUID_TRAIL * force * 1.6,
         tz: ORB_FLUID_TRAIL * force,
-        radius: 0.0180 + 0.016 * voice,
+        // N3C r27 · la voz agranda la salpicadura en vez de acelerarla. Subir
+        // la velocidad choca con el tope del solver (960 de 1.000 a voz 1) y
+        // deja el salto duro de la r8; agrandar el radio mueve MÁS FLUIDO con la
+        // misma velocidad, que es momento y no violencia. Medido: el suyo
+        // multiplica su movimiento por 4,5 al hablar y el nuestro iba en 2,2.
+        radius: 0.0180 + 0.062 * voice,
       });
     }
   }

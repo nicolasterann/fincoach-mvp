@@ -2355,3 +2355,115 @@ de nivel y de los dos envolventes se mueven con la voz. Sin micrófono lo dice y
 deja el deslizador: un banco que se mueve sin entrada es una animación
 disfrazada de medición.
 
+
+---
+
+## Ronda 27 — el temblor: tres causas, y dos eran mías
+
+El founder, probando la r26: *«apenas prendo el micrófono todos los orbes
+empiezan a vibrar y titilar; cuando hablo vibran más fuerte aún pero no se ve
+ningún movimiento de olas. Es de los peores demos que he visto.»*
+
+Tenía razón, y la parte que más importa es la segunda: **medí un promedio
+estadístico y nunca miré el nuestro moviéndose con sonido.**
+
+### La métrica de la r26 no podía ver el defecto
+
+La r26 midió «cambio por cuadro» (media de |ΔL|) y yo la subí a propósito de
+1,8 a 3,7, llamándolo progreso. **Esa métrica vale exactamente lo mismo para una
+ola que fluye y para un temblor**: las dos cambian píxeles. Lo que hace falta es
+la **coherencia**: la correlación entre el cambio de un cuadro y el del
+siguiente. Si el cambio continúa en la misma dirección hay flujo; si se
+invierte, hay vibración.
+
+| | callado | hablando |
+|---|---|---|
+| ellos | +0,271 | **+0,358** |
+| nosotros (r26) | +0,133 | **−0,463** |
+
+Coherencia **negativa** es la definición matemática de temblar. Su ojo y el
+número decían lo mismo, y mi número anterior no podía decirlo.
+
+### Causa 1 · el micrófono no es un archivo (mi error de calibración)
+
+`getByteFrequencyData` **no reparte amplitud: reparte decibelios** entre −100 y
+−30. El silencio de un archivo es cero digital y da 0,000 — y toda la ley de la
+r26 se calibró contra un archivo reproducido en su página.
+
+Medido acá: ruido de banda ancha a −40 dB —un micrófono de laptop en una sala
+normal— da **0,249**, que es exactamente el nivel de su **voz hablando** (0,217).
+O sea que al prender el micrófono el orbe creía que le estaban gritando, se
+quedaba arriba de su rango, y hablar apenas lo movía: *«como ya están vibrando
+todo el tiempo, casi no se alcanza a distinguir»*.
+
+Arreglo: un **piso de ruido que se sigue solo** (baja rápido para encontrar el
+silencio, sube muy despacio para no confundir una frase con un cuarto ruidoso) y
+se resta. Con eso el silencio de cualquier sala vale cero y la voz recupera todo
+el recorrido.
+
+### Causa 2 · le quité a nuestro analizador el suavizado que ellos sí tienen
+
+La r26 puso `smoothingTimeConstant = 0` razonando que «el suavizado debe vivir
+donde se pueda leer». Sonaba a principio y era un error de hecho: enganchando su
+analizador vivo, **el suyo usa 0,8** (≈75 ms) y `fftSize = 256`. Los 25 ms que
+medí son los que ellos agregan ENCIMA de eso. Nuestra señal quedó cuatro veces
+más nerviosa que la suya por construcción.
+
+### Causa 3 · el instrumento mentía, y era lo más grande
+
+La probeta calculaba el reloj del campo como **`tiempo × velocidad`** mientras
+el santuario lo **integra**. Con la voz quieta da lo mismo; con la voz cambiando,
+no: a los 20 segundos de abierta la hoja, un cambio de velocidad del 10% movía el
+reloj **dos segundos de golpe**, y al bajar la velocidad lo movía dos segundos
+**hacia atrás**. La mesa de luz mostraba una sacudida que el santuario no tiene,
+y proporcional a cuánto llevaba abierta.
+
+Es la tercera vez en este bloque que el instrumento miente. Un instrumento que
+**exagera** lo que hay que juzgar es tan inútil como uno que lo esconde.
+
+### El principio que faltaba
+
+**El reloj rápido cambia VELOCIDADES; nunca AMPLITUDES.** Una amplitud colgada
+del reloj de las sílabas crece y se encoge cuatro veces por segundo, o sea mueve
+la imagen para adelante y para atrás. Una velocidad no: acelerar un flujo no lo
+invierte. Por eso el shader ya **no recibe el reloj rápido** — lo rápido son la
+fuerza del fluido y el ritmo del reloj del campo, y los dos viven fuera de él.
+
+### El resultado
+
+| | callado | hablando |
+|---|---|---|
+| ellos | +0,271 | +0,358 |
+| nosotros | **+0,232** | **+0,466** |
+
+El cambio por cuadro hablando cayó **35×** (0,043 → 0,0012): eso que se fue era
+la vibración. Lo que queda es flujo, y más organizado que el suyo.
+
+Movimiento al hablar: **2,8×** contra su 4,5×. Se subió agrandando la
+salpicadura de la voz en vez de acelerarla —la velocidad ya toca el tope del
+solver (960 de 1.000) y pasarse trae de vuelta el defecto de la r8—, y cada
+subida se aceptó **sólo si la coherencia no bajaba**. Ocho agitadores dieron
+menos que seis (2,52 contra 2,83): se quedan seis.
+
+### El dipolo, re-verificado sobre el código final
+
+En la condición en la que se calibró (nivel sostenido, ~2.400 cuadros por
+estado, sólo cuadros asentados):
+
+| r | 0,05 | 0,14 | 0,23 | 0,33 | 0,42 | 0,52 | 0,61 | 0,70 | 0,80 | 0,89 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| ellos | −17,6 | −17,2 | −16,0 | −12,3 | −7,0 | −2,2 | +1,9 | +7,2 | +13,0 | +11,4 |
+| nosotros | −18,2 | −18,4 | −17,3 | −12,8 | −7,1 | −1,3 | +4,5 | +9,8 | +15,4 | +12,7 |
+
+**Error medio 1,35 puntos porcentuales** (mejor que los 1,75 de la r26), máximo
+2,6; nodo 0,55 contra 0,58, pico 0,81 contra 0,82.
+
+Una medición intermedia con voz modulada dio −4,9% en el centro y pareció una
+regresión: no lo era. Con sílabas, el envolvente lento promedia los huecos entre
+ellas y nunca llega a su asíntota, así que el dipolo es proporcionalmente más
+chico — el mismo código, otra condición. Comparar dos mediciones tomadas en
+condiciones distintas es la manera más fácil de inventarse un defecto.
+
+Gate **892/892** · mutación **117 muertas, 0 fallas** · lint 0 errores · build
+verde.
+
