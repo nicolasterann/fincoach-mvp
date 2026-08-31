@@ -70,19 +70,20 @@ const PALETA_PROPUESTA: Record<OrbKind, { liquid: OrbRgb; deep: OrbRgb; accent: 
   //
   // Los TONOS son los que él aprobó; lo único que cambia es a qué claridad se
   // ponen para que las cinco pesen lo mismo.
-  saldo: { liquid: [0.167, 0.3391, 0.3047], accent: [0.6447, 0.8002, 0.7017], deep: [0.0113, 0.0359, 0.0269] },
-  reserva: { liquid: [0.1641, 0.3182, 0.5197], accent: [0.6348, 0.7873, 0.858], deep: [0.015, 0.0289, 0.0848] },
-  metas: { liquid: [0.347, 0.256, 0.5973], accent: [0.8696, 0.7228, 0.806], deep: [0.0429, 0.0221, 0.0701] },
-  patrimonio: { liquid: [0.2544, 0.3053, 0.3816], accent: [0.8108, 0.7532, 0.6779], deep: [0.0217, 0.0306, 0.0484] },
-  deuda: { liquid: [0.5071, 0.2488, 0.1972], accent: [0.8758, 0.7236, 0.7794], deep: [0.0623, 0.0208, 0.0263] },
+  // v6 · los ajustes finos del founder, sobre la misma escalera de luminancia
+  saldo: { liquid: [0.167, 0.3391, 0.3047], accent: [0.6897, 0.7951, 0.6194], deep: [0.0113, 0.0358, 0.0276] },
+  reserva: { liquid: [0.1553, 0.3236, 0.4919], accent: [0.5348, 0.8137, 0.8909], deep: [0.0149, 0.0296, 0.0781] },
+  metas: { liquid: [0.3637, 0.2472, 0.6356], accent: [0.8826, 0.726, 0.7364], deep: [0.0448, 0.0214, 0.0716] },
+  patrimonio: { liquid: [0.228, 0.3108, 0.4053], accent: [0.7788, 0.7569, 0.7351], deep: [0.0197, 0.031, 0.0506] },
+  deuda: { liquid: [0.5944, 0.2217, 0.2088], accent: [0.8829, 0.7296, 0.699], deep: [0.0665, 0.0199, 0.023] },
 };
 
 const ETIQUETA_PROPUESTA: Record<OrbKind, string> = {
-  saldo: "agua → verde pino · el permiso de hoy",
-  reserva: "azul puro → celeste casi blanco · la bóveda",
-  metas: "morado azulado → rosa · lo que viene",
-  patrimonio: "piedra azul → veta cálida · lo construido",
-  deuda: "rojo → rosa místico · el peso, sin alarma",
+  saldo: "agua → verde amarillento · el permiso de hoy",
+  reserva: "azul → capri caribe · la bóveda",
+  metas: "morado azulado → palo de rosa · lo que viene",
+  patrimonio: "piedra azul → gris · lo construido",
+  deuda: "rojo → salmón · el peso, sin alarma",
 };
 
 export default async function VidrioPage({

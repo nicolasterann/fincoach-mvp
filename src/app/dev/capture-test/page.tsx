@@ -30261,6 +30261,27 @@ assert(
       //  · y el campo se volvió un sustrato LENTO para que mande el fluido.
       // Si el campo vuelve a correr, vuelve a mandar y el perfil se aplana:
       // medido, con base 0,85 la razón cae a 1,0; con 0,42 da 2,0.
+      // ── N3C r23 · EL VOLUMEN ES UNA CAPA ENCIMA, Y ES SUTIL ──────────────
+      //
+      // El founder: «un efecto super leve y sutil de sombra para que el orbe se
+      // vea más 3D, pero SIN DAÑAR EL MOVIMIENTO que ya logramos, sólo como una
+      // capa encima». Las dos condiciones se pinchan.
+      //
+      // «Capa encima» significa que multiplica el color YA COMPUESTO al final y
+      // no toca el campo, el fluido ni el muestreo — si entrara antes, cambiaría
+      // el movimiento. Verificado tras aplicarlo: razón borde/centro 2,0 y
+      // concentricidad 0,688 (antes 2,0 y 0,689): idénticas.
+      //
+      // «Sutil» va con los dos topes. Pasado ahí el orbe se vuelve una bola de
+      // billar en vez de un cuerpo de luz.
+      /vec3 outCol = tonemap\(\(col\*edge \+ soul\) \* volumen\);/u.test(n3ShaderCode) &&
+      (() => {
+        const rim = n3ShaderCode.match(/const float ORB_SHADE_RIM = ([0-9.]+);/u);
+        const key = n3ShaderCode.match(/const float ORB_SHADE_KEY = ([0-9.]+);/u);
+        if (rim == null || key == null) return false;
+        const r = Number.parseFloat(rim[1]!), k = Number.parseFloat(key[1]!);
+        return r > 0 && r <= 0.30 && k > 0 && k <= 0.16;
+      })() &&
       n3ShaderCode.includes("gFlow *= mix(ORB_RIM_CALM, 1.0, rOrb * rOrb);") &&
       (() => {
         const m = n3ShaderCode.match(/const float ORB_RIM_CALM = ([0-9.]+);/u);

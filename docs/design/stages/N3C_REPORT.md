@@ -2108,3 +2108,55 @@ La misma física se ve por fin igual en las cinco capas.
 | latido periódico | ninguno | — |
 
 Gate **891/891** · mutación **96 muertas, 0 fallas** · lint 0 errores · build verde.
+
+---
+
+## Ronda 23 — los siete ajustes finos
+
+### Paleta v6 (propuesta, sigue sin tocar tokens)
+
+| capa | pedido | hecho |
+|---|---|---|
+| saldo | «toques de verde amarillento, muy sutiles» | acento 142° → **96°** (verde-lima), saturación baja |
+| reserva | «celeste claro intenso tipo capri, aguas del caribe» | acento 199° → **193°**, saturación 0,44 → **0,62** |
+| metas | «un gris o cafeciento está ensuciando» | el acento rosa (326°) se corre a **palo de rosa (356°)**: mezclado en RGB con el violeta ya no cae en el gris muerto |
+| patrimonio | «piedra más azulada, beige más gris» | líquido 216° → **212°**, acento saturación 0,26 → **0,09** — gama de grises con azul |
+| deuda | «sigue demasiado naranja, más salmón y rojo» | líquido 10° → **2°**, acento 338° → **10°** con saturación baja |
+
+Todo sobre la **misma escalera de luminancia** de la r22 (Y = 0,030 / 0,300 /
+0,760), que es lo que mantiene el movimiento aparente parejo entre capas.
+
+### El volumen — una capa encima, como pidió
+
+Se aplica al FINAL, multiplicando el color ya compuesto. No toca el campo, ni el
+fluido, ni el muestreo. Dos términos:
+
+- el contorno se apaga (`ORB_SHADE_RIM = 0,16`),
+- y hay un realce suave arriba a la izquierda (`ORB_SHADE_KEY = 0,07`).
+
+**Verificado que no dañó el movimiento**, que era su condición:
+
+| | antes de la sombra | con la sombra |
+|---|---|---|
+| razón borde/centro | 2,0 | **2,0** |
+| concentricidad | 0,689 | **0,688** |
+| flujo a 1 s | 0,0110 | 0,0123 |
+
+### El grano
+
+0,055 → **0,072** (en tema claro 0,020 → 0,026), dentro de los topes que la r11
+dejó puestos (piso 0,040, techo 0,090).
+
+### Y una trampa del propio instrumento
+
+Subir el grano **sube el suelo de la métrica de crestas**, porque el grano es
+energía de alta frecuencia por diseño. Comparar contra el suelo viejo daba a
+deuda un +35 % que parecía una regresión. Re-medido el suelo con el grano nuevo
+(0,0912 saldo · 0,1036 deuda), el exceso real es +7 % y +11…34 %: la misma banda
+de siempre.
+
+**Un suelo se vuelve a medir cada vez que cambia algo que lo mueve.** Y una
+medición que rebotó a 0,2588 resultó ser el lienzo equivocado: la pestaña había
+cambiado de hoja a mitad de la corrida.
+
+Gate **891/891** · mutación **98 muertas, 0 fallas** · lint 0 errores · build verde.

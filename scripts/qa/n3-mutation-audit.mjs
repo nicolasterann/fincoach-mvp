@@ -409,7 +409,7 @@ const mutations = [
     name: "N3C-5",
     result: "CABLE · el grano se calcula y no se suma: el campo pierde lo que más lo hace parecer material",
     file: SHADER,
-    from: "    gField += fieldGrain(fq) * (0.055 + 0.020*uDay) * uEnv;",
+    from: "    gField += fieldGrain(fq) * (0.072 + 0.026*uDay) * uEnv;",
     to: "",
   },
   // ── N3C ronda 3 · lo que el founder vio en el teléfono ────────────────────
@@ -541,7 +541,7 @@ const mutations = [
     result:
       "el grano vuelve por debajo del piso visible: el material se lee como degradado liso otra vez — «un poco mas de grain»",
     file: SHADER,
-    from: "    gField += fieldGrain(fq) * (0.055 + 0.020*uDay) * uEnv;",
+    from: "    gField += fieldGrain(fq) * (0.072 + 0.026*uDay) * uEnv;",
     to: "    gField += fieldGrain(fq) * (0.030 + 0.012*uDay) * uEnv;",
   },
   {
@@ -743,6 +743,22 @@ const mutations = [
     file: SIM,
     from: "  return 0.42 + (1 - Math.pow(bounded - 1, 2)) * 2.60;",
     to: "  return 1.55 + (1 - Math.pow(bounded - 1, 2)) * 2.60;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "se apaga el volumen: el orbe vuelve a leerse plano, sin la sombra de contorno ni el realce de luz",
+    file: SHADER,
+    from: "const float ORB_SHADE_RIM = 0.16;",
+    to: "const float ORB_SHADE_RIM = 0.0;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "el volumen se pasa de sutil: el orbe deja de ser un cuerpo de luz y se vuelve una bola de billar",
+    file: SHADER,
+    from: "const float ORB_SHADE_KEY = 0.07;",
+    to: "const float ORB_SHADE_KEY = 0.5;",
   },
   {
     name: "N3C-8",

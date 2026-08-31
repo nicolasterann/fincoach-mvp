@@ -299,6 +299,12 @@ const float ORB_SPHERE_K = 0.90;
 // N3C r21 · cuánto del desplazamiento del fluido llega al CENTRO del orbe. 1 =
 // plano (el defecto: el movimiento ignora el borde); 0 = el centro queda muerto.
 const float ORB_RIM_CALM = 0.30;
+// N3C r23 · el volumen, aplicado al final como capa. RIM = cuánto se apaga el
+// contorno; KEY = cuánto realza la luz. Los dos MUY bajos a propósito: es lo que
+// el founder pidió, «super leve y sutil», y pasado de ahí el orbe se vuelve una
+// bola de billar en vez de un cuerpo de luz.
+const float ORB_SHADE_RIM = 0.16;
+const float ORB_SHADE_KEY = 0.07;
 // N3C r21 · la ola que entra desde el borde. K = cuántas ondas caben en el
 // radio; W = qué tan rápido entra (0,62 rad/s ≈ 10 s de período: el registro
 // «tranquilo, con tiempo» que pidió el founder); A = qué tan honda, en unidades
@@ -911,7 +917,7 @@ void main(){
     // dibujada encima. La sensación de «viene de afuera» sale sola cuando el
     // movimiento nace en el borde.
     gField = saturar(fieldRamp(fieldGray(fp, uField, drive), fieldHue(fp, uField), 1.0 - uDay), 1.24) * uEnv;
-    gField += fieldGrain(fq) * (0.055 + 0.020*uDay) * uEnv;
+    gField += fieldGrain(fq) * (0.072 + 0.026*uDay) * uEnv;
     // donde el fluido acaba de pasar queda un rastro más claro: es la estela,
     // y es lo que hace que se vea DE DÓNDE viene el movimiento
     gField += mix(uAcc, vec3(1.0), 0.35) * gFlowMag * 0.075 * uEnv;
@@ -1217,7 +1223,23 @@ void main(){
 #endif
   float edge = 1.0 - smoothstep(1.0 - aa*1.3, 1.0 + aa*0.4, r);
 
-  vec3 outCol = tonemap(col*edge + soul);
+  // ── N3C r23 · EL VOLUMEN, COMO UNA CAPA ENCIMA ────────────────────────────
+  //
+  // El founder pidió «un efecto super leve y sutil de sombra para que el orbe se
+  // vea más 3D, pero sin dañar el movimiento, sólo como una capa encima». Va
+  // literalmente así: se aplica al FINAL, sobre el color ya compuesto, y no toca
+  // ni el campo ni el fluido ni el muestreo. El movimiento medido no cambia.
+  //
+  // Son las dos cosas que hacen leer una esfera y no un disco:
+  //  · el contorno se apaga (la superficie se aleja del ojo y de la luz),
+  //  · y hay un realce suave arriba a la izquierda, donde daría la luz.
+  // Ambas MULTIPLICAN, así que respetan lo que ya había debajo.
+  float rSombra = min(r, 1.0);
+  float apaga = 1.0 - ORB_SHADE_RIM * smoothstep(0.25, 1.0, rSombra) * rSombra;
+  vec2 luzDir = vec2(-0.34, -0.36);
+  float realce = exp(-dot(uv - luzDir, uv - luzDir) * 2.6);
+  vec3 volumen = vec3(apaga + ORB_SHADE_KEY * realce);
+  vec3 outCol = tonemap((col*edge + soul) * volumen);
   float outA = clamp(alpha*edge + soulA + shadow*(1.0-edge), 0.0, 1.0);
   gl_FragColor = vec4(outCol * uPresence, outA * uPresence);
 }`;
