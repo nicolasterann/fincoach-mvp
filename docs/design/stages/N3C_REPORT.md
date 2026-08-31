@@ -2193,3 +2193,27 @@ probetas quietas (r13, «solo veo fotos») y con la métrica ciega a lo permanen
 no comunicaba — que para el caso es lo mismo que estar mal.
 
 Gate **891/891** · mutación **98 muertas, 0 fallas** · lint 0 errores · build verde.
+
+---
+
+## Ronda 25 — las tres suciedades eran el mismo sitio
+
+El founder señaló tres cosas y las tres vivían en el **extremo oscuro** de su
+paleta:
+
+| capa | lo que vio | qué era | qué se hizo |
+|---|---|---|---|
+| metas | «un amarillo o beige de fondo lo ensucia» | el acento cálido (palo de rosa, 356°) mezclado en RGB con el violeta caía en un malva terroso | el acento pasa a **blanco azulado** (214°, sat 0,24) |
+| patrimonio | «un gris muy fuerte que sale a veces» | el oscuro pesaba demasiado | sube de luminancia y baja de saturación (0,44 → **0,26**) |
+| deuda | «un café oscuro demasiado fuerte» | mismo caso: rojo muy saturado a muy baja luminancia se lee marrón | sube y se desatura (0,54 → **0,30**) |
+
+**El oscuro subió para las CINCO** (Y 0,030 → 0,058), no sólo en las dos que él
+señaló: subirlo a la mitad de las capas rompería la escalera de luminancia, que
+es lo que mantiene parejo el movimiento aparente entre ellas (dispersión 2,47 →
+1,59 en la r22). Un ajuste local habría arreglado un síntoma y devuelto otro.
+
+Medido, hoy → propuesta: saldo 176°/0,68 → **137°/0,16** · reserva 212°/0,54 →
+**198°/0,39** · metas 268°/0,42 → **249°/0,21** · patrimonio 195°/0,30 →
+**212°/0,08** · deuda 36°/0,54 → **5°/0,30**.
+
+Gate **891/891** · mutación **98 muertas, 0 fallas** · lint 0 errores · build verde.

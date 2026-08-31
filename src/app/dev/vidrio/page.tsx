@@ -58,7 +58,7 @@ type Sheet = (typeof SHEETS)[number];
  * azul-turquesa.
  */
 const PALETA_PROPUESTA: Record<OrbKind, { liquid: OrbRgb; deep: OrbRgb; accent: OrbRgb }> = {
-  // v5 · MISMA ESCALERA DE LUMINANCIA para las cinco (Y = 0,030 / 0,300 / 0,760),
+  // v5 · MISMA ESCALERA DE LUMINANCIA para las cinco (Y = 0,058 / 0,300 / 0,760),
   // en el registro SOBRIO: saturaciones bajas, claros altos.
   //
   // La v3 igualaba la CLARIDAD HSL, que no es lo que ve el ojo: un verde y un
@@ -70,18 +70,31 @@ const PALETA_PROPUESTA: Record<OrbKind, { liquid: OrbRgb; deep: OrbRgb; accent: 
   //
   // Los TONOS son los que él aprobó; lo único que cambia es a qué claridad se
   // ponen para que las cinco pesen lo mismo.
-  // v6 · los ajustes finos del founder, sobre la misma escalera de luminancia
-  saldo: { liquid: [0.167, 0.3391, 0.3047], accent: [0.6897, 0.7951, 0.6194], deep: [0.0113, 0.0358, 0.0276] },
-  reserva: { liquid: [0.1553, 0.3236, 0.4919], accent: [0.5348, 0.8137, 0.8909], deep: [0.0149, 0.0296, 0.0781] },
-  metas: { liquid: [0.3637, 0.2472, 0.6356], accent: [0.8826, 0.726, 0.7364], deep: [0.0448, 0.0214, 0.0716] },
-  patrimonio: { liquid: [0.228, 0.3108, 0.4053], accent: [0.7788, 0.7569, 0.7351], deep: [0.0197, 0.031, 0.0506] },
-  deuda: { liquid: [0.5944, 0.2217, 0.2088], accent: [0.8829, 0.7296, 0.699], deep: [0.0665, 0.0199, 0.023] },
+  // v7 · tres correcciones, y las tres eran el EXTREMO OSCURO
+  //
+  //  · metas: «un amarillo o beige de fondo lo ensucia». Era el acento cálido
+  //    (palo de rosa, 356°): al mezclarse en RGB con el violeta caía en un
+  //    malva terroso. Ahora el acento es un BLANCO AZULADO (214°, saturación
+  //    0,24) — «menos cálido, más blanco puro y azul».
+  //  · patrimonio: «un gris muy fuerte que sale a veces». El oscuro sube de
+  //    luminancia y baja de saturación (0,44 → 0,26).
+  //  · deuda: «un café oscuro demasiado fuerte». Mismo remedio: el oscuro sube
+  //    y pierde saturación (0,54 → 0,30), así deja de leerse marrón.
+  //
+  // El oscuro sube para LAS CINCO (Y 0,030 → 0,058). Subirlo sólo en dos
+  // rompería la escalera de luminancia, que es lo que mantiene parejo el
+  // movimiento aparente entre capas (dispersión 2,47 → 1,59 en la r22).
+  saldo: { liquid: [0.167, 0.3391, 0.3047], accent: [0.6897, 0.7951, 0.6194], deep: [0.0264, 0.0678, 0.054] },
+  reserva: { liquid: [0.1553, 0.3236, 0.4919], accent: [0.5348, 0.8137, 0.8909], deep: [0.0347, 0.0583, 0.1232] },
+  metas: { liquid: [0.354, 0.2495, 0.6415], accent: [0.7183, 0.7656, 0.8274], deep: [0.0769, 0.0457, 0.1237] },
+  patrimonio: { liquid: [0.228, 0.3108, 0.4053], accent: [0.7788, 0.7569, 0.7351], deep: [0.0463, 0.0594, 0.0789] },
+  deuda: { liquid: [0.5782, 0.226, 0.2139], accent: [0.878, 0.7308, 0.7014], deep: [0.091, 0.049, 0.0504] },
 };
 
 const ETIQUETA_PROPUESTA: Record<OrbKind, string> = {
   saldo: "agua → verde amarillento · el permiso de hoy",
   reserva: "azul → capri caribe · la bóveda",
-  metas: "morado azulado → palo de rosa · lo que viene",
+  metas: "morado azulado → blanco azul · lo que viene",
   patrimonio: "piedra azul → gris · lo construido",
   deuda: "rojo → salmón · el peso, sin alarma",
 };
@@ -343,13 +356,13 @@ export default async function VidrioPage({
           </div>
           <p className="kipu-sistema-note">
             Medido en pantalla, tono y saturación de cada capa —hoy → propuesta:
-            saldo 177°/0,70 → <b>148°/0,18</b> · reserva 212°/0,55 →{" "}
-            <b>198°/0,38</b> · metas 268°/0,43 → <b>291°/0,19</b> · patrimonio
-            195°/0,32 → <b>212°/0,10</b> · deuda 36°/0,54 → <b>5°/0,35</b>.
+            saldo 176°/0,68 → <b>137°/0,16</b> · reserva 212°/0,54 →{" "}
+            <b>198°/0,39</b> · metas 268°/0,42 → <b>249°/0,21</b> · patrimonio
+            195°/0,30 → <b>212°/0,08</b> · deuda 36°/0,54 → <b>5°/0,30</b>.
           </p>
           <p className="kipu-sistema-note">
             Las cinco propuestas comparten la MISMA escalera de luminancia
-            (Y = 0,030 / 0,300 / 0,760). Igualar la claridad HSL no sirve: un
+            (Y = 0,058 / 0,300 / 0,760). Igualar la claridad HSL no sirve: un
             verde y un azul con la misma «L» tienen brillos muy distintos —el
             verde pesa 0,7152 en la luminancia y el azul 0,0722— y por eso unas
             capas parecían moverse más rápido que otras. Con la luminancia
