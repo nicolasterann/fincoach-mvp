@@ -324,7 +324,7 @@ const mutations = [
     name: "N3C-4",
     result: "el reloj del campo corre siempre igual: el orbe deja de acelerar cuando hablás",
     file: SIM,
-    from: "  return 1.55 + (1 - Math.pow(bounded - 1, 2)) * 2.60;",
+    from: "  return 0.42 + (1 - Math.pow(bounded - 1, 2)) * 2.60;",
     to: "  return 1.05;",
   },
   {
@@ -418,7 +418,7 @@ const mutations = [
     result:
       "vuelve el campo CASI QUIETO: la razón entre hablar y callar se conserva, pero una mancha tarda 45 s en cruzar — que es lo que se veía",
     file: SIM,
-    from: "  return 1.55 + (1 - Math.pow(bounded - 1, 2)) * 2.60;",
+    from: "  return 0.42 + (1 - Math.pow(bounded - 1, 2)) * 2.60;",
     to: "  return 0.1 + (1 - Math.pow(bounded - 1, 2)) * 0.9;",
   },
   {
@@ -481,7 +481,7 @@ const mutations = [
     result:
       "el fluido se queda sin empuje de fondo: en silencio se aquieta y no vuelve solo — «el nuestro es mucho mas estatico», otra vez",
     file: FLUID,
-    from: "export const ORB_FLUID_AMBIENT_FORCE = 5.5;",
+    from: "export const ORB_FLUID_AMBIENT_FORCE = 6.2;",
     to: "export const ORB_FLUID_AMBIENT_FORCE = 0;",
   },
   {
@@ -557,7 +557,7 @@ const mutations = [
     result:
       "el mapa material deja de relajarse: se aleja para siempre y a los pocos segundos el dibujo se deshilacha en filamentos",
     file: FLUID,
-    from: "export const ORB_FLUID_MAP_RELAX = 0.55;",
+    from: "export const ORB_FLUID_MAP_RELAX = 0.90;",
     to: "export const ORB_FLUID_MAP_RELAX = 0;",
   },
   {
@@ -727,6 +727,22 @@ const mutations = [
     file: SPEC,
     from: "  const avanzar = forzarPaso || ultimoPasoEn !== cuadroActual;",
     to: "  const avanzar = forzarPaso || ultimoPasoMs < 0 || ahora - ultimoPasoMs > 4;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "el fluido deja de pesar hacia la PARED: el movimiento vuelve a repartirse plano y el orbe pierde el «nace en el borde» que el founder describio",
+    file: SHADER,
+    from: "      gFlow *= mix(ORB_RIM_CALM, 1.0, rOrb * rOrb);",
+    to: "      gFlow *= 1.0;",
+  },
+  {
+    name: "N3C-8",
+    result:
+      "el campo vuelve a ser el MOTOR y no el sustrato: su animacion es espacialmente uniforme, asi que el perfil se aplana (razon 2,0 → 1,0)",
+    file: SIM,
+    from: "  return 0.42 + (1 - Math.pow(bounded - 1, 2)) * 2.60;",
+    to: "  return 1.55 + (1 - Math.pow(bounded - 1, 2)) * 2.60;",
   },
   {
     name: "N3C-8",

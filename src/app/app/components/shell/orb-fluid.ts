@@ -119,7 +119,7 @@ export const ORB_FLUID_VELOCITY_DISSIPATION = 0.2;
  */
 export const ORB_FLUID_MAX_SUBSTEPS = 4;
 
-export const ORB_FLUID_MAP_RELAX = 0.55;
+export const ORB_FLUID_MAP_RELAX = 0.90;
 
 /**
  * N3C r15 · CUÁNTA VISCOSIDAD LLEVA EL MAPA, por cuadro.
@@ -196,7 +196,7 @@ function clamp01(value: number): number {
  * 80; el nuestro movía **1,52**. Cuatro veces menos — y por debajo de lo que el
  * ojo registra como movimiento, que es de dónde salía «se queda estático».
  */
-export const ORB_FLUID_AMBIENT_FORCE = 5.5;
+export const ORB_FLUID_AMBIENT_FORCE = 6.2;
 
 /**
  * CUÁNTOS AGITADORES, y por qué importa más que su fuerza.

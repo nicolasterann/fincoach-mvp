@@ -296,6 +296,13 @@ const float CAM_PITCH = -0.11;
 // calcomanía); 1 = la esfera exacta, cuya derivada explota en el contorno y
 // vuelve a plegar el dominio. 0,90 da ~2x de compresión en el borde.
 const float ORB_SPHERE_K = 0.90;
+// N3C r21 · cuánto del desplazamiento del fluido llega al CENTRO del orbe. 1 =
+// plano (el defecto: el movimiento ignora el borde); 0 = el centro queda muerto.
+const float ORB_RIM_CALM = 0.30;
+// N3C r21 · la ola que entra desde el borde. K = cuántas ondas caben en el
+// radio; W = qué tan rápido entra (0,62 rad/s ≈ 10 s de período: el registro
+// «tranquilo, con tiempo» que pidió el founder); A = qué tan honda, en unidades
+// del campo — el orbe abarca 0,44, así que 0,022 es un 5 %.
 // El menisco DE VERDAD es una película fina, no un bulto. N3 lo tenía en 0.078
 // —más alto que el piso del vaso entero— y por eso un orbe vacío dibujaba un
 // charco: el bulto trepaba la pared y levantaba la superficie visible.
@@ -858,6 +865,19 @@ void main(){
       // y esto se suma como estela visible. Misma regla que el tope del solver.
       float fm = length(fw) * 0.55;
       gFlowMag = fm / (1.0 + fm);
+      // ── N3C r21 · EL LÍQUIDO SE MUEVE MÁS CONTRA LA PARED ────────────────
+      //
+      // Medido en el suyo, el cambio por anillo del centro al borde:
+      //   0,0012 · 0,0013 · 0,0016 · 0,0017 · 0,0021 · 0,0024 · 0,0026 · 0,0025
+      // Crece 2,2× hacia afuera. El nuestro daba 0,0004 PLANO en los ocho
+      // anillos: el movimiento no tenía ninguna relación con el borde del orbe,
+      // y por eso no se leía como líquido dentro de una esfera.
+      //
+      // El founder lo describió antes de que yo lo midiera: «como cuando el mar
+      // choca con los riscos y se regresa». Acá el fluido pesa poco en el centro
+      // y pleno contra la pared, que es lo que pone la actividad en el borde.
+      float rOrb = min(length(uv), 1.0);
+      gFlow *= mix(ORB_RIM_CALM, 1.0, rOrb * rOrb);
     }
     vec2 fp = vec2(cs*fq.x + sn*fq.y, -sn*fq.x + cs*fq.y) * 0.22;
     // Cada capa mira OTRA PARTE del mismo campo. Sin esto las cinco dibujan el
@@ -879,6 +899,17 @@ void main(){
     // UNIFORME, que el ojo lee como una capa que pasa. Esto es un campo de
     // fluido: cada trozo va a su sitio, que es lo que hace la advección.
     if(uHasFluid > 0.5) fp += gFlow * 0.115;
+    // ── N3C r21 · SE PROBÓ UNA OLA EXPLÍCITA Y SE QUITÓ ──────────────────
+    //
+    // Acá hubo un desplazamiento radial cuya fase viajaba hacia adentro, para
+    // fabricar «las ondas que vienen del borde». Medido, era peor que nada: la
+    // razón borde/centro CAÍA de 2,0 a 1,5 —porque la ola agrega cambio en todo
+    // el disco y diluye justo lo que se quería— y el viaje hacia el centro
+    // quedaba igual (−1 con y sin ella). No se ganaba su lugar y se borró.
+    //
+    // Lo que produce el efecto es que el fluido pese hacia la PARED, no una ola
+    // dibujada encima. La sensación de «viene de afuera» sale sola cuando el
+    // movimiento nace en el borde.
     gField = saturar(fieldRamp(fieldGray(fp, uField, drive), fieldHue(fp, uField), 1.0 - uDay), 1.24) * uEnv;
     gField += fieldGrain(fq) * (0.055 + 0.020*uDay) * uEnv;
     // donde el fluido acaba de pasar queda un rastro más claro: es la estela,

@@ -29586,7 +29586,26 @@ assert(
   assert(
     "N3C-4 · el reloj del campo avanza siempre y avanza MÁS con voz; el orbe vivo lo acumula y se lo pasa al lienzo",
     // en reposo el campo se MUEVE, y se mide en segundos, no en proporciones
-    n3cCruce(0) < 6 &&
+    // ── N3C r21 · RE-ANCLADO: EL CAMPO YA NO ES EL MOVIMIENTO ─────────────
+    //
+    // Este tope nació cuando la animación del campo ERA todo el movimiento del
+    // orbe, y por eso exigía que una mancha cruzara en menos de 6 s. La
+    // arquitectura cambió: el movimiento ahora lo lleva el FLUIDO, y el campo
+    // quedó de sustrato lento a propósito.
+    //
+    // El motivo es medible. El cambio por anillo del centro al borde en el orbe
+    // de ellos crece 2,2×; el nuestro daba PLANO mientras el campo mandaba,
+    // porque su animación es espacialmente uniforme por construcción. Bajando
+    // el campo, manda el fluido —que sí pesa hacia la pared— y la razón pasó a
+    // 2,0: el registro que el founder describió como «ondas que vienen desde
+    // afuera hacia adentro».
+    //
+    // La invariante de fondo NO se afloja, se MUEVE a donde vive ahora: que el
+    // orbe se mueva en reposo es cosa del empuje ambiente del fluido, y eso lo
+    // pincha N3C-8 con sus dos topes. Acá queda lo que sigue siendo del campo:
+    // que su reloj avance siempre, que avance MÁS con voz, y que no se congele.
+    n3cCruce(0) < 14 &&
+    orbFieldSpeed(0) > 0.2 &&
       // …y hablando, notoriamente más rápido
       n3cCruce(1) < 2 &&
       n3cHablando > n3cCallado * 2.5 &&
@@ -30229,6 +30248,37 @@ assert(
       // infinita en el contorno y volvería a plegar el dominio justo donde lo
       // arreglamos. Medido con 0,90 (≈2× de compresión en el borde), las
       // crestas MEJORARON: deuda 0,1096 → 0,0919, por debajo de su suelo.
+      // ── N3C r21 · EL MOVIMIENTO NACE CONTRA LA PARED ─────────────────────
+      //
+      // El founder, mirando los suyos: «ondas super sutiles que vienen desde
+      // afuera hacia adentro, como cuando el mar choca con los riscos». Medido
+      // en su orbe, el cambio por anillo del centro al borde crece **2,2×**; el
+      // nuestro daba **PLANO**, porque el movimiento lo hacía la animación del
+      // campo — que es espacialmente uniforme por construcción.
+      //
+      // Dos cosas lo arreglaron, y hay que sostener LAS DOS:
+      //  · el fluido pesa hacia la pared (ORB_RIM_CALM en el centro),
+      //  · y el campo se volvió un sustrato LENTO para que mande el fluido.
+      // Si el campo vuelve a correr, vuelve a mandar y el perfil se aplana:
+      // medido, con base 0,85 la razón cae a 1,0; con 0,42 da 2,0.
+      n3ShaderCode.includes("gFlow *= mix(ORB_RIM_CALM, 1.0, rOrb * rOrb);") &&
+      (() => {
+        const m = n3ShaderCode.match(/const float ORB_RIM_CALM = ([0-9.]+);/u);
+        if (m == null) return false;
+        const k = Number.parseFloat(m[1]!);
+        // 1 = plano (el defecto); 0 = centro muerto
+        return k > 0.1 && k < 0.6;
+      })() &&
+      // el campo es sustrato, no motor: su velocidad en reposo queda MUY por
+      // debajo de la que tenía cuando él era todo el movimiento (1,78)
+      orbFieldSpeed(0.05) < 1.0 &&
+      // ── N3C r21 · SE PROBÓ UNA OLA EXPLÍCITA Y NO SE GANÓ SU LUGAR ───────
+      // Un desplazamiento radial con fase viajando hacia adentro sonaba a la
+      // respuesta y era PEOR: la razón borde/centro caía de 2,0 a 1,5 —la ola
+      // agrega cambio en todo el disco y diluye justo lo que se busca— y el
+      // viaje hacia el centro quedaba igual. Se borró entera; si vuelve, vuelve
+      // el problema.
+      !/ORB_WAVE/u.test(n3ShaderCode) &&
       n3ShaderCode.includes("float rEsfera = asin(rPlano * ORB_SPHERE_K) / asin(ORB_SPHERE_K);") &&
       n3ShaderCode.includes("vec2 fq = uvEsf - vec2(0.0, cLiq * 0.85);") &&
       (() => {

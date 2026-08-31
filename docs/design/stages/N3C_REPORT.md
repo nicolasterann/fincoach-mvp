@@ -1953,3 +1953,94 @@ el más sobrio de los suyos.
 - **Sólo en la mesa de luz**: las paletas. Los tokens no se tocaron.
 
 Gate **891/891** · mutación **94 muertas, 0 fallas** · lint 0 errores · build verde.
+
+---
+
+## Ronda 21 — el movimiento nace contra la pared
+
+El founder, tras ver la r20: *«son como ondas super sutiles que vienen desde
+afuera hacia adentro. Como cuando el mar choca con los riscos y se regresa»*. Y
+me dejó solo con la instrucción de no parar hasta replicarlo.
+
+### Primero observar el suyo, como pidió
+
+Su lienzo WebGL sólo dibuja mientras suena el audio, y copiarlo desde fuera del
+cuadro devuelve vacío — así que la captura se montó DENTRO del ciclo de cuadros
+y se le dio play. Con 1076 cuadros medidos, el **cambio por anillo del centro al
+borde**:
+
+```
+0,0012 · 0,0013 · 0,0016 · 0,0017 · 0,0021 · 0,0024 · 0,0026 · 0,0025
+```
+
+**Crece 2,2× hacia afuera.** Su intuición era una medida.
+
+### El nuestro daba PLANO
+
+`0,0004` en los ocho anillos. Razón borde/centro: **1,0**.
+
+Y la causa no era el fluido: **nuestro movimiento lo hacía la animación del
+campo**, que es espacialmente uniforme por construcción. Pesar el fluido hacia
+el borde no alcanzó (la razón siguió en 1,0) porque el fluido no era quien
+mandaba en el cambio.
+
+### Lo que sí lo arregló: cambiar quién manda
+
+Dos cosas, y hay que sostener las dos:
+
+1. **El fluido pesa hacia la pared** — `ORB_RIM_CALM = 0,30`: en el centro llega
+   el 30 % del desplazamiento, contra la pared el 100 %.
+2. **El campo pasó a ser un sustrato lento** — su velocidad en reposo bajó de
+   1,78 a 0,65, para que mande el fluido.
+
+Medido: con el campo a 0,85 la razón cae a **1,0**; con 0,42, sube a **2,0**.
+Contra el 2,17 de ellos.
+
+Y el efecto secundario es justo lo que él pidió por otro lado: *«se ven un poco
+rápidos y bruscos… necesitamos el mismo flujo de tranquilidad, con tiempo»*. El
+flujo a 1 s bajó de 0,0184 a **0,0110**, con la curva creciendo parejo
+(0,0062 · 0,0110 · 0,0178 · 0,0240 a 0,5/1/2/4 s).
+
+### Un pin que hubo que RE-ANCLAR, con su razón escrita
+
+`n3cCruce(0) < 6` exigía que una mancha del campo cruzara en menos de 6 s. Ese
+tope nació cuando **el campo ERA el movimiento**. Con la arquitectura nueva el
+campo es sustrato y el tope lo bloqueaba.
+
+No se aflojó: **se movió a donde vive ahora la invariante.** Que el orbe se mueva
+en reposo es cosa del empuje ambiente del fluido, y eso lo pincha N3C-8 con sus
+dos topes. Del campo queda exigido lo que sigue siendo suyo: que su reloj avance
+siempre, que avance más con voz, y que no se congele (`< 14 s`, `speed > 0,2`).
+
+### Una ola explícita que se probó y se borró
+
+Puse un desplazamiento radial cuya fase viajaba hacia adentro — la lectura
+literal de «ondas que vienen del borde». **Era peor que nada:** la razón
+borde/centro caía de 2,0 a **1,5** (la ola agrega cambio en todo el disco y
+diluye justo lo que se busca) y el viaje hacia el centro quedaba idéntico (−1
+con y sin ella).
+
+Se borró entera, no apagada. La sensación de «viene de afuera» sale **sola**
+cuando el movimiento nace en el borde; dibujarla encima la empeora.
+
+### Verificado
+
+| | valor | referencia |
+|---|---|---|
+| razón borde/centro | **2,0** | ellos 2,17 |
+| viaje radial | **hacia el centro** | — |
+| crestas saldo (p999) | 0,0756 | su suelo 0,0887 |
+| crestas deuda (p999) | 0,1054 | su suelo 0,0950 |
+| latido periódico | **ninguno** | — |
+
+Las olas duras siguen muertas y no apareció ningún golpe.
+
+### Colores v3
+
+Su realimentación: saldo con más tipos de verde (pino) manteniendo el agua;
+reserva «casi perfecto», se conserva; metas con azules, amarillos y rosados;
+**patrimonio demasiado parecido a saldo** → sale del verde y pasa a **piedra
+azul con veta cálida**; deuda con más rojos y rosados, «menos desértico, más
+místico».
+
+Gate **891/891** · mutación **96 muertas, 0 fallas** · lint 0 errores · build verde.
