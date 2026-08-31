@@ -316,52 +316,24 @@ export default async function VidrioPage({
 
       {show("colores") && (
         <section className="kipu-sistema-section">
-          <h2>Los colores — lo que hay contra lo que propongo</h2>
+          <h2>Los colores — hoy contra la propuesta, pegados</h2>
           <p className="kipu-sistema-note">
-            El founder: «los colores se parecen demasiado, entonces no se ve
-            mucho cómo fluyen». Medido contra los seis orbes de ellos, con la
-            misma vara: su <b>ancho de tono</b> va de 15° a 158°; el nuestro
-            valía <b>1° a 5°</b>. Y su <b>recorrido de luz</b> ronda 0,38; el
-            nuestro, 0,18.
+            Cada par es la MISMA capa: arriba lo que hay en producción, abajo la
+            propuesta. Antes esto estaba en dos filas separadas por tres
+            párrafos y el founder no vio el cambio — <b>una comparación que hay
+            que ir a buscar no es una comparación.</b>
           </p>
-          <p className="kipu-sistema-note">
-            La causa: los tres colores de cada capa —líquido, acento y
-            profundo— son <b>el mismo tono</b> (saldo: 170°, 171°, 175°). El
-            shader tiene un segundo campo de color, <code>fieldHue</code>, que
-            mezcla el líquido con el acento… y nunca hizo nada, porque los dos
-            colores que mezcla son el mismo. Función viva, cableada y pinchada,
-            sin material con qué trabajar.
-          </p>
-          <p className="kipu-sistema-note">
-            Arriba lo que hay. Abajo la propuesta: cada capa recibe un
-            <b> segundo tono de verdad</b> (un viaje de 35° a 55°) y un profundo
-            más profundo, y las cinco se reparten mejor la rueda — hoy saldo
-            (170°), patrimonio (199°) y reserva (222°) viven todas en la misma
-            familia azul-turquesa.
-          </p>
-          <p className="kipu-sistema-note">
-            Nada de esto toca los tokens de producción: la propuesta se le pasa
-            a la probeta a mano, para poder ver las dos al lado.
-          </p>
-          <h3 className="kipu-sistema-slot__name">Hoy</h3>
           <div className="kipu-sistema-row">
             {ORB_KINDS.map((kind: OrbKind) => (
-              <div key={`hoy-${kind}`} className="kipu-sistema-slot" data-slot-shape="orbe">
-                <p className="kipu-sistema-slot__name">{kind}</p>
-                <OrbSpecimen kind={kind} level={0.62} matter={orbMatter(kind)} size={168} animado />
-              </div>
-            ))}
-          </div>
-          <h3 className="kipu-sistema-slot__name">Propuesta</h3>
-          <div className="kipu-sistema-row">
-            {ORB_KINDS.map((kind: OrbKind) => (
-              <div key={`prop-${kind}`} className="kipu-sistema-slot" data-slot-shape="orbe">
-                <p className="kipu-sistema-slot__name">{kind}</p>
+              <div key={`par-${kind}`} className="kipu-sistema-slot" data-slot-shape="orbe">
+                <p className="kipu-sistema-slot__name">{kind} · hoy</p>
+                <OrbSpecimen kind={kind} level={0.62} matter={orbMatter(kind)} size={150} animado />
+                <p className="kipu-sistema-slot__name">↓ propuesta</p>
                 <OrbSpecimen
                   kind={kind}
                   level={0.62}
                   matter={orbMatter(kind)}
-                  size={168}
+                  size={150}
                   animado
                   paleta={PALETA_PROPUESTA[kind]}
                   label={ETIQUETA_PROPUESTA[kind]}
@@ -369,6 +341,24 @@ export default async function VidrioPage({
               </div>
             ))}
           </div>
+          <p className="kipu-sistema-note">
+            Medido en pantalla, tono y saturación de cada capa —hoy → propuesta:
+            saldo 177°/0,70 → <b>148°/0,18</b> · reserva 212°/0,55 →{" "}
+            <b>198°/0,38</b> · metas 268°/0,43 → <b>291°/0,19</b> · patrimonio
+            195°/0,32 → <b>212°/0,10</b> · deuda 36°/0,54 → <b>5°/0,35</b>.
+          </p>
+          <p className="kipu-sistema-note">
+            Las cinco propuestas comparten la MISMA escalera de luminancia
+            (Y = 0,030 / 0,300 / 0,760). Igualar la claridad HSL no sirve: un
+            verde y un azul con la misma «L» tienen brillos muy distintos —el
+            verde pesa 0,7152 en la luminancia y el azul 0,0722— y por eso unas
+            capas parecían moverse más rápido que otras. Con la luminancia
+            igualada, la dispersión del movimiento aparente bajó de 2,47 a 1,59.
+          </p>
+          <p className="kipu-sistema-note">
+            Nada de esto toca los tokens de producción: la paleta se le pasa a la
+            probeta a mano, para poder ver las dos al lado.
+          </p>
         </section>
       )}
 

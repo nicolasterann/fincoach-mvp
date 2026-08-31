@@ -2160,3 +2160,36 @@ medición que rebotó a 0,2588 resultó ser el lienzo equivocado: la pestaña ha
 cambiado de hoja a mitad de la corrida.
 
 Gate **891/891** · mutación **98 muertas, 0 fallas** · lint 0 errores · build verde.
+
+---
+
+## Ronda 24 — «¿dónde veo los nuevos colores?»
+
+El founder abrió la hoja y dijo que sólo veía los viejos. **No era su pantalla:
+era mi hoja.**
+
+Los colores sí estaban puestos y sí cambiaban mucho — medido sobre los píxeles
+que había en pantalla en ese momento:
+
+| capa | hoy | propuesta |
+|---|---|---|
+| saldo | 177° · sat 0,70 | **148° · 0,18** |
+| reserva | 212° · 0,55 | **198° · 0,38** |
+| metas | 268° · 0,43 | **291° · 0,19** |
+| patrimonio | 195° · 0,32 | **212° · 0,10** |
+| deuda | 36° · 0,54 | **5° · 0,35** |
+
+El problema era la disposición: la fila «hoy» arriba, tres párrafos de texto en
+el medio, y la fila «propuesta» siete scrolls más abajo. Para comparar había que
+recordar el de arriba mientras se miraba el de abajo — y eso no es comparar.
+
+Ahora cada capa muestra su par **pegado**: hoy arriba, propuesta justo debajo,
+en la misma columna.
+
+**La lección, que es la misma de siempre en otra forma:** un instrumento que
+obliga a ir a buscar la diferencia no la muestra. Ya me había pasado con las
+probetas quietas (r13, «solo veo fotos») y con la métrica ciega a lo permanente
+(r17). Acá la información estaba completa y correcta, y aun así el instrumento
+no comunicaba — que para el caso es lo mismo que estar mal.
+
+Gate **891/891** · mutación **98 muertas, 0 fallas** · lint 0 errores · build verde.
