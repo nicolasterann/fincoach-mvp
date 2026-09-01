@@ -237,3 +237,143 @@ export function voiceDeliverySucceeded(input: {
     input && input.status !== "failed" && input.deliveryError == null,
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// N3C r28 · LA LEY DE LA VOZ DE LA REFERENCIA, LEÍDA DE SU CÓDIGO
+//
+// Las rondas 26 y 27 la dedujeron MIDIENDO, y llegaron lejos pero no llegaron:
+// el founder seguía viendo «un golpe» donde en el suyo hay ondas. El founder
+// pidió buscar si estaba publicada en algún lado antes de seguir a ciegas, y
+// estaba — en su propio bundle. Con eso esto deja de ser ajuste fino y pasa a
+// ser un porte.
+//
+// Lo que la medición NO podía ver, y el código sí dice:
+//
+//  1 · EL SONIDO NO ES UN NÚMERO, SON CUATRO BANDAS. Ellos separan graves
+//      (0–200 Hz), medios (200 Hz–2 kHz), agudos (2–20 kHz) y el total, y cada
+//      banda mueve OTRA COSA. Un escalar no puede hacer eso: por eso el nuestro
+//      «reacciona como un golpe» — todo se mueve junto, con la misma señal.
+//
+//  2 · CADA BANDA LLEVA DOS ACUMULADORES, y la regla de qué mueve cada uno es
+//      exacta: el INTEGRADO corre relojes, el PROMEDIO escala amplitudes. Es
+//      justo el principio que la r27 dedujo a los golpes, ahora con su forma.
+//
+//  3 · EN SILENCIO NO EMPUJAN NADA. Su fluido recibe UNA salpicadura por cuadro
+//      y sólo cuando el sonido SUBE. El nuestro empujaba once veces por cuadro,
+//      siempre. De ahí que el suyo se vea calmo y el nuestro agitado.
+//
+// Referencia leída: su chunk `75548`, clases del reproductor de orbe y del
+// simulador de fluido. Acá se implementa la LEY (qué mueve qué, con qué
+// constantes), no se copia su código.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Las cuatro bandas, cada una 0–1. `all` es el promedio de todo el espectro. */
+export interface OrbAudioBands {
+  low: number;
+  mid: number;
+  high: number;
+  all: number;
+}
+
+export const ORB_AUDIO_ZERO: OrbAudioBands = { low: 0, mid: 0, high: 0, all: 0 };
+
+/** Los cortes de banda de la referencia, en hercios. */
+export const ORB_BAND_LOW_END_HZ = 200;
+export const ORB_BAND_MID_END_HZ = 2_000;
+export const ORB_BAND_HIGH_END_HZ = 20_000;
+
+/**
+ * Cuánto de lo nuevo entra en cada acumulador, por cuadro. Son los suyos.
+ * El promedio con 0,55 da τ ≈ 30 ms a 60 Hz — que es exactamente la constante
+ * que la r26 había medido en sus píxeles. Dos caminos, el mismo número.
+ */
+export const ORB_AUDIO_AVERAGE_MIX = 0.55;
+export const ORB_AUDIO_CUMULATIVE_MIX = 0.25;
+export const ORB_AUDIO_INPUT_MIX = 0.45;
+/** Cuánto corre el reloj integrado. El suyo. */
+export const ORB_AUDIO_TIME_SCALE = 1.4;
+/**
+ * El micrófono sólo cuenta cuando el agente NO está hablando. Si no, la voz de
+ * Kipu y la del usuario se pelearían por el mismo orbe.
+ */
+export const ORB_AUDIO_CAN_SPEAK_BELOW = 10 / 255;
+
+/**
+ * Las cuatro bandas de un espectro. Los bins se reparten linealmente hasta
+ * Nyquist, así que el corte de cada banda es su frecuencia sobre la mitad del
+ * muestreo, por el número de bins.
+ */
+export function orbAudioBands(
+  bins: Uint8Array,
+  sampleRate: number,
+): OrbAudioBands {
+  const n = bins.length;
+  if (n === 0 || !Number.isFinite(sampleRate) || sampleRate <= 0) {
+    return ORB_AUDIO_ZERO;
+  }
+  const nyquist = sampleRate / 2;
+  const corte = (hz: number) =>
+    Math.min(n - 1, Math.max(0, Math.round((hz / nyquist) * n)));
+  const media = (desde: number, hasta: number) => {
+    let suma = 0;
+    let cuenta = 0;
+    for (let i = desde; i <= hasta && i < n; i += 1) {
+      suma += bins[i]!;
+      cuenta += 1;
+    }
+    return cuenta > 0 ? suma / cuenta / 255 : 0;
+  };
+  return {
+    low: media(0, corte(ORB_BAND_LOW_END_HZ)),
+    mid: media(corte(ORB_BAND_LOW_END_HZ), corte(ORB_BAND_MID_END_HZ)),
+    high: media(corte(ORB_BAND_MID_END_HZ), corte(ORB_BAND_HIGH_END_HZ)),
+    all: media(0, n - 1),
+  };
+}
+
+function mezcla(previo: number, nuevo: number, t: number): number {
+  const p = Number.isFinite(previo) ? previo : 0;
+  const v = Number.isFinite(nuevo) ? nuevo : 0;
+  return p + (v - p) * t;
+}
+
+/** El PROMEDIO rápido: escala amplitudes. */
+export function advanceOrbAudioAverage(
+  previo: OrbAudioBands,
+  ahora: OrbAudioBands,
+  mix = ORB_AUDIO_AVERAGE_MIX,
+): OrbAudioBands {
+  return {
+    low: mezcla(previo.low, ahora.low, mix),
+    mid: mezcla(previo.mid, ahora.mid, mix),
+    high: mezcla(previo.high, ahora.high, mix),
+    all: mezcla(previo.all, ahora.all, mix),
+  };
+}
+
+/**
+ * El INTEGRADO: corre relojes. Nunca retrocede mientras haya sonido, que es
+ * justamente lo que hace que acelerar no invierta el dibujo — la lección que la
+ * r27 pagó cara y que acá viene de fábrica.
+ */
+export function advanceOrbCumulativeAudio(
+  previo: OrbAudioBands,
+  ahora: OrbAudioBands,
+  dtSeconds: number,
+  mix = ORB_AUDIO_CUMULATIVE_MIX,
+): OrbAudioBands {
+  const dt = Math.min(1 / 20, Math.max(0, dtSeconds));
+  const paso = 60 * dt * ORB_AUDIO_TIME_SCALE;
+  const uno = (p: number, a: number) => mezcla(p, p + a * paso, mix);
+  return {
+    low: uno(previo.low, ahora.low),
+    mid: uno(previo.mid, ahora.mid),
+    high: uno(previo.high, ahora.high),
+    all: uno(previo.all, ahora.all),
+  };
+}
+
+/** El nivel «hay voz» de una banda, para lo que aún necesita un escalar. */
+export function orbAudioLevel(bands: OrbAudioBands): number {
+  return Math.min(1, Math.max(0, bands.all));
+}

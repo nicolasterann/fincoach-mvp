@@ -78,7 +78,9 @@ import {
   orbFluidSplats,
   type OrbFluid,
   ORB_FLUID_DYE_SIZE,
+  ORB_FLUID_LIGHT_SIZE,
 } from "./orb-fluid";
+import type { OrbAudioBands } from "./voice-capture-contract";
 
 export type OrbRgb = readonly [number, number, number];
 
@@ -121,6 +123,13 @@ export interface OrbDrawCall {
    * calibrado no cambia de tamaño: cambia de reloj.
    */
   voiceSlow: number;
+  /**
+   * N3C r28 · EL SONIDO INTEGRADO. Nunca retrocede, así que sirve para correr
+   * relojes: acelerar un giro no lo invierte. Es la mitad de la regla que la
+   * referencia aplica en todo su shader — lo integrado mueve tiempos, lo
+   * promediado mueve amplitudes.
+   */
+  voiceCumulative?: number;
   /** Inclinación del plano de agua: gesto + giroscopio, sumados por el caller. */
   tiltX: number;
   tiltZ: number;
@@ -189,6 +198,19 @@ export interface OrbFrame {
   voice: number;
   wave: number;
   dtSeconds: number;
+  /**
+   * N3C r28 · LAS CUATRO BANDAS Y SUS DOS ACUMULADORES.
+   *
+   * Con esto el fluido recibe la voz por la ley de la referencia —un tren de
+   * anillos que sale del centro, y sólo en los flancos de subida— en vez del
+   * empuje escalar. Sin esto sigue el camino anterior, que es el degradado
+   * honesto cuando del otro lado no hay un analizador de bandas.
+   */
+  audio?: {
+    average: OrbAudioBands;
+    cumulative: OrbAudioBands;
+    risingAll: number;
+  };
   /**
    * N3C r16 · SI ESTE CUADRO AVANZA EL FLUIDO. Por defecto sí.
    *
@@ -268,12 +290,15 @@ precision highp float;
 varying vec2 vP;
 uniform float uTime, uLevel, uEnergy, uDay, uMat, uPresence, uSpin;
 uniform float uVoiceSlow;
+uniform float uVoiceCumulative;
 uniform float uSeed;
 uniform float uWave, uBob, uDepth, uEnv, uField;
 uniform vec2 uTilt;
 uniform vec3 uLiq, uDeep, uAcc;
 uniform sampler2D uPerlin;
 uniform sampler2D uFluid;
+uniform sampler2D uFluidLight;
+uniform vec2 uFluidLightTexel;
 uniform float uHasFluid;
 uniform vec2 uFluidTexel;
 const float KIPU_TIER = __KIPU_TIER__;
@@ -372,6 +397,19 @@ const float VOICE_CORE_IN = ${ORB_VOICE_CORE_IN.toFixed(3)};
 const float VOICE_CORE_OUT = ${ORB_VOICE_CORE_OUT.toFixed(3)};
 // El piso de voiceTarget("calm"). Restarlo es lo que hace que un orbe callado
 // tenga el dipolo en CERO EXACTO en vez de quedar ahuecado para siempre.
+// N3C r28 · cuánto enciende la onda de voz. GAIN comprime el tinte (que crece
+// sin techo), WHITE es cuánto se va hacia el blanco desde el acento de la capa,
+// y LIGHT es la fuerza final. Los tres bajos: es una onda, no un flash.
+// N3C r28 · el arco de voz. SPAN es cuánto del disco ocupa el anillo, INNER su
+// borde interior, CLOCK cuánto lo acelera el sonido integrado y OPACITY su
+// fuerza. Los suyos: 0,75 · 0,25 · 0,2 · 0,25.
+const float ORB_ARC_SPAN = 0.75;
+const float ORB_ARC_INNER = 0.25;
+const float ORB_ARC_CLOCK = 0.2;
+const float ORB_ARC_OPACITY = 1.15;
+const float ORB_WAVE_GAIN = 0.35;
+const float ORB_WAVE_WHITE = 0.55;
+const float ORB_WAVE_LIGHT = 1.10;
 const float VOICE_CALM_FLOOR = 0.05;
 // voiceTarget("listening", L) = 0.75 * L sin piso, así que dividir por 0,75
 // devuelve EXACTAMENTE la escala en la que medí sus ganancias. No es un número
@@ -454,6 +492,10 @@ const float FIELD_TEX = __KIPU_NOISE__;
 // sola vez en 'main' —una muestra de textura— y de ahí sale TODO el movimiento.
 vec2 gFlow = vec2(0.0);
 float gFlowMag = 0.0;
+// N3C r28 · DÓNDE mira este orbe el fluido. Se guarda global porque la onda de
+// luz se compone al final —después del volumen— y necesita la MISMA coordenada
+// que usó el desplazamiento: dos coordenadas distintas serían dos fluidos.
+vec2 gFluidUv = vec2(0.5);
 
 float fieldTex(vec2 p){
   vec2 t = p * FIELD_TEX + 0.5;
@@ -924,6 +966,7 @@ void main(){
       // (0,22) da 0,39 < 0,5: ninguna toca el borde.
       vec2 fofs = vec2(cos(uSeed * 2.3999), sin(uSeed * 2.3999)) * 0.17;
       vec2 fs0 = fr * 0.22 + 0.5 + fofs;
+      gFluidUv = fs0;
       // N3C r14 · El mismo filtrado a mano que la advección, y por el mismo
       // motivo: sin 'half_float_linear' esta lectura sería NEAREST y el
       // desplazamiento llegaría CUANTIZADO — escalones que barren el orbe.
@@ -1340,6 +1383,63 @@ void main(){
   float apaga = 1.0 - ORB_SHADE_RIM * smoothstep(0.25, 1.0, rSombra) * rSombra;
   vec2 luzDir = vec2(-0.34, -0.36);
   float realce = exp(-dot(uv - luzDir, uv - luzDir) * 2.6);
+  // ── N3C r28 · LAS ONDAS DE VOZ, HECHAS DE LUZ ─────────────────────────────
+  //
+  // El founder: «se forman literalmente ondas de voz, como con luz y ondas que
+  // siguen exactamente el sonido». La palabra es LUZ, y era la puerta que nos
+  // faltaba: su fluido entra al color DOS veces —desplazando el muestreo y
+  // mezclándose como luz sobre el color compuesto— y nosotros sólo teníamos la
+  // primera. Nuestros anillos existían en la física y no se veían.
+  //
+  // El tinte trae dónde pasó un anillo y con cuánta fuerza. Se suma como luz
+  // teñida con el acento de la capa, así cada orbe enciende con SU color en vez
+  // de blanquearse. Y va antes del volumen, para que la esfera también la
+  // apague hacia el contorno: una onda que no respeta la forma se lee pegada.
+  vec3 ondaLuz = vec3(0.0);
+  if(uHasFluid > 0.5){
+    // ── N3C r28 · LA LUZ SE MUESTREA CENTRADA EN EL ORBE ────────────────────
+    //
+    // El desplazamiento mira una ventana CHICA y DESCENTRADA del fluido (r17 y
+    // r22: así los cinco orbes comparten una simulación sin copiarse el dibujo).
+    // Para un anillo concéntrico eso es fatal: mirando el 22% de la textura y
+    // corrido del centro, un anillo se ve como una mancha que pasa.
+    //
+    // Así que la LUZ mira el disco entero, centrada — que es lo que hace la
+    // referencia, donde cada orbe tiene su propia simulación. La identidad de
+    // capa se conserva girando el muestreo con la semilla en vez de moverlo: un
+    // giro no rompe la concentricidad.
+    float lc = cos(uSeed * 1.2566), ls = sin(uSeed * 1.2566);
+    vec2 luv = vec2(lc * uv.x - ls * uv.y, ls * uv.x + lc * uv.y) * 0.5 + 0.5;
+    vec3 luz = texture2D(uFluidLight, luv).rgb;
+    float lm = length(luz) * ORB_WAVE_GAIN;
+    lm = lm / (1.0 + lm);
+    ondaLuz = mix(uAcc, vec3(1.0), ORB_WAVE_WHITE) * lm * ORB_WAVE_LIGHT;
+  }
+  // ── N3C r28 · EL ARCO QUE SÓLO EXISTE CON SONIDO ──────────────────────────
+  //
+  // Es lo más reconocible de su orbe hablando y no lo teníamos. En su shader el
+  // arco se compone así: un anillo entre un radio interior y el borde, modulado
+  // en ÁNGULO por un coseno que gira, deformado por ruido, y —la clave— todo
+  // multiplicado por una compuerta de sonido que en silencio vale CERO. Su orbe
+  // callado no tiene arco; al hablar aparece y gira.
+  //
+  // Acá va teñido con el acento de la capa en vez de blanco: cinco orbes con un
+  // arco blanco serían cinco lunas iguales.
+  float arco = 0.0;
+  {
+    float aRad = min(r, 1.2) / ORB_ARC_SPAN;
+    float ang = atan(uv.y, uv.x);
+    float aReloj = -uTime * 0.5 - uVoiceCumulative * ORB_ARC_CLOCK;
+    vec2 aUv = uv / ORB_ARC_SPAN + vec2(1.0 + uVoiceSlow * 1.5, 0.0);
+    float n0 = fbm(aUv * (0.65 + uVoiceSlow * 0.4) + vec2(aReloj * 0.5, 0.0));
+    float v2 = smoothstep(1.0, mix(ORB_ARC_INNER, 1.0, n0 * 0.5), aRad);
+    float v3 = pow(smoothstep(ORB_ARC_INNER, mix(ORB_ARC_INNER, 1.0, n0 * 0.75), aRad), 2.0);
+    float cl = (cos(ang + aReloj * 2.0) * 0.5 + 0.5) * v2 * v3;
+    // LA COMPUERTA: con voz cero el arco vale cero exacto.
+    arco = clamp(pow(cl * min(uVoiceSlow * 4.0, 1.0), 3.0), 0.0, 1.0);
+  }
+  ondaLuz += mix(uAcc, vec3(1.0), 0.35) * arco * ORB_ARC_OPACITY;
+
   vec3 volumen = vec3(apaga + ORB_SHADE_KEY * realce);
   // ── N3C r26 · LA VOZ AHUECA EL ORBE ───────────────────────────────────────
   //
@@ -1361,7 +1461,7 @@ void main(){
     0.0, VOICE_SHAPE_MAX);
   float voz = 1.0 + vozLenta
     * (VOICE_RING_GAIN * vAnillo - VOICE_CORE_GAIN * vNucleo);
-  vec3 outCol = tonemap((col*edge + soul) * volumen * max(voz, 0.0));
+  vec3 outCol = tonemap(((col + ondaLuz*edge)*edge + soul) * volumen * max(voz, 0.0));
   float outA = clamp(alpha*edge + soulA + shadow*(1.0-edge), 0.0, 1.0);
   gl_FragColor = vec4(outCol * uPresence, outA * uPresence);
 }`;
@@ -1415,6 +1515,7 @@ interface ProgramBundle {
     material: WebGLUniformLocation | null;
     seed: WebGLUniformLocation | null;
     voiceSlow: WebGLUniformLocation | null;
+    voiceCumulative: WebGLUniformLocation | null;
     presence: WebGLUniformLocation | null;
     spin: WebGLUniformLocation | null;
     wave: WebGLUniformLocation | null;
@@ -1426,6 +1527,8 @@ interface ProgramBundle {
     fluid: WebGLUniformLocation | null;
     hasFluid: WebGLUniformLocation | null;
     fluidTexel: WebGLUniformLocation | null;
+    fluidLight: WebGLUniformLocation | null;
+    fluidLightTexel: WebGLUniformLocation | null;
     tilt: WebGLUniformLocation | null;
     liquid: WebGLUniformLocation | null;
     deep: WebGLUniformLocation | null;
@@ -1474,6 +1577,7 @@ function linkTierProgram(
       material: uniform("uMat"),
       seed: uniform("uSeed"),
       voiceSlow: uniform("uVoiceSlow"),
+      voiceCumulative: uniform("uVoiceCumulative"),
       presence: uniform("uPresence"),
       spin: uniform("uSpin"),
       wave: uniform("uWave"),
@@ -1485,6 +1589,8 @@ function linkTierProgram(
       fluid: uniform("uFluid"),
       hasFluid: uniform("uHasFluid"),
       fluidTexel: uniform("uFluidTexel"),
+      fluidLight: uniform("uFluidLight"),
+      fluidLightTexel: uniform("uFluidLightTexel"),
       tilt: uniform("uTilt"),
       liquid: uniform("uLiq"),
       deep: uniform("uDeep"),
@@ -1684,6 +1790,12 @@ export function createOrbRenderer(
       1 / ORB_FLUID_DYE_SIZE,
       1 / ORB_FLUID_DYE_SIZE,
     );
+    gl.uniform1i(bundle.locations.fluidLight, 4);
+    gl.uniform2f(
+      bundle.locations.fluidLightTexel,
+      1 / ORB_FLUID_LIGHT_SIZE,
+      1 / ORB_FLUID_LIGHT_SIZE,
+    );
   }
   if (reference) {
     // Los siete desfasajes son de SU componente, no del nuestro: nuestro campo
@@ -1758,6 +1870,7 @@ export function createOrbRenderer(
             voice: frame.voice,
             wave: frame.wave,
             dtSeconds: frame.dtSeconds,
+            audio: frame.audio,
           }),
             ORB_FLUID_ITERATIONS[frame.tier],
         );
@@ -1765,6 +1878,8 @@ export function createOrbRenderer(
       if (fluid) {
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, fluid.texture);
+        gl.activeTexture(gl.TEXTURE4);
+        gl.bindTexture(gl.TEXTURE_2D, fluid.lightTexture);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, noise);
         gl.viewport(0, 0, canvas.width, canvas.height);
@@ -1786,6 +1901,7 @@ export function createOrbRenderer(
         gl.uniform1f(locations.material, orb.material);
         gl.uniform1f(locations.seed, orb.seed);
         gl.uniform1f(locations.voiceSlow, orb.voiceSlow);
+        gl.uniform1f(locations.voiceCumulative, orb.voiceCumulative ?? 0);
         gl.uniform1f(locations.presence, orb.presence);
         gl.uniform1f(locations.spin, orb.spin);
         gl.uniform1f(locations.wave, orb.wave);

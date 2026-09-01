@@ -525,6 +525,22 @@ import {
   STATEMENT_SESSION_MARKER,
 } from "@/lib/capture/evidence-capture";
 import {
+  ORB_FLUID_LIGHT_FADE,
+  ORB_FLUID_LIGHT_SIZE,
+} from "@/app/app/components/shell/orb-fluid";
+import {
+  ORB_VOICE_SAMPLES,
+} from "@/app/app/components/shell/orb-audio-sample";
+import {
+  advanceOrbAudioAverage,
+  advanceOrbCumulativeAudio,
+  orbAudioBands,
+  ORB_AUDIO_AVERAGE_MIX,
+  ORB_AUDIO_ZERO,
+  ORB_BAND_LOW_END_HZ,
+  ORB_BAND_MID_END_HZ,
+} from "@/app/app/components/shell/voice-capture-contract";
+import {
   ORB_VOICE_CORE_GAIN,
   ORB_VOICE_CORE_IN,
   ORB_VOICE_CORE_OUT,
@@ -29897,6 +29913,154 @@ assert(
     }),
   );
 
+  // N3C-10 · LA LEY DE LA VOZ, PORTADA DE SU CÓDIGO (no deducida).
+  //
+  // El founder, tras la r27: «no estamos logrando replicar el mismo movimiento
+  // […] investiga si ellos documentaron en algún lado el movimiento exacto de
+  // las olas al sonido, con eso solo lo implementamos y no nos toca prueba y
+  // error». Estaba publicada — en su propio bundle. Lo que sigue son los hechos
+  // que ninguna medición mía podía ver, y que explican por qué dos rondas de
+  // ajuste fino no alcanzaban.
+  const n3cFluidoLey = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/orb-fluid.ts`,
+    "utf8",
+  );
+  const n3cSample = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/orb-audio-sample.ts`,
+    "utf8",
+  );
+  const n3cCarrusel = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/OrbCarrusel.tsx`,
+    "utf8",
+  );
+  // ── el espectro de una senoide pura cae donde tiene que caer ──
+  const n3cBinsGrave = new Uint8Array(128);
+  n3cBinsGrave.fill(0);
+  for (let i = 0; i <= 1; i += 1) n3cBinsGrave[i] = 255;
+  const n3cBandasGrave = orbAudioBands(n3cBinsGrave, 48_000);
+  const n3cBinsAgudo = new Uint8Array(128);
+  // 2 kHz–20 kHz con 128 bins hasta Nyquist 24 kHz son los bins 11 a 107
+  for (let i = 11; i <= 107; i += 1) n3cBinsAgudo[i] = 255;
+  const n3cBandasAgudo = orbAudioBands(n3cBinsAgudo, 48_000);
+  // ── el integrado sólo crece; el promedio persigue ──
+  const n3cCum0 = { low: 0, mid: 0, high: 0, all: 0 };
+  const n3cCum1 = advanceOrbCumulativeAudio(n3cCum0, { low: 0.5, mid: 0.5, high: 0.5, all: 0.5 }, 1 / 60);
+  const n3cCum2 = advanceOrbCumulativeAudio(n3cCum1, { low: 0.5, mid: 0.5, high: 0.5, all: 0.5 }, 1 / 60);
+  const n3cCumSilencio = advanceOrbCumulativeAudio(n3cCum2, ORB_AUDIO_ZERO, 1 / 60);
+  const n3cProm = advanceOrbAudioAverage(n3cCum0, { low: 1, mid: 1, high: 1, all: 1 });
+  // ── la compuerta del fluido: sólo en los flancos de SUBIDA ──
+  const n3cAudioBase = {
+    average: { low: 0.8, mid: 0.4, high: 0.2, all: 0.3 },
+    cumulative: { low: 2, mid: 3, high: 1, all: 4 },
+  };
+  const n3cSubiendo = orbFluidSplats({
+    time: 3.1, voice: 0, wave: 0, dtSeconds: 1 / 60,
+    audio: { ...n3cAudioBase, risingAll: 0.01 },
+  });
+  const n3cCayendo = orbFluidSplats({
+    time: 3.1, voice: 0, wave: 0, dtSeconds: 1 / 60,
+    audio: { ...n3cAudioBase, risingAll: -0.01 },
+  });
+  const n3cAnillos = n3cSubiendo.filter((sp) => sp.ring === true);
+  assert(
+    "N3C-10 · la voz son CUATRO BANDAS con dos acumuladores, y el fluido sólo recibe un anillo cuando el sonido SUBE",
+    // ── 1 · LAS CUATRO BANDAS ──
+    // Su analizador parte el espectro en graves (0–200 Hz), medios (200–2k),
+    // agudos (2k–20k) y el total. Un escalar no puede mover cuatro cosas
+    // distintas, y por eso el nuestro «reaccionaba como un golpe».
+    n3cBandasGrave.low > 0.9 &&
+      n3cBandasGrave.high < 0.05 &&
+      n3cBandasAgudo.high > 0.9 &&
+      n3cBandasAgudo.low < 0.05 &&
+      n3cBandasGrave.all > 0 &&
+      n3cBandasGrave.all < n3cBandasGrave.low &&
+      ORB_BAND_LOW_END_HZ === 200 &&
+      ORB_BAND_MID_END_HZ === 2_000 &&
+
+      // ── 2 · LOS DOS ACUMULADORES ──
+      // El INTEGRADO corre relojes y el PROMEDIO escala amplitudes. Es la regla
+      // que la r27 dedujo a los golpes y que su shader aplica sin excepción.
+      n3cCum2.all > n3cCum1.all &&
+      n3cCum1.all > 0 &&
+      // en silencio NO retrocede: un reloj que vuelve atrás invierte el dibujo
+      n3cCumSilencio.all >= n3cCum2.all * 0.999 &&
+      ORB_AUDIO_AVERAGE_MIX === 0.55 &&
+      Math.abs(n3cProm.all - 0.55) < 1e-9 &&
+
+      // ── 3 · UN ANILLO, Y SÓLO EN LA SUBIDA ──
+      // Su fluido recibe UNA salpicadura por cuadro y sólo cuando el promedio
+      // total está subiendo; el nuestro empujaba once, siempre. De ahí que el
+      // suyo se vea calmo entre sílabas y el nuestro agitado sin parar.
+      n3cAnillos.length === 1 &&
+      n3cCayendo.filter((sp) => sp.ring === true).length === 0 &&
+      n3cCayendo.length === orbFluidSplats({ time: 3.1, voice: 0, wave: 0, dtSeconds: 1 / 60 }).length &&
+      // el anillo sale del CENTRO y su fase avanza con el tiempo y con ∫total
+      Math.hypot(n3cAnillos[0]!.x - 0.5, n3cAnillos[0]!.y - 0.5) < 0.12 &&
+      (n3cAnillos[0]!.phase ?? 0) > 3.1 * 0.25 &&
+      orbFluidSplats({
+        time: 3.1, voice: 0, wave: 0, dtSeconds: 1 / 60,
+        audio: { ...n3cAudioBase, cumulative: { ...n3cAudioBase.cumulative, all: 9 }, risingAll: 0.01 },
+      }).filter((sp) => sp.ring)[0]!.phase! >
+        (n3cAnillos[0]!.phase ?? 0) &&
+      // …y su empuje sale de los GRAVES, que es lo que le da la amplitud.
+      // La comparación es entre las MISMAS magnitudes: una versión anterior de
+      // este pin medía hypot(dx,dy) contra |dx| y por eso pasaba igual con el
+      // empuje constante — la aserción débil otra vez, en el instrumento.
+      (() => {
+        const fuerte = n3cAnillos[0]!;
+        const flojo = orbFluidSplats({
+          time: 3.1, voice: 0, wave: 0, dtSeconds: 1 / 60,
+          audio: { ...n3cAudioBase, average: { ...n3cAudioBase.average, low: 0.1 }, risingAll: 0.01 },
+        }).filter((sp) => sp.ring)[0]!;
+        return (
+          Math.hypot(fuerte.dx, fuerte.dy) >
+          Math.hypot(flojo.dx, flojo.dy) * 3
+        );
+      })() &&
+
+      // ── 4 · EL TREN DE ANILLOS ES UN TREN, no una mancha ──
+      n3cFluidoLey.includes("float pDist = mod(dist * 2.0 - uPhase, 1.0);") &&
+      n3cFluidoLey.includes("splat = pulso * clamp(dist, 0.0, 1.0) * uValue;") &&
+
+      // ── 5 · LAS ONDAS SON DE LUZ, que es la puerta que faltaba ──
+      // Su fluido entra al color DOS veces: desplazando el muestreo y
+      // mezclándose como luz. Nosotros sólo teníamos la primera, y por eso
+      // nuestros anillos existían en la física y no se veían.
+      n3ShaderCode.includes("uniform sampler2D uFluidLight;") &&
+      n3ShaderCode.includes("texture2D(uFluidLight, luv).rgb") &&
+      n3cFluidoLey.includes("lightTexture") &&
+      ORB_FLUID_LIGHT_SIZE >= 128 &&
+      ORB_FLUID_LIGHT_FADE > 0 &&
+      // el tinte se apaga: sin eso los anillos se acumulan hasta blanquear el orbe
+      ORB_FLUID_LIGHT_FADE < 3 &&
+
+      // ── 6 · EL ARCO SÓLO EXISTE CON SONIDO ──
+      n3ShaderCode.includes("arco = clamp(pow(cl * min(uVoiceSlow * 4.0, 1.0), 3.0), 0.0, 1.0);") &&
+
+      // ── 7 · EL BANCO MIDE EL AUDIO DE VERDAD ──
+      // La muestra se sintetiza como números y su espectro sale de una FFT
+      // propia con los ajustes de la referencia. Sin esto el banco dependía de
+      // la política de autoplay del navegador, que cuando falla NO AVISA: el
+      // analizador entrega ceros y el orbe se ve quieto sin que nada esté roto.
+      n3cSample.includes("export function createOrbSampleAnalyser") &&
+      n3cSample.includes("0.42 - 0.5 * Math.cos(x) + 0.08 * Math.cos(2 * x)") &&
+      ORB_VOICE_SAMPLES.length >= 4 &&
+      ORB_VOICE_SAMPLES.some((m) => m.f0 === 0) &&
+      // …y el banco le pasa al orbe el envolvente LENTO para las amplitudes: el
+      // promedio de bandas es el RÁPIDO, y colgarle el dipolo lo hace pulsar una
+      // vez por sílaba (medido: correlación a ocho cuadros −80 contra +2,3 del
+      // suyo; con el lento pasó a +0,95)
+      n3cCarrusel.includes("voiceSlow: lento,") &&
+      n3cCarrusel.includes("advanceVoiceTau(lento, promedio.all, dt, VOICE_SHAPE_TAU_MS)") &&
+      n3cCarrusel.includes("audio: { average: promedio, cumulative: acumulado, risingAll: subiendo }"),
+    JSON.stringify({
+      grave: +n3cBandasGrave.low.toFixed(2),
+      agudo: +n3cBandasAgudo.high.toFixed(2),
+      anillos: n3cAnillos.length,
+      cayendo: n3cCayendo.filter((sp) => sp.ring).length,
+    }),
+  );
+
   // N3C-4 · EL RELOJ DEL CAMPO ES PURO, ACELERA CON LA VOZ, Y ESTÁ CABLEADO.
   //
   // Séptima aparición de la familia de agujeros del bloque: lo que sólo existe
@@ -30638,7 +30802,10 @@ assert(
       // N3C r26 · el dipolo de la voz entra por la MISMA puerta y por la misma
       // razón: multiplica el color ya compuesto al final. Se exigen los dos
       // factores juntos, así que ninguno de los dos puede colarse antes.
-      /vec3 outCol = tonemap\(\(col\*edge \+ soul\) \* volumen \* max\(voz, 0\.0\)\);/u
+      // N3C r28 · la onda de luz entra por la MISMA puerta y con la misma regla:
+      // se suma al color antes del recorte del disco, y las dos capas que
+      // multiplican —el volumen y el dipolo— siguen aplicándose al final.
+      /vec3 outCol = tonemap\(\(\(col \+ ondaLuz\*edge\)\*edge \+ soul\) \* volumen \* max\(voz, 0\.0\)\);/u
         .test(n3ShaderCode) &&
       (() => {
         const rim = n3ShaderCode.match(/const float ORB_SHADE_RIM = ([0-9.]+);/u);
@@ -30664,7 +30831,18 @@ assert(
       // agrega cambio en todo el disco y diluye justo lo que se busca— y el
       // viaje hacia el centro quedaba igual. Se borró entera; si vuelve, vuelve
       // el problema.
-      !/ORB_WAVE/u.test(n3ShaderCode) &&
+      // N3C r28 · RE-ANCLADO A LA PROPIEDAD, no al prefijo. Lo que la r21 mató
+      // fue una ola de DESPLAZAMIENTO escrita en el shader: un radio con fase
+      // viajando hacia adentro, movido por un reloj. Prohibir el prefijo
+      // «ORB_WAVE» era un atajo para eso, y el atajo terminó bloqueando algo
+      // distinto: la onda de la r28 no desplaza nada ni sale de un reloj — sale
+      // del TINTE del fluido y entra como luz. Lo que se prohíbe ahora es lo que
+      // se quiso prohibir.
+      !/ORB_WAVE_(AMP|FREQ|SPEED|PHASE|IN)\b/u.test(n3ShaderCode) &&
+      !/(q|fp|uv) \+= [^;]*sin\([^;]*uTime[^;]*length\(/u.test(n3ShaderCode) &&
+      // …y la luz de la onda viene de la TEXTURA, no de una fórmula temporal
+      n3ShaderCode.includes("texture2D(uFluidLight, luv).rgb") &&
+      !/ondaLuz[^;]*uTime/u.test(n3ShaderCode) &&
       n3ShaderCode.includes("float rEsfera = asin(rPlano * ORB_SPHERE_K) / asin(ORB_SPHERE_K);") &&
       n3ShaderCode.includes("vec2 fq = uvEsf - vec2(0.0, cLiq * 0.85);") &&
       (() => {

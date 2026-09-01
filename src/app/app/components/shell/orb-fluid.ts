@@ -70,6 +70,34 @@ export const ORB_FLUID_SIM_SIZE = 128;
 
 /** Lado de la rejilla del tinte, que es la que el orbe mira. */
 export const ORB_FLUID_DYE_SIZE = 24;
+/**
+ * N3C r28 · EL TINTE DE LUZ, que es lo que hace VISIBLES las ondas.
+ *
+ * El founder: «en sus orbes se forman literalmente ondas de voz, como con luz y
+ * ondas que siguen exactamente el sonido». La palabra que importa es LUZ.
+ *
+ * Su fluido entra al color por DOS puertas, no una: desplaza el muestreo
+ * (`uv += -fluid.rg * 0.001`) y además se mezcla como luz sobre el color ya
+ * compuesto (`blendHardLight(color, blanco, length(fluid) * …)`). Nosotros sólo
+ * teníamos la primera, y por eso nuestros anillos existían en la física pero no
+ * se veían: deformaban un color, no encendían nada.
+ *
+ * El mapa material no puede hacer este trabajo — es de 24 px a propósito (r15:
+ * un mapa más fino que su velocidad copia choques con filo perfecto). Así que el
+ * tinte de luz es su propia textura, y sí puede ser fina porque no dirige nada:
+ * sólo se enciende y se deja llevar.
+ */
+export const ORB_FLUID_LIGHT_SIZE = 256;
+/** Cuánto se apaga el tinte por segundo. El suyo: 0,98 por cuadro a 60 Hz. */
+export const ORB_FLUID_LIGHT_FADE = 0.55;
+/**
+ * Cuánta luz inyecta cada anillo. MUY poca a propósito: con el apagado lento, el
+ * tinte se vuelve un campo que persiste y evoluciona, no un flash por sílaba.
+ * Medido: inyectando fuerte y apagando rápido, el orbe PULSA (correlación −80 a
+ * ocho cuadros, donde el suyo da +2,3) — que es otra forma del mismo defecto de
+ * la r27, un brillo colgado del ritmo de las sílabas.
+ */
+export const ORB_FLUID_LIGHT_INJECT = 0.055;
 
 /**
  * Iteraciones de presión por escalón de calidad. El nivel 1 NO corre fluido:
@@ -161,6 +189,10 @@ export interface OrbFluidSplat {
   tz: number;
   /** Radio del empujón, al cuadrado, como lo quiere el shader. */
   radius: number;
+  /** N3C r28 · `true` = tren de anillos desde el centro (la onda de voz). */
+  ring?: boolean;
+  /** La fase del tren de anillos. Sólo la mira una salpicadura de anillos. */
+  phase?: number;
 }
 
 /**
@@ -225,6 +257,26 @@ export const ORB_FLUID_WINDOW_R = 0.17;
 /** Y el de la voz, que es el que tiene que sentirse como una respuesta. */
 export const ORB_FLUID_VOICE_FORCE = 3.2;
 /**
+ * N3C r28 · EL TREN DE ANILLOS, con sus números leídos de la referencia.
+ *
+ * SPAN es su `radius` del splat (multiplica la coordenada antes de medir la
+ * distancia, así que decide cuántos anillos entran en el orbe) y WIDTH es el
+ * grosor de cada anillo dentro del período. Con SPAN 1,5 y WIDTH 0,15 caben dos
+ * anillos y medio, que es lo que se ve en el suyo.
+ */
+export const ORB_FLUID_RING_SPAN = 1.5;
+export const ORB_FLUID_RING_WIDTH = 0.15;
+/** Cuánto empuja el tren de anillos. Su `audioAverage.x * 30` con su escala. */
+export const ORB_FLUID_RING_FORCE = 30;
+/** Su `InputScale`: cuánto se desvía la dirección del empuje del centro. */
+export const ORB_FLUID_RING_INPUT_SCALE = 12;
+/**
+ * El umbral de su compuerta: sólo se empuja cuando el promedio de TODO el
+ * espectro está SUBIENDO. Es la mitad del asunto — en silencio, o mientras el
+ * sonido cae, no entra ni una salpicadura y el fluido sólo coasta.
+ */
+export const ORB_FLUID_RISING_THRESHOLD = 1e-4;
+/**
  * N3C r26 · CUÁNTOS AGITADORES SUMA LA VOZ. Par: la mitad abre desde el centro
  * y la otra mitad gira en tangencial más afuera, para que se crucen. Ver el
  * comentario largo en `orbFluidSplats`.
@@ -250,6 +302,17 @@ export function orbFluidSplats(input: {
   voice: number;
   wave: number;
   dtSeconds: number;
+  /**
+   * N3C r28 · LAS CUATRO BANDAS. Con esto la voz entra por la ley de la
+   * referencia (un tren de anillos, sólo en los flancos de subida); sin esto se
+   * usa el camino escalar anterior.
+   */
+  audio?: {
+    average: { low: number; mid: number; high: number; all: number };
+    cumulative: { low: number; mid: number; high: number; all: number };
+    /** La DERIVADA del promedio total. Positiva = el sonido está subiendo. */
+    risingAll: number;
+  };
 }): OrbFluidSplat[] {
   const dt = Math.min(1 / 30, Math.max(1 / 240, finite(input.dtSeconds, 1 / 60)));
   const t = finite(input.time);
@@ -326,22 +389,56 @@ export function orbFluidSplats(input: {
     });
   }
 
-  if (voice > 0.02) {
+  // ── N3C r28 · LA ONDA DE VOZ, PORTADA DE SU CÓDIGO ────────────────────────
+  //
+  // El founder: «en sus orbes se forman literalmente ondas de voz […] las
+  // nuestras reaccionan como un golpe pero no se parecen en nada». Buscó bien:
+  // su ley estaba publicada en su propio bundle, y dice tres cosas que ninguna
+  // medición mía podía ver.
+  //
+  // 1 · UNA salpicadura por cuadro, no once. Nosotros empujábamos cinco
+  //     agitadores de fondo más seis de voz, TODOS los cuadros. Su fluido
+  //     recibe UNA, y sólo a veces.
+  //
+  // 2 · SÓLO CUANDO EL SONIDO SUBE. La compuerta es la derivada del promedio de
+  //     todo el espectro: si el sonido cae o está quieto, no entra nada y el
+  //     fluido coasta. Ésa es la razón de que el suyo se vea calmo entre
+  //     sílabas y el nuestro agitado todo el tiempo.
+  //
+  // 3 · LA POSICIÓN LA CAMINAN LOS INTEGRADOS. El punto se pasea por una
+  //     Lissajous de ∫medios y ∫graves — dos cantidades que sólo crecen, así
+  //     que el paseo es suave y jamás retrocede. La dirección del empuje es
+  //     ese mismo desvío, hacia afuera.
+  //
+  // El tren de anillos en sí lo dibuja el shader; acá se decide CUÁNDO y CON
+  // CUÁNTO. Con `audio` ausente no cambia nada de lo anterior: el fluido sigue
+  // teniendo su empuje de fondo y su voz escalar, que es el camino que usan el
+  // gate y las probetas viejas.
+  const audio = input.audio;
+  if (audio) {
+    if (audio.risingAll > ORB_FLUID_RISING_THRESHOLD) {
+      const tx = -0.2 * Math.sin(0.5 * audio.cumulative.mid) + 0.5;
+      const ty = 0.15 * Math.cos(0.38 * audio.cumulative.low) + 0.5;
+      const empuje = audio.average.low * ORB_FLUID_RING_FORCE;
+      splats.push({
+        ring: true,
+        // la fase, que es lo que hace VIAJAR los anillos: reloj + ∫total
+        phase: t * 0.25 + audio.cumulative.all * 0.15,
+        x: 0.5 + 0.1 * tx,
+        y: 0.5 + 0.1 * ty,
+        dx: (tx - 0.5) * ORB_FLUID_RING_INPUT_SCALE * empuje * ORB_FLUID_GRID * dt * 60,
+        dy: (ty - 0.5) * ORB_FLUID_RING_INPUT_SCALE * empuje * ORB_FLUID_GRID * dt * 60,
+        tx: (tx - 0.5) * ORB_FLUID_TRAIL * empuje,
+        ty: (ty - 0.5) * ORB_FLUID_TRAIL * empuje,
+        tz: ORB_FLUID_TRAIL * empuje * 0.6,
+        radius: 0.02,
+      });
+    }
+  } else if (voice > 0.02) {
     for (let i = 0; i < ORB_FLUID_VOICE_STIRRERS; i += 1) {
-      // N3C r26 · MEDIDO EN LA REFERENCIA, y era el hueco que quedaba: su orbe
-      // multiplica su movimiento por 4,2 al hablar (0,00115 → 0,00481 de cambio
-      // por píxel y cuadro) y el nuestro sólo por 1,8.
-      //
-      // La fuerza por salpicadura NO se puede subir: a voz 1 vale 960 y el
-      // solver recorta en 1.000 — pasarse deja un salto duro donde empujó y
-      // rayas rectas al muestrear fuera del dominio (la lección de la r8, que
-      // el founder pagó viendo la app rota).
-      //
-      // Así que en vez de empujar más fuerte, se empuja en más sitios Y en dos
-      // sentidos: la mitad abre desde el centro y la otra mitad, más afuera,
-      // gira en tangencial. Dos corrientes que se cruzan producen CIZALLA, y la
-      // cizalla es lo que se ve — un empujón radial solo, por fuerte que sea,
-      // mueve la tela en bloque.
+      // El camino ESCALAR, anterior a la r28. Sigue vivo porque el gate y las
+      // probetas fijas lo ejecutan sin bandas, y porque es el degradado honesto
+      // cuando no hay un analizador de cuatro bandas del otro lado.
       const anillo = i >= ORB_FLUID_VOICE_STIRRERS / 2;
       const j = anillo ? i - ORB_FLUID_VOICE_STIRRERS / 2 : i;
       const phase = j * 2.0943951 + (anillo ? 1.0471976 : 0);
@@ -349,24 +446,16 @@ export function orbFluidSplats(input: {
       const reach = anillo ? 0.34 + 0.10 * voice : 0.20 + 0.16 * voice;
       const force = ORB_FLUID_VOICE_FORCE * voice;
       const ux = Math.cos(spin), uy = Math.sin(spin);
-      // radial las de adentro; tangencial las de afuera
       const px = anillo ? -uy : ux;
       const py = anillo ? ux : uy;
       splats.push({
         x: 0.5 + reach * ux,
         y: 0.5 + reach * uy,
-        // empuja hacia AFUERA desde el centro: la voz abre el fluido, no lo
-        // arrastra hacia un lado
         dx: px * force * ORB_FLUID_GRID * dt * 60,
         dy: py * force * ORB_FLUID_GRID * dt * 60,
         tx: px * ORB_FLUID_TRAIL * force * 1.6,
         ty: py * ORB_FLUID_TRAIL * force * 1.6,
         tz: ORB_FLUID_TRAIL * force,
-        // N3C r27 · la voz agranda la salpicadura en vez de acelerarla. Subir
-        // la velocidad choca con el tope del solver (960 de 1.000 a voz 1) y
-        // deja el salto duro de la r8; agrandar el radio mueve MÁS FLUIDO con la
-        // misma velocidad, que es momento y no violencia. Medido: el suyo
-        // multiplica su movimiento por 4,5 al hablar y el nuestro iba en 2,2.
         radius: 0.0180 + 0.062 * voice,
       });
     }
@@ -391,6 +480,13 @@ export interface OrbFluid {
   step(dtSeconds: number, splats: readonly OrbFluidSplat[], iterations: number): void;
   /** La textura que el orbe mira: xy = el desplazamiento acumulado. */
   texture: WebGLTexture;
+  /**
+   * N3C r28 · EL TINTE DE LUZ: dónde pasó un anillo de voz y con cuánta fuerza.
+   * Es la segunda puerta por la que el fluido entra al color, y la que hace que
+   * las ondas se VEAN en vez de sólo deformar.
+   */
+  lightTexture: WebGLTexture;
+  lightTexel: [number, number];
   dispose(): void;
 }
 
@@ -426,14 +522,50 @@ varying vec2 vUv, vL, vR, vT, vB;
 
 // El empujón. Una gaussiana sumada al campo — el mismo `exp(-dot(p,p)/radius)`
 // que usa su salpicadura.
+// ── N3C r28 · DOS FORMAS DE EMPUJAR, y la segunda es «las ondas de voz» ─────
+//
+// El founder, viendo la r27: «en sus orbes se forman literalmente ondas de voz,
+// con luz y ondas que siguen exactamente el sonido; las nuestras reaccionan como
+// un golpe». Tenía razón, y la razón es estructural: nosotros empujábamos
+// MANCHAS y ellos empujan ANILLOS.
+//
+// Leído de su bundle: su salpicadura no usa el punto que le pasan (está
+// comentado en su propio código) — siempre sale del CENTRO, y no es una
+// gaussiana sino un tren de anillos concéntricos:
+//
+//     pDist = mod(dist * 2 - fase, 1)
+//     pulso = smoothstep(0, w, pDist) - smoothstep(w, 2w, pDist)
+//     empuje = pulso * amplitud * clamp(dist, 0, 1) * dirección
+//
+// La FASE avanza con el tiempo y con el audio INTEGRADO, así que los anillos
+// viajan hacia afuera y nunca retroceden. La AMPLITUD son los graves. Y el
+// `clamp(dist)` los apaga en el centro, que es lo que hace que nazcan adentro y
+// crezcan — literalmente una onda de voz.
+//
+// La mancha se queda para el empuje de fondo, que es otra cosa: mantener el
+// fluido vivo en silencio sin dibujar nada reconocible.
 const SPLAT = `${HEAD}
 uniform sampler2D uTarget;
 uniform float uRadius;
 uniform vec3 uValue;
 uniform vec2 uPoint;
+uniform float uRing;
+uniform float uPhase;
+uniform float uRingWidth;
+uniform float uRingSpan;
 void main(){
-  vec2 p = vUv - uPoint;
-  vec3 splat = exp(-dot(p, p) / uRadius) * uValue;
+  vec3 splat;
+  if(uRing > 0.5){
+    vec2 p = (vUv - vec2(0.5)) * uRingSpan;
+    float dist = length(p);
+    float pDist = mod(dist * 2.0 - uPhase, 1.0);
+    float pulso = smoothstep(0.0, uRingWidth, pDist)
+                - smoothstep(uRingWidth, uRingWidth * 2.0, pDist);
+    splat = pulso * clamp(dist, 0.0, 1.0) * uValue;
+  } else {
+    vec2 p = vUv - uPoint;
+    splat = exp(-dot(p, p) / uRadius) * uValue;
+  }
   gl_FragColor = vec4(texture2D(uTarget, vUv).xyz + splat, 1.0);
 }`;
 
@@ -757,10 +889,11 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
 
   const velocity = double(ORB_FLUID_SIM_SIZE);
   const dye = double(ORB_FLUID_DYE_SIZE);
+  const light = double(ORB_FLUID_LIGHT_SIZE);
   const pressure = double(ORB_FLUID_SIM_SIZE);
   const divergence = makeFbo(ORB_FLUID_SIM_SIZE);
   const curl = makeFbo(ORB_FLUID_SIM_SIZE);
-  if (!velocity || !dye || !pressure || !divergence || !curl) {
+  if (!velocity || !dye || !light || !pressure || !divergence || !curl) {
     for (const p of todos) if (p) gl.deleteProgram(p);
     return null;
   }
@@ -813,6 +946,12 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
     get texture() {
       return dye.read.tex;
     },
+    get lightTexture() {
+      return light.read.tex;
+    },
+    get lightTexel(): [number, number] {
+      return light.read.texel;
+    },
     /**
      * ── N3C r16 · EL PASO SE PARTE, PORQUE EL DEFECTO ERA EL TAMAÑO DEL PASO ──
      *
@@ -857,7 +996,7 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       if (disposed) return;
       disposed = true;
       for (const p of todos) if (p) gl.deleteProgram(p);
-      for (const f of [velocity.read, velocity.write, dye.read, dye.write, pressure.read, pressure.write, divergence, curl]) {
+      for (const f of [velocity.read, velocity.write, dye.read, dye.write, light.read, light.write, pressure.read, pressure.write, divergence, curl]) {
         gl.deleteTexture(f.tex);
         gl.deleteFramebuffer(f.fbo);
       }
@@ -869,7 +1008,7 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       // El estrechamiento de tipos del chequeo de arriba no cruza una
       // declaración de función: se repite acá, y de paso el tramo se vuelve
       // seguro por sí mismo.
-      if (!velocity || !dye || !pressure || !divergence || !curl) return;
+      if (!velocity || !dye || !light || !pressure || !divergence || !curl) return;
       gl.disable(gl.BLEND);
       bindQuad();
 
@@ -879,8 +1018,34 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
         gl.uniform2f(u(progs.splat, "uPoint"), s.x, s.y);
         gl.uniform3f(u(progs.splat, "uValue"), s.dx, s.dy, 0);
         gl.uniform1f(u(progs.splat, "uRadius"), s.radius);
+        gl.uniform1f(u(progs.splat, "uRing"), s.ring ? 1 : 0);
+        gl.uniform1f(u(progs.splat, "uPhase"), s.phase ?? 0);
+        gl.uniform1f(u(progs.splat, "uRingWidth"), ORB_FLUID_RING_WIDTH);
+        gl.uniform1f(u(progs.splat, "uRingSpan"), ORB_FLUID_RING_SPAN);
         blit(velocity.write);
         velocity.swap();
+
+        // N3C r28 · …y el mismo anillo ENCIENDE el tinte de luz. Sólo los de
+        // voz: el empuje de fondo mueve el líquido pero no debe dibujar nada,
+        // que es lo que mantiene el orbe callado en silencio.
+        if (s.ring) {
+          usarPrograma(progs.splat, light.read.texel);
+          bindTex(progs.splat, "uTarget", 2, light.read.tex);
+          gl.uniform2f(u(progs.splat, "uPoint"), s.x, s.y);
+          gl.uniform3f(
+            u(progs.splat, "uValue"),
+            Math.abs(s.tx) * ORB_FLUID_LIGHT_INJECT,
+            Math.abs(s.ty) * ORB_FLUID_LIGHT_INJECT,
+            s.tz * ORB_FLUID_LIGHT_INJECT,
+          );
+          gl.uniform1f(u(progs.splat, "uRadius"), s.radius);
+          gl.uniform1f(u(progs.splat, "uRing"), 1);
+          gl.uniform1f(u(progs.splat, "uPhase"), s.phase ?? 0);
+          gl.uniform1f(u(progs.splat, "uRingWidth"), ORB_FLUID_RING_WIDTH);
+          gl.uniform1f(u(progs.splat, "uRingSpan"), ORB_FLUID_RING_SPAN);
+          blit(light.write);
+          light.swap();
+        }
 
         // N3C r12 · EL MAPA NO SE SALPICA.
         // Antes acá se salpicaba un RASTRO en la misma textura, y el orbe leía
@@ -938,6 +1103,20 @@ export function createOrbFluid(gl: Gl, forzar = false): OrbFluid | null {
       bindTex(progs.advect, "uSource", 3, velocity.read.tex);
       blit(velocity.write);
       velocity.swap();
+
+      // N3C r28 · el tinte de luz VIAJA con el fluido y se apaga. Sin apagarse,
+      // los anillos se acumularían hasta dejar el orbe blanco; sin viajar,
+      // serían un dibujo pegado en vez de una onda.
+      usarPrograma(progs.advect, light.read.texel);
+      gl.uniform1f(u(progs.advect, "uDt"), dt);
+      gl.uniform1f(u(progs.advect, "uDissipation"), ORB_FLUID_LIGHT_FADE);
+      gl.uniform1f(u(progs.advect, "uRelax"), 0);
+      gl.uniform1f(u(progs.advect, "uDiffuse"), 0);
+      gl.uniform2f(u(progs.advect, "uSourceTexel"), light.read.texel[0], light.read.texel[1]);
+      bindTex(progs.advect, "uVelocity", 2, velocity.read.tex);
+      bindTex(progs.advect, "uSource", 3, light.read.tex);
+      blit(light.write);
+      light.swap();
 
       usarPrograma(progs.advect, dye.read.texel);
       gl.uniform2f(u(progs.advect, "uTexelSize"), velocity.read.texel[0], velocity.read.texel[1]);

@@ -2467,3 +2467,110 @@ condiciones distintas es la manera más fácil de inventarse un defecto.
 Gate **892/892** · mutación **117 muertas, 0 fallas** · lint 0 errores · build
 verde.
 
+
+---
+
+## Ronda 28 — la ley estaba publicada: se dejó de adivinar
+
+El founder, tras la r27: *«no estamos logrando replicar el mismo movimiento […]
+investiga si ellos documentaron en algún lado o tienen disponible el movimiento
+exacto de las olas al sonido, con eso solo lo implementamos y no nos toca prueba
+y error».*
+
+Estaba publicada. No en GitHub: **en su propio bundle**, servido por su página.
+El chunk `75548` trae el reproductor del orbe, el simulador de fluido y el
+shader entero. Dos rondas de medición habían llegado a la mitad del asunto; el
+código dice la otra mitad, y explica por qué el ajuste fino no alcanzaba.
+
+### Lo que ninguna medición podía ver
+
+**1 · El sonido no es un número: son cuatro bandas.** Graves (0–200 Hz), medios
+(200 Hz–2 kHz), agudos (2–20 kHz) y el total — y **cada banda mueve otra cosa**.
+Un escalar no puede hacer eso, y de ahí venía exactamente el diagnóstico del
+founder: *«reaccionan como un golpe»*. Todo se movía junto porque todo escuchaba
+la misma señal.
+
+**2 · Cada banda lleva dos acumuladores, y la regla de qué mueve cada uno es
+exacta.** El INTEGRADO corre relojes; el PROMEDIO escala amplitudes. Es
+literalmente el principio que la r27 dedujo a los golpes —«el reloj rápido
+cambia velocidades, nunca amplitudes»— ahora con su forma y sus constantes:
+
+```
+fbmTime2   = uTime*(uFbmSpeed*.5) + ∫graves*.25      reloj
+noiseTime1 = uTime*uNoiseSpeed*.5 + ∫agudos*.1       reloj
+ringTime   = -uTime*.5 - ∫total*.2                   reloj
+noiseDisp *= 1. + agudos*.25                         amplitud
+noiseScale = 0.65 + graves*.4                        escala
+```
+
+**3 · En silencio no empujan nada.** Su fluido recibe **una** salpicadura por
+cuadro y **sólo cuando el sonido sube** (`audioAverageDelta.all > 1e-4`). El
+nuestro empujaba once —cinco de fondo más seis de voz— todos los cuadros. Ésa
+es la razón de que el suyo se vea calmo entre sílabas y el nuestro agitado sin
+parar.
+
+**4 · Y su salpicadura no es una mancha: es un tren de anillos concéntricos.**
+
+```
+pDist = mod(dist*2 - fase, 1)
+pulso = smoothstep(0,w,pDist) - smoothstep(w,2w,pDist)
+empuje = pulso * (graves*30) * clamp(dist,0,1) * dirección
+```
+
+La fase avanza con el tiempo y con el total integrado, así que los anillos
+**viajan hacia afuera y nunca retroceden**. La amplitud son los graves. Y el
+`clamp(dist)` los apaga en el centro: nacen adentro y crecen. Eso es,
+literalmente, una onda de voz.
+
+**5 · Las ondas son de LUZ.** El founder lo había dicho con esas palabras —«como
+con luz y ondas»— y era la puerta que faltaba: su fluido entra al color **dos
+veces**, desplazando el muestreo *y* mezclándose como luz sobre el color
+compuesto. Nosotros sólo teníamos la primera, así que nuestros anillos existían
+en la física y **no se veían**: deformaban un color en vez de encender nada.
+
+**6 · El arco brillante sólo existe con sonido.** `cl` está multiplicado por una
+compuerta que en silencio vale cero. Su orbe callado no tiene arco; al hablar
+aparece y gira. No lo teníamos.
+
+### Qué se construyó
+
+Cuatro bandas y sus dos acumuladores (`orbAudioBands`,
+`advanceOrbAudioAverage`, `advanceOrbCumulativeAudio`); el tren de anillos en el
+shader de salpicadura con su compuerta de flanco de subida; un **tinte de luz**
+propio —textura aparte, porque el mapa material es de 24 px a propósito— que los
+anillos encienden y que se apaga solo; el arco con su compuerta; y la página
+`/dev/onda`: su mismo formato, un orbe grande con play y flechas.
+
+Dos cosas del banco que valen como método:
+
+- **La muestra de voz se sintetiza como números y su espectro sale de una FFT
+  propia** con los ajustes de la referencia. Colgarlo del `AudioContext` lo hacía
+  imposible de guionar y, peor, la política de autoplay **falla en silencio**: el
+  contexto queda suspendido, el analizador entrega ceros y el orbe se ve quieto
+  sin que nada esté roto.
+- **Un paso a mano determinista** (`__kipuOnda`), porque `requestAnimationFrame`
+  no corre en una pestaña que no está al frente — y un banco de comparación está
+  detrás la mitad del tiempo.
+
+### El resultado, medido contra el suyo
+
+Con el mismo instrumento en las dos pantallas (correlación entre el cambio de un
+cuadro y el de N cuadros después: positiva = flujo persistente, negativa =
+pulso):
+
+| | 2 cuadros | 4 cuadros | 8 cuadros | contraste |
+|---|---|---|---|---|
+| ellos | 3,81 | 2,07 | 2,29 | **0,599** |
+| nosotros | **4,71** | **1,22** | **0,95** | **0,373** |
+
+Y en el camino apareció una **reincidencia del defecto de la r27**: el banco
+nuevo le estaba pasando al orbe el envolvente RÁPIDO en el canal de las
+amplitudes. El orbe pulsaba una vez por sílaba —correlación a ocho cuadros
+**−80**— y con el lento pasó a **+0,95**. La regla vuelve a demostrarse sola.
+
+**Lo que sigue corto y hay que decirlo: el contraste, 0,373 contra 0,599.** El
+suyo tiene bandas de luz mucho más marcadas, y eso no viene de la voz sino de su
+campo de color —un degradado de imagen desplazado con una amplitud grande—.
+Tocarlo es tocar la paleta que el founder ya aprobó, así que queda como decisión
+suya y no como cambio silencioso.
+

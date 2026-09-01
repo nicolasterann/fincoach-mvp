@@ -1606,6 +1606,20 @@ a.kipu-perspective-module__head:focus-visible { background: var(--kipu-shell-gla
 .kipu-sistema-orb .kipu-shell-orb { width: 132px; }
 .kipu-sistema-slot__name { color: var(--kipu-shell-ink-3); font-size: var(--kipu-fs-micro); font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
 
+/* N3C r28 · el carrusel de comparación de /dev/onda. */
+.kipu-carrusel { display: grid; gap: var(--kipu-sp-5); justify-items: center; }
+.kipu-carrusel__pista { display: flex; align-items: center; gap: var(--kipu-sp-5); }
+.kipu-carrusel__flecha { border: 1px solid var(--kipu-shell-line); background: transparent; color: var(--kipu-shell-ink-2); border-radius: 999px; width: 2.6rem; height: 2.6rem; font-size: 1.4rem; line-height: 1; cursor: pointer; }
+.kipu-carrusel__flecha:hover { color: var(--kipu-shell-ink-1); }
+.kipu-carrusel__orbe { position: relative; display: grid; place-items: center; }
+.kipu-carrusel__play { position: absolute; width: 2.6rem; height: 2.6rem; border-radius: 999px; border: none; background: rgba(255,255,255,.92); color: #111; font-size: .8rem; cursor: pointer; display: grid; place-items: center; box-shadow: 0 2px 18px rgba(0,0,0,.25); }
+.kipu-carrusel__pie { display: grid; gap: var(--kipu-sp-3); justify-items: center; }
+.kipu-carrusel__nombre { color: var(--kipu-shell-ink-2); font-size: var(--kipu-fs-micro); letter-spacing: 0.1em; text-transform: uppercase; margin: 0; }
+.kipu-carrusel__bandas { display: flex; gap: var(--kipu-sp-4); margin: 0; }
+.kipu-carrusel__bandas dt { color: var(--kipu-shell-ink-3); font-size: var(--kipu-fs-micro); letter-spacing: 0.08em; text-transform: uppercase; }
+.kipu-carrusel__bandas dd { margin: 0.1rem 0 0; color: var(--kipu-shell-ink-1); font-variant-numeric: tabular-nums; font-weight: 650; }
+.kipu-carrusel__falla { color: var(--layer-deuda); font-size: var(--kipu-fs-micro); }
+
 /* N3C r26 · el banco de voz en vivo de /dev/vidrio. */
 .kipu-voz-viva { display: grid; gap: var(--kipu-sp-4); }
 .kipu-voz-viva__mando { display: flex; flex-wrap: wrap; align-items: center; gap: var(--kipu-sp-3); }

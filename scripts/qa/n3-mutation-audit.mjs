@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 // build no prueba nada: prueba que el código no compila, no que alguien estaba
 // mirando.
 
-const TOTAL = 892;
+const TOTAL = 893;
 const runner = ["scripts/qa/run-capture-gate.mjs"];
 
 const CONTRACT = "src/app/app/components/shell/shell-orb-contract.ts";
@@ -31,6 +31,8 @@ const FLUID = "src/app/app/components/shell/orb-fluid.ts";
 const VOZ = "src/app/app/components/shell/voice-capture-contract.ts";
 const MIC = "src/app/app/components/shell/useVoiceCapture.ts";
 const BANCO = "src/app/app/components/shell/OrbVozViva.tsx";
+const CARRUSEL = "src/app/app/components/shell/OrbCarrusel.tsx";
+const MUESTRA = "src/app/app/components/shell/orb-audio-sample.ts";
 const SPEC = "src/app/app/components/shell/OrbSpecimen.tsx";
 
 const mutations = [
@@ -517,6 +519,94 @@ const mutations = [
     from: "        voice: animatedVoice,\n        wave: waveEnergy,",
     to: "        voice: 0,\n        wave: 0,",
   },
+  // ── N3C-10 · LA LEY PORTADA DE SU CÓDIGO ──────────────────────────────────
+  {
+    name: "N3C-10",
+    result:
+      "el fluido vuelve a recibir un anillo SIEMPRE, no sólo cuando el sonido sube: el orbe queda agitado entre silabas como antes",
+    file: FLUID,
+    from: "    if (audio.risingAll > ORB_FLUID_RISING_THRESHOLD) {",
+    to: "    if (audio.risingAll > -1e9) {",
+  },
+  {
+    name: "N3C-10",
+    result:
+      "la salpicadura deja de ser un TREN DE ANILLOS y vuelve a ser una mancha: no hay onda que nazca y viaje",
+    file: FLUID,
+    from: "    float pDist = mod(dist * 2.0 - uPhase, 1.0);",
+    to: "    float pDist = 0.5;",
+  },
+  {
+    name: "N3C-10",
+    result:
+      "la fase del anillo deja de avanzar: los anillos se quedan quietos donde nacieron",
+    file: FLUID,
+    from: "        phase: t * 0.25 + audio.cumulative.all * 0.15,",
+    to: "        phase: 0,",
+  },
+  {
+    name: "N3C-10",
+    result:
+      "la amplitud del anillo deja de salir de los GRAVES: todas las voces empujan igual",
+    file: FLUID,
+    from: "      const empuje = audio.average.low * ORB_FLUID_RING_FORCE;",
+    to: "      const empuje = ORB_FLUID_RING_FORCE * 0.5;",
+  },
+  {
+    name: "N3C-10",
+    result: "el tinte de luz nunca se apaga: los anillos se acumulan hasta blanquear el orbe",
+    file: FLUID,
+    from: "export const ORB_FLUID_LIGHT_FADE = 0.55;",
+    to: "export const ORB_FLUID_LIGHT_FADE = 0;",
+  },
+  {
+    name: "N3C-10",
+    result:
+      "las ondas dejan de ser de LUZ y vuelven a existir sólo en la fisica: se mueven y no se ven",
+    file: SHADER,
+    from: "    vec3 luz = texture2D(uFluidLight, luv).rgb;",
+    to: "    vec3 luz = vec3(0.0);",
+  },
+  {
+    name: "N3C-10",
+    result:
+      "el arco deja de tener compuerta: un orbe CALLADO queda con el arco encendido y girando",
+    file: SHADER,
+    from: "    arco = clamp(pow(cl * min(uVoiceSlow * 4.0, 1.0), 3.0), 0.0, 1.0);",
+    to: "    arco = clamp(pow(cl, 3.0), 0.0, 1.0);",
+  },
+  {
+    name: "N3C-10",
+    result:
+      "las cuatro bandas se colapsan en una: vuelve el «reacciona como un golpe» porque todo se mueve con la misma senal",
+    file: VOZ,
+    from: "    low: media(0, corte(ORB_BAND_LOW_END_HZ)),",
+    to: "    low: media(0, n - 1),",
+  },
+  {
+    name: "N3C-10",
+    result:
+      "el acumulador deja de integrar y persigue: los relojes dejan de correr con el sonido",
+    file: VOZ,
+    from: "  const uno = (p: number, a: number) => mezcla(p, p + a * paso, mix);",
+    to: "  const uno = (p: number, a: number) => mezcla(p, a * paso, mix);",
+  },
+  {
+    name: "N3C-10",
+    result:
+      "el banco le pasa al orbe el envolvente RAPIDO: el dipolo pulsa una vez por silaba (coherencia −80 contra +2,3 del suyo)",
+    file: CARRUSEL,
+    from: "            voiceSlow: lento,",
+    to: "            voiceSlow: promedio.all,",
+  },
+  {
+    name: "N3C-10",
+    result:
+      "el analizador del banco pierde su ventana: el espectro se ensucia con el corte del bloque y las bandas mienten",
+    file: MUESTRA,
+    from: "    ventana[i] = 0.42 - 0.5 * Math.cos(x) + 0.08 * Math.cos(2 * x);",
+    to: "    ventana[i] = 1;",
+  },
   // ── N3C-9 · LAS ONDAS DE VOZ, MEDIDAS EN LA REFERENCIA ────────────────────
   {
     name: "N3C-9",
@@ -594,8 +684,8 @@ const mutations = [
     result:
       "el dipolo se aplica ANTES del volumen y del tonemap: toca el color compuesto a mitad de camino",
     file: SHADER,
-    from: "  vec3 outCol = tonemap((col*edge + soul) * volumen * max(voz, 0.0));",
-    to: "  vec3 outCol = tonemap((col*edge + soul) * volumen);",
+    from: "  vec3 outCol = tonemap(((col + ondaLuz*edge)*edge + soul) * volumen * max(voz, 0.0));",
+    to: "  vec3 outCol = tonemap(((col + ondaLuz*edge)*edge + soul) * volumen);",
   },
   {
     name: "N3C-9",
