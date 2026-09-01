@@ -82,6 +82,15 @@ export interface OrbGradientInput {
   deep: OrbRgb;
   liquid: OrbRgb;
   accent: OrbRgb;
+  /**
+   * N3C r32 · CINCO TONOS EXPLÍCITOS, de oscuro a claro.
+   *
+   * Con los tres colores de la capa hay que INVENTAR los intermedios, y ahí se
+   * cuela mi criterio. Para replicar su naranja de Narrator hacen falta los
+   * suyos exactos, y se sacan de su propio PNG por percentiles de luminancia:
+   * #b93919 · #e25b2c · #f98857 · #ffbb82 · #ffcf9b.
+   */
+  tonos?: readonly OrbRgb[];
   /** Qué capa es: dos capas nunca comparten el mismo cuadro. */
   seed: number;
   size?: number;
@@ -110,10 +119,12 @@ export function paintOrbGradient(
   //
   // La receta sale de mirar los suyos: un tono medio que manda, un realce claro
   // que ocupa poco, y sombras profundas que ocupan algo más que el realce.
-  const base = mezclar(liquid, accent, 0.34);
-  const alto = mezclar(accent, [1, 1, 1], 0.38);
-  const bajo = deep;
-  const medio = mezclar(liquid, accent, 0.12);
+  const t = input.tonos;
+  const base = t ? t[2]! : mezclar(liquid, accent, 0.34);
+  const alto = t ? t[4]! : mezclar(accent, [1, 1, 1], 0.38);
+  const bajo = t ? t[0]! : deep;
+  const medio = t ? t[1]! : mezclar(liquid, accent, 0.12);
+  const claroMedio = t ? t[3]! : mezclar(base, accent, 0.5);
   const rnd = azar(input.seed + 1);
 
   // ── 1 · EL LAVADO DE FONDO: el tono medio, con una diagonal suave ──
@@ -158,7 +169,7 @@ export function paintOrbGradient(
   for (let i = 0; i < 5; i += 1) reparto.push(alto);
   for (let i = 0; i < 10; i += 1) reparto.push(bajo);
   for (let i = 0; i < 8; i += 1) reparto.push(medio);
-  for (let i = 0; i < 7; i += 1) reparto.push(mezclar(base, accent, 0.5));
+  for (let i = 0; i < 7; i += 1) reparto.push(claroMedio);
   ctx.save();
   ctx.filter = `blur(${Math.round(N * 0.058)}px)`;
   for (let i = 0; i < reparto.length; i += 1) {
@@ -168,8 +179,22 @@ export function paintOrbGradient(
     const tmp = reparto[i]!;
     reparto[i] = reparto[j]!;
     reparto[j] = tmp;
+    // N3C r32 · TRES MANCHAS AL CENTRO, a propósito.
+    //
+    // El founder: «parece que el líquido solo fluye por los lados y casi nunca
+    // toca el centro». Medido por anillos, el centro es en realidad el MÁS
+    // activo (2,01 contra 1,92 del borde): lo que falta no es movimiento, es
+    // algo que se vea moverse. El centro del cuadro era el núcleo liso de la
+    // esfera, y una zona lisa arrastrada no cambia nada aunque se mueva.
+    //
+    // (El arrastre además se apaga en el centro por construcción —va
+    // multiplicado por la normal, que ahí vale cero—, así que la única forma de
+    // que el centro tenga vida es que tenga DIBUJO.)
+    const alCentro = i < 3;
     const ang = rnd() * Math.PI * 2;
-    const rad = (0.02 + rnd() * 0.78) * N * 0.5;
+    const rad = alCentro
+      ? rnd() * N * 0.13
+      : (0.10 + rnd() * 0.70) * N * 0.5;
     const px = cx + Math.cos(ang) * rad;
     const py = cy + Math.sin(ang) * rad;
     // N3C r31 · MASAS CON BORDE BLANDO, no degradados que se funden.

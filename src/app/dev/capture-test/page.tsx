@@ -525,6 +525,11 @@ import {
   STATEMENT_SESSION_MARKER,
 } from "@/lib/capture/evidence-capture";
 import {
+  ORB_GRAIN_OPACITY,
+  ORB_GRAIN_SPREAD,
+  ORB_GRAIN_TILE,
+} from "@/app/app/components/shell/orb-grain-overlay";
+import {
   EL_FBM_AMPLITUDE,
   EL_FBM_SCALE,
   EL_NOISE_AMPLITUDE,
@@ -29935,6 +29940,10 @@ assert(
     `${process.cwd()}/src/app/app/components/shell/orb-fluid.ts`,
     "utf8",
   );
+  const n3cMuestra = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/orb-audio-sample.ts`,
+    "utf8",
+  );
   const n3cSample = readFileSync(
     `${process.cwd()}/src/app/app/components/shell/orb-audio-sample.ts`,
     "utf8",
@@ -30136,6 +30145,64 @@ assert(
       !n3LiveCode.includes("orb-eleven-shader") &&
       n3cCarrusel.includes("createElevenOrbRenderer"),
     JSON.stringify({ p05: ORB_GRADIENT_P05, p95: ORB_GRADIENT_P95, amp: EL_FBM_AMPLITUDE }),
+  );
+
+  // N3C-12 · EL GRANO NO ESTÁ EN EL WEBGL, Y SU NARANJA ES SU PALETA.
+  //
+  // El founder: «le falta la textura de grain que tiene el de ellos, no sé de
+  // dónde sale». Salía del único sitio donde yo no había mirado: NO está en su
+  // shader (su config dice `grainOpacity: 0`) ni en su textura (su PNG mide
+  // 0,0017 de diferencia entre píxeles vecinos, o sea liso). Está en el DOM,
+  // ENCIMA del lienzo: un div con un mosaico de ruido, `mix-blend-mode:
+  // overlay` y `opacity: 0.5`, leído de su propio marcado.
+  //
+  // Tres rondas buscándolo dentro del shader. La lección queda: cuando algo se
+  // ve y no está en el código que mirás, mirá la CAPA DE AL LADO.
+  const n3cGrano = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/orb-grain-overlay.ts`,
+    "utf8",
+  );
+  assert(
+    "N3C-12 · el grano es una capa encima con la receta de la referencia, y el naranja de Narrator lleva SU paleta",
+    // ── EL GRANO, con su receta ──
+    ORB_GRAIN_TILE === 256 &&
+      ORB_GRAIN_OPACITY === 0.5 &&
+      n3cGrano.includes('mixBlendMode: "overlay"') &&
+      n3cGrano.includes('backgroundRepeat: "repeat"') &&
+      // el mosaico ronda el gris medio: sobre `overlay`, el gris exacto no hace
+      // nada, así que lo que se ve es cuánto se aparta
+      n3cGrano.includes("const v = 128 +") &&
+      ORB_GRAIN_SPREAD > 0 &&
+      ORB_GRAIN_SPREAD < 80 &&
+      // …y se genera DESPUÉS DE MONTAR: en el servidor no hay `document` y la
+      // capa quedaba sin imagen, sin error y sin nada en consola
+      n3cGrano.includes('if (typeof document === "undefined") return null;') &&
+      n3cCarrusel.includes("useSyncExternalStore(\n    orbGrainSubscribe,") &&
+      n3cCarrusel.includes("style={orbGrainStyle(grano)}") &&
+
+      // ── SU NARANJA, con SUS tonos ──
+      // Sacados de su `creative-1.png` por percentiles de luminancia (5, 20, 50,
+      // 80, 95), que es su paleta y no una interpretación nuestra.
+      n3cCarrusel.includes("const NARRATOR: readonly OrbRgb[]") &&
+      n3cCarrusel.includes("0xb9 / 255") &&
+      n3cCarrusel.includes("0xff / 255, 0xcf / 255, 0x9b / 255") &&
+      n3cCarrusel.includes("tonos: NARRATOR,") &&
+      n3cCuadro.includes("const base = t ? t[2]! : mezclar(liquid, accent, 0.34);") &&
+
+      // ── EL CENTRO TIENE DIBUJO ──
+      // Medido por anillos, el centro es el MÁS activo (2,01 contra 1,92 del
+      // borde): lo que faltaba no era movimiento sino algo que se viera
+      // moverse. El arrastre además se apaga ahí por construcción —va por la
+      // normal, que en el centro vale cero—, así que la única vida posible del
+      // centro es que tenga pintura.
+      n3cCuadro.includes("const alCentro = i < 3;") &&
+
+      // ── Y EL GUION DE NARRACIÓN ──
+      n3cMuestra.includes("texto: string;") &&
+      ORB_VOICE_SAMPLES.every((m) => m.f0 === 0 || m.texto.length > 20) &&
+      n3cMuestra.includes("const enPausa = (t: number) => {") &&
+      n3cCarrusel.includes("kipu-carrusel__guion"),
+    JSON.stringify({ mosaico: ORB_GRAIN_TILE, opacidad: ORB_GRAIN_OPACITY }),
   );
 
   // N3C-4 · EL RELOJ DEL CAMPO ES PURO, ACELERA CON LA VOZ, Y ESTÁ CABLEADO.

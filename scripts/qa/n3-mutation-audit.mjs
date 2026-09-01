@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 // build no prueba nada: prueba que el código no compila, no que alguien estaba
 // mirando.
 
-const TOTAL = 894;
+const TOTAL = 895;
 const runner = ["scripts/qa/run-capture-gate.mjs"];
 
 const CONTRACT = "src/app/app/components/shell/shell-orb-contract.ts";
@@ -35,6 +35,7 @@ const CARRUSEL = "src/app/app/components/shell/OrbCarrusel.tsx";
 const MUESTRA = "src/app/app/components/shell/orb-audio-sample.ts";
 const PORTE = "src/app/app/components/shell/orb-eleven-shader.ts";
 const CUADRO = "src/app/app/components/shell/orb-gradient-texture.ts";
+const GRANO = "src/app/app/components/shell/orb-grain-overlay.ts";
 const SPEC = "src/app/app/components/shell/OrbSpecimen.tsx";
 
 const mutations = [
@@ -520,6 +521,55 @@ const mutations = [
     file: LIVE,
     from: "        voice: animatedVoice,\n        wave: waveEnergy,",
     to: "        voice: 0,\n        wave: 0,",
+  },
+  // ── N3C-12 · EL GRANO Y SU NARANJA ────────────────────────────────────────
+  {
+    name: "N3C-12",
+    result:
+      "el grano deja de mezclarse como overlay: la capa tapa el orbe en vez de darle textura",
+    file: GRANO,
+    from: '    mixBlendMode: "overlay",',
+    to: '    mixBlendMode: "normal",',
+  },
+  {
+    name: "N3C-12",
+    result:
+      "el mosaico del grano se vuelve gris plano: sobre overlay eso no hace NADA y el grano desaparece",
+    file: GRANO,
+    from: "export const ORB_GRAIN_SPREAD = 30;",
+    to: "export const ORB_GRAIN_SPREAD = 0;",
+  },
+  {
+    name: "N3C-12",
+    result:
+      "el mosaico cambia de tamano y el grano deja de ser fino: se ve como manchas en vez de textura",
+    file: GRANO,
+    from: "export const ORB_GRAIN_TILE = 256;",
+    to: "export const ORB_GRAIN_TILE = 64;",
+  },
+  {
+    name: "N3C-12",
+    result:
+      "el naranja de Narrator deja de usar SUS tonos: vuelve a ser una interpretacion nuestra de tres colores",
+    file: CARRUSEL,
+    from: "          tonos: NARRATOR,",
+    to: "          tonos: undefined,",
+  },
+  {
+    name: "N3C-12",
+    result:
+      "el centro del cuadro se queda sin dibujo: el arrastre ahi vale cero por construccion, asi que el centro se ve muerto",
+    file: CUADRO,
+    from: "    const alCentro = i < 3;",
+    to: "    const alCentro = false;",
+  },
+  {
+    name: "N3C-12",
+    result:
+      "las pausas del guion desaparecen: la muestra vuelve a ser una rafaga regular y no una voz leyendo",
+    file: MUESTRA,
+    from: "  const enPausa = (t: number) => {",
+    to: "  const enPausaViejo = (t: number) => {",
   },
   // ── N3C-11 · EL PORTE DE SU ORBE ──────────────────────────────────────────
   {

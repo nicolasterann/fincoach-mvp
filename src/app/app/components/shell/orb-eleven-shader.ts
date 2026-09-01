@@ -310,6 +310,8 @@ export interface ElevenOrbFrame {
   slow: OrbAudioBands;
   /** Qué capa es: decide su cuadro pintado. */
   seed: number;
+  /** Cinco tonos explícitos, de oscuro a claro. Para replicar una paleta ajena. */
+  tonos?: readonly OrbRgb[];
   risingAll: number;
   deep: OrbRgb;
   liquid: OrbRgb;
@@ -436,7 +438,8 @@ export function createElevenOrbRenderer(
   const subirGradiente = (frame: ElevenOrbFrame) => {
     if (!gradTex || gradSeed === -2 || frame.seed === gradSeed) return;
     const cv = paintOrbGradient({
-      deep: frame.deep, liquid: frame.liquid, accent: frame.accent, seed: frame.seed,
+      deep: frame.deep, liquid: frame.liquid, accent: frame.accent,
+      seed: frame.seed, tonos: frame.tonos,
     });
     if (!cv) return;
     gradSeed = frame.seed;

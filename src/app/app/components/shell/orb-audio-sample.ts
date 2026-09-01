@@ -25,6 +25,17 @@ import {
 
 export interface OrbVoiceSample {
   nombre: string;
+  /**
+   * N3C r32 · EL TEXTO QUE SE ESTÁ "NARRANDO".
+   *
+   * El founder: «quisiera que en las pruebas de audio agregues un texto de
+   * narración como el de ellos para escuchar la reacción a voz real». Su página
+   * muestra el guion que el orbe está leyendo, y eso cambia cómo se juzga: uno
+   * deja de mirar un tono y empieza a seguir una frase. Las sílabas de la
+   * muestra se generan a partir de este texto, así que las pausas y los acentos
+   * caen donde caerían al leerlo.
+   */
+  texto: string;
   /** Frecuencia fundamental, en hercios. 0 = silencio. */
   f0: number;
   /** Sílabas por segundo. */
@@ -35,11 +46,43 @@ export interface OrbVoiceSample {
 }
 
 export const ORB_VOICE_SAMPLES: readonly OrbVoiceSample[] = [
-  { nombre: "voz calmada", f0: 118, ritmo: 3.6, brillo: 0.55, energia: 0.85 },
-  { nombre: "voz animada", f0: 165, ritmo: 5.2, brillo: 0.8, energia: 1 },
-  { nombre: "voz grave", f0: 88, ritmo: 3.0, brillo: 0.3, energia: 0.95 },
-  { nombre: "voz aguda", f0: 210, ritmo: 4.6, brillo: 1, energia: 0.9 },
-  { nombre: "silencio", f0: 0, ritmo: 0, brillo: 0, energia: 0 },
+  {
+    nombre: "voz calmada",
+    f0: 118,
+    ritmo: 3.6,
+    brillo: 0.55,
+    energia: 0.85,
+    texto:
+      "Tu saldo de hoy alcanza para lo que tenías pensado. No hace falta que te aprietes: lo de esta semana ya está cubierto.",
+  },
+  {
+    nombre: "voz animada",
+    f0: 165,
+    ritmo: 5.2,
+    brillo: 0.8,
+    energia: 1,
+    texto:
+      "¡Llegaste a la meta del viaje! Guardaste mil doscientos en cuatro meses y todavía te sobra la reserva entera. Eso hay que celebrarlo.",
+  },
+  {
+    nombre: "voz grave",
+    f0: 88,
+    ritmo: 3.0,
+    brillo: 0.3,
+    energia: 0.95,
+    texto:
+      "Se viene el pago de la tarjeta el jueves. Si movés doscientos desde la cuenta de ahorro, entra sin tocar la reserva.",
+  },
+  {
+    nombre: "voz aguda",
+    f0: 210,
+    ritmo: 4.6,
+    brillo: 1,
+    energia: 0.9,
+    texto:
+      "Registré el almuerzo de ayer y lo dividí con Ana. Te devuelve nueve con cincuenta; te lo aviso cuando lo pague.",
+  },
+  { nombre: "silencio", f0: 0, ritmo: 0, brillo: 0, energia: 0, texto: "" },
 ];
 
 export const ORB_SAMPLE_RATE = 48_000;
@@ -68,11 +111,41 @@ export function orbVoiceSamplePcm(
     semilla ^= semilla << 5;
     return ((semilla >>> 0) / 0xffffffff) * 2 - 1;
   };
+  // N3C r32 · LAS PAUSAS SALEN DEL TEXTO. Una voz de verdad no es una ráfaga
+  // regular: tiene comas, puntos y respiraciones, y el orbe reacciona a los
+  // flancos de subida — o sea, justo a los arranques después de una pausa.
+  const palabras = muestra.texto.split(/\s+/).filter(Boolean);
+  const pausas: number[] = [];
+  {
+    let reloj = 0;
+    for (const w of palabras) {
+      const silabas = Math.max(1, (w.match(/[aeiouáéíóúAEIOUÁÉÍÓÚ]+/g) ?? []).length);
+      reloj += silabas / Math.max(0.5, muestra.ritmo);
+      if (/[,;:]$/.test(w)) reloj += 0.18;
+      if (/[.!?]$/.test(w)) reloj += 0.42;
+      pausas.push(reloj);
+    }
+  }
+  const largoTexto = pausas.length ? pausas[pausas.length - 1]! : segundos;
+  const enPausa = (t: number) => {
+    if (!pausas.length) return false;
+    const tt = t % Math.max(0.5, largoTexto);
+    for (let k = 0; k < pausas.length; k += 1) {
+      const fin = pausas[k]!;
+      const ini = k > 0 ? pausas[k - 1]! : 0;
+      if (tt >= ini && tt < fin) {
+        const w = palabras[k]!;
+        const cola = /[.!?]$/.test(w) ? 0.42 : /[,;:]$/.test(w) ? 0.18 : 0.04;
+        return tt > fin - cola;
+      }
+    }
+    return false;
+  };
   for (let i = 0; i < n; i += 1) {
     const t = i / sampleRate;
     const silaba = Math.max(0, Math.sin(2 * Math.PI * muestra.ritmo * t));
     const frase = 0.35 + 0.65 * Math.max(0, Math.sin(2 * Math.PI * 0.13 * t + 0.4));
-    const env = Math.pow(silaba, 1.6) * frase * muestra.energia;
+    const env = Math.pow(silaba, 1.6) * frase * muestra.energia * (enPausa(t) ? 0.06 : 1);
     const f = muestra.f0 * (1 + 0.06 * Math.sin(2 * Math.PI * 0.31 * t));
     fase += (2 * Math.PI * f) / sampleRate;
     let v = Math.sin(fase) * 0.55;

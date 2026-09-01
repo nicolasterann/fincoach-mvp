@@ -1,8 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createOrbRenderer, ORB_SPAN, type OrbRenderer, type OrbRgb } from "./orb-shader";
 import { paintOrbGradient } from "./orb-gradient-texture";
+import {
+  orbGrainServerTile,
+  orbGrainStyle,
+  orbGrainSubscribe,
+  orbGrainTile,
+} from "./orb-grain-overlay";
 import {
   createElevenOrbRenderer,
   type ElevenOrbRenderer,
@@ -27,10 +39,7 @@ import {
   VOICE_SHAPE_TAU_MS,
   advanceOrbAudioAverage,
   advanceOrbCumulativeAudio,
-  orbAudioBands,
   ORB_AUDIO_ZERO,
-  VOICE_ANALYSER_FFT_SIZE,
-  VOICE_ANALYSER_SMOOTHING,
   type OrbAudioBands,
 } from "./voice-capture-contract";
 
@@ -53,6 +62,25 @@ import {
 
 const MUESTRAS = ORB_VOICE_SAMPLES;
 
+/**
+ * N3C r32 · SU NARANJA DE NARRATOR, sacado de su propio PNG.
+ *
+ * El founder: «no veo que hayas replicado su orbe naranja de Narrator; el
+ * experimento era replicarlo exacto, con sus colores y textura, para encontrar
+ * las diferencias de forma más clara». Tenía razón: en la r31 usé su imagen
+ * SÓLO como diagnóstico y nunca quedó un orbe naranja al que mirar.
+ *
+ * Los cinco tonos salen de `creative-1.png` por percentiles de luminancia —el 5,
+ * el 20, el 50, el 80 y el 95—, que es su paleta y no una interpretación mía.
+ */
+const NARRATOR: readonly OrbRgb[] = [
+  [0xb9 / 255, 0x39 / 255, 0x19 / 255],
+  [0xe2 / 255, 0x5b / 255, 0x2c / 255],
+  [0xf9 / 255, 0x88 / 255, 0x57 / 255],
+  [0xff / 255, 0xbb / 255, 0x82 / 255],
+  [0xff / 255, 0xcf / 255, 0x9b / 255],
+];
+
 export function OrbCarrusel({ size = 260 }: { size?: number }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -62,10 +90,20 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
   // adivinar — este bloque ya pagó tres veces por instrumentos que escondían el
   // paso intermedio.
   const texRef = useRef<HTMLCanvasElement>(null);
+  const narradorRef = useRef<HTMLCanvasElement>(null);
   const [indice, setIndice] = useState(0);
   const [sonando, setSonando] = useState(false);
   const [medidas, setMedidas] = useState<OrbAudioBands>(ORB_AUDIO_ZERO);
   const [falla, setFalla] = useState<string | null>(null);
+  /**
+   * El mosaico del grano: nulo en el servidor, el PNG de ruido en el navegador.
+   * El porqué de esta puerta y no un efecto está en `orb-grain-overlay.ts`.
+   */
+  const grano = useSyncExternalStore(
+    orbGrainSubscribe,
+    orbGrainTile,
+    orbGrainServerTile,
+  );
 
   const bandasRef = useRef<OrbAudioBands>(ORB_AUDIO_ZERO);
   const ctxRef = useRef<AudioContext | null>(null);
@@ -240,6 +278,14 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
         porte = null;
       }
     }
+    let narrador: ElevenOrbRenderer | null = null;
+    if (narradorRef.current) {
+      try {
+        narrador = createElevenOrbRenderer(narradorRef.current);
+      } catch {
+        narrador = null;
+      }
+    }
     // N3C r31 · `?tex=<url>` mete una imagen ajena en el porte. Existe para
     // separar los dos problemas: si el shader come SU textura y da lo mismo que
     // su orbe, el shader está bien y lo que falla es nuestra pintura. Es una
@@ -358,6 +404,24 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
       // ── N3C r29 · EL PORTE FIEL, AL LADO ────────────────────────────────
       // Mismo audio, mismo cuadro, mismos colores. Es la única forma honesta de
       // preguntar «¿se parece?»: las dos cosas haciendo LO MISMO al mismo tiempo.
+      // ── EL NARANJA DE NARRATOR, con SUS colores ──
+      if (narrador) {
+        narrador.resize(size, window.devicePixelRatio || 1);
+        narrador.draw({
+          timeSeconds: relojPorte,
+          dtSeconds: dt,
+          average: promedio,
+          cumulative: acumulado,
+          slow: lentas,
+          seed: 99,
+          risingAll: subiendo,
+          deep: NARRATOR[0]!,
+          liquid: NARRATOR[2]!,
+          accent: NARRATOR[3]!,
+          tonos: NARRATOR,
+        });
+      }
+
       if (porte) {
         porte.resize(size, window.devicePixelRatio || 1);
         porte.draw({
@@ -412,6 +476,7 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
       cancelAnimationFrame(raf);
       activo.dispose();
       porte?.dispose();
+      narrador?.dispose();
       delete (window as unknown as { __kipuOnda?: unknown }).__kipuOnda;
       void ultimoTotal;
     };
@@ -445,7 +510,13 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
           </div>
           <div className="kipu-carrusel__orbe" style={{ width: size, height: size }}>
             <canvas ref={porteRef} style={{ width: size, height: size }} />
-            <p className="kipu-carrusel__cual">el porte de su orbe</p>
+            <div style={orbGrainStyle(grano)} />
+            <p className="kipu-carrusel__cual">el porte, con nuestros colores</p>
+          </div>
+          <div className="kipu-carrusel__orbe" style={{ width: size, height: size }}>
+            <canvas ref={narradorRef} style={{ width: size, height: size }} />
+            <div style={orbGrainStyle(grano)} />
+            <p className="kipu-carrusel__cual">su naranja de narrator</p>
           </div>
         </div>
         <button
@@ -469,6 +540,11 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
         <p className="kipu-carrusel__nombre">
           {ORB_KINDS[indice % ORB_KINDS.length]} · {muestra.nombre}
         </p>
+        {muestra.texto && (
+          <p className="kipu-carrusel__guion" data-sonando={sonando ? "1" : "0"}>
+            “{muestra.texto}”
+          </p>
+        )}
         <dl className="kipu-carrusel__bandas">
           <div><dt>graves</dt><dd data-banda="low">{medidas.low.toFixed(3)}</dd></div>
           <div><dt>medios</dt><dd data-banda="mid">{medidas.mid.toFixed(3)}</dd></div>

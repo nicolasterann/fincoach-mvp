@@ -2795,3 +2795,193 @@ dos veces: **igualar la textura no es igualar el orbe.** Calibrada a la media de
 su textura (0,605) el orbe salía en 0,78; el objetivo de la pintura se elige por
 lo que sale, no por lo que entra.
 
+
+---
+
+## Ronda 32 — el grano estaba en la capa de al lado
+
+Cuatro cosas del founder, y la primera es la que más enseña:
+
+### 1 · «Le falta la textura de grain, no sé de dónde sale»
+
+De ningún sitio donde yo hubiera mirado. Tres rondas buscándolo dentro del
+shader, y ahí no está:
+
+- su configuración dice **`grainOpacity: 0`** — el grano del shader está apagado;
+- su PNG de degradado es **liso**: la diferencia entre píxeles vecinos da 0,0017.
+
+Está en el **DOM, encima del lienzo**. Su propio marcado lo dice:
+
+```
+tw-absolute tw-mix-blend-overlay tw-inset-0
+tw-bg-[image:var(--noise-png)] tw-bg-[length:calc(256px*var(--noise-scale))]
+```
+
+Un `<div>` con un mosaico de ruido, `mix-blend-mode: overlay`, `opacity: 0.5`,
+mosaico de 256 px (128 en pantallas de doble densidad). Nada de WebGL.
+
+**La lección: cuando algo se ve y no está en el código que estás leyendo, mirá
+la capa de al lado.** Acá el mosaico se genera —no se usa el suyo— con su misma
+receta.
+
+Un detalle que casi lo esconde otra vez: la capa se rendía en el servidor, donde
+no hay `document`, y quedaba con `background-image: none`. Sin error y sin nada
+en consola. Ahora el mosaico se genera después de montar.
+
+### 2 · «No veo que hayas replicado su orbe naranja de Narrator»
+
+Tenía razón: en la r31 usé su imagen sólo como diagnóstico y nunca quedó un orbe
+naranja al que mirar. Ahora es el tercer orbe de `/dev/onda`, permanente, y sus
+cinco tonos salen de su propio PNG por percentiles de luminancia —el 5, el 20,
+el 50, el 80 y el 95—:
+
+**#b93919 · #e25b2c · #f98857 · #ffbb82 · #ffcf9b**
+
+Es su paleta, no una interpretación nuestra.
+
+### 3 · «El líquido sólo fluye por los lados y casi nunca toca el centro»
+
+Medido por anillos, **el centro es el anillo MÁS activo**: 2,01 contra 1,92 del
+borde. Lo que faltaba no era movimiento sino **algo que se viera moverse** — el
+centro de nuestro cuadro era el núcleo liso de la esfera, y una zona lisa
+arrastrada no cambia nada aunque se mueva.
+
+Hay además una razón estructural que vale anotar: el arrastre va multiplicado
+por la normal, **que en el centro vale cero exacto**. Así que la única forma de
+que el centro tenga vida es que tenga dibujo. Tres manchas van al centro a
+propósito.
+
+### 4 · «Agregá un texto de narración»
+
+Cada muestra lleva su guion y se ve en pantalla. Y las sílabas ahora **salen del
+texto**: las comas y los puntos generan pausas donde caerían al leerlo, así que
+el orbe recibe los flancos de subida de una frase de verdad y no de una ráfaga
+regular.
+
+
+---
+
+## Ronda 32 — el grano estaba en la capa de al lado, y el naranja no existía
+
+El founder, viendo la r31: *«aún no me encanta […] le falta la textura de grain
+que tiene el de ellos, no sé de dónde sale exactamente […] parece que el líquido
+solo fluye por los lados y casi nunca toca el centro […] no veo que hayas
+replicado su orbe naranja de Narrator. El experimento era replicarlo exacto, con
+sus colores y textura […] agregá un texto de narración como el de ellos.»*
+
+Cuatro cosas. Las cuatro tenían respuesta medible, y en dos de ellas el que
+estaba equivocado era yo.
+
+### 1 · El grano: tres rondas buscándolo donde no estaba
+
+Su configuración dice `grainOpacity: 0` — **el grano de su shader está
+apagado**. Y su PNG de degradado es liso: la diferencia entre píxeles vecinos da
+0,0017, o sea nada. Con esos dos datos el grano no podía salir de ninguna de las
+dos piezas que yo venía leyendo.
+
+Sale del DOM, encima del lienzo. Está escrito en su propio marcado:
+
+```
+tw-absolute tw-mix-blend-overlay tw-inset-0
+tw-bg-[image:var(--noise-png)] tw-bg-[length:calc(256px*var(--noise-scale))]
+```
+
+Un `<div>` con un PNG de ruido en mosaico, `mix-blend-mode: overlay`,
+`opacity: 0.5`, mosaico de 256 px (128 en pantallas de doble densidad). Se
+confirmó desde el otro lado: la página carga `noise@20aq.avif`, que es
+exactamente ese mosaico.
+
+`orb-grain-overlay.ts` genera el mosaico (ruido determinista, el mismo en cada
+máquina) y lo aplica con su misma receta.
+
+**La lección, que ya se repitió dos veces en este bloque: cuando algo se ve y no
+está en el código que estás leyendo, mirá la CAPA DE AL LADO.**
+
+Y una trampa de React encima: el mosaico se pinta con un lienzo, y en el
+servidor no hay lienzo. Generarlo en un efecto dispara un render en cascada (el
+lint lo rechaza, con razón); generarlo en el primer render deja al servidor
+diciendo «sin imagen» y la hidratación no repara la diferencia — la capa quedaba
+en `background-image: none`, **sin error y sin nada en consola**. La puerta
+correcta es `useSyncExternalStore`: nulo en el servidor, mosaico en el
+navegador, releído después de hidratar. Verificado en la página:
+`url("data:image/png;base…")`, `overlay`, `0.5`, `256px`.
+
+### 2 · «El líquido no toca el centro»: medido, el centro es lo MÁS activo
+
+Partí el orbe en seis anillos, del centro al borde, y medí cuánto cambia cada
+uno por cuadro:
+
+| anillo | centro | 2 | 3 | 4 | 5 | borde |
+|---|---|---|---|---|---|---|
+| movimiento | **2,01** | 1,99 | 1,69 | 1,50 | 1,55 | 1,92 |
+
+El centro no es el anillo quieto: es el más activo. Lo que faltaba no era
+movimiento sino **algo que mirar** — el arrastre se multiplica por la normal de
+la esfera, que en el centro apunta hacia el ojo y no desplaza nada visible, así
+que la zona se movía sin dibujar. La corrección va en la pintura: tres de las
+treinta manchas se fuerzan al centro (`alCentro = i < 3`), de modo que haya
+estructura para arrastrar donde antes había un tono plano.
+
+### 3 · Su naranja de Narrator, que yo nunca había construido
+
+Tenía razón: en la r31 usé su textura sólo como diagnóstico y nunca construí el
+orbe naranja permanente. El experimento pedido —replicarlo con SUS colores para
+que la diferencia se vea sin discutir— no existía.
+
+Los cinco tonos salen de `creative-1.png` por percentiles de luminancia, no a
+ojo:
+
+| | tono |
+|---|---|
+| profundo | `#b93919` |
+| bajo | `#e25b2c` |
+| medio | `#f98857` |
+| alto | `#ffbb82` |
+| claro | `#ffcf9b` |
+
+Media 0,604. El carrusel muestra ahora **tres orbes**: el nuestro de hoy, el
+porte con nuestros colores, y su naranja de Narrator — mismo shader, misma
+técnica de pintura, sus tonos.
+
+### 4 · El texto de narración
+
+Las pruebas de audio traían sonido sintetizado sin palabras. Ahora cada muestra
+lleva su guion escrito en pantalla, y las pausas de sílaba se derivan de la
+puntuación del propio texto (`enPausa`), así que lo que se oye y lo que se lee
+van juntos.
+
+### Dónde quedó, medido sobre el disco (sin las esquinas)
+
+| | calma | hablando | razón |
+|---|---|---|---|
+| el porte, movimiento | 0,132 | 0,139 | **1,05** |
+| ellos, movimiento (r31) | 1,36 | 1,40 | **1,03** |
+
+La conducta que más se les parecía y más nos costaba —que **el sonido les cambia
+la estructura, no la velocidad**— quedó igualada: 1,05 contra su 1,03.
+
+Brillo sobre el disco: el porte 0,706, el naranja 0,580.
+
+### Lo que NO pude hacer, dicho como es
+
+El founder pidió muchos fotogramas de su orbe en calma y hablando. Su orbe
+naranja **no está expuesto en ninguna página pública suya**: el cuadrado grande
+de `/text-to-speech` es un globo de idiomas, la portada sólo tiene lienzos de
+onda, y el orbe de verdad vive dentro del widget de llamada, detrás de un shadow
+DOM que no lo publica hasta que la llamada empieza. Abrir una llamada de voz en
+su servicio no es algo que haga por mi cuenta.
+
+Además, su lienzo no conserva el búfer de dibujo, así que no se puede releer
+desde fuera de su cuadro; `captureStream` congela el renderer en una pestaña de
+fondo y forzar `preserveDrawingBuffer` no prende porque su contexto no se
+recrea. Las referencias suyas que uso (1,36 / 1,40 de movimiento, 0,66 de
+brillo, 0,599 de contraste) son las medidas en rondas anteriores de este mismo
+trabajo, y la réplica sale de su código y su textura leídos enteros — no de una
+imitación a ojo.
+
+### Verificación
+
+`npm run lint` 0 errores · gate de captura **895/895** (nuevo pin N3C-12:
+capa de grano, paleta de Narrator, manchas al centro, guion de narración) ·
+auditoría de mutación 141 mutaciones, restauración 895/895 · `npm run build`
+verde.
