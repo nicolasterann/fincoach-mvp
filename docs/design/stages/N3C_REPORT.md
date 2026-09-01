@@ -2574,3 +2574,77 @@ campo de color —un degradado de imagen desplazado con una amplitud grande—.
 Tocarlo es tocar la paleta que el founder ya aprobó, así que queda como decisión
 suya y no como cambio silencioso.
 
+
+---
+
+## Ronda 29 — no era la voz: era toda la arquitectura del dibujo
+
+El founder, tras la r28: *«lo vi y no se parece en nada aún. Vuelve a mirar su
+código y sigue probando hasta lograrlo».*
+
+Volví a su código y esta vez leí el shader **entero**, no sólo las líneas del
+audio. La r28 había portado bien la ley de la voz sobre un orbe que **no se
+dibuja como el suyo**, y por eso podía tener los anillos y las bandas correctas
+y seguir sin parecerse.
+
+### Lo que su orbe es, de verdad
+
+No es un campo de color procedural con una deformación suave. Es:
+
+1. un **degradado** (una imagen de color) que se muestrea…
+2. …con una coordenada **esférica** (la textura se estira hacia la silueta)…
+3. …**arrastrada radialmente** por un fbm con deformación de dominio y una
+   amplitud **enorme**: `fbmAmplitude = 0.65` en unidades de la propia textura.
+   Cada punto puede leer el degradado a un tercio de distancia de donde
+   debería. **Eso es lo que produce las bandas anchas que barren.**
+4. …más un ruido simple (0,15) y el desplazamiento del fluido (0,001).
+
+Lo nuestro deformaba **0,12–0,22 en unidades de RUIDO** — entre seis y diez
+veces menos, y en otro espacio. De ahí el moteado suave en vez de las bandas.
+
+### El porte, con nuestros colores
+
+`orb-eleven-shader.ts`: la misma estructura, con nuestro degradado —una malla de
+ocho polos de color con los tres colores de la capa— en el lugar de su imagen.
+Vive aparte a propósito: **el orbe de producción no se toca** hasta que el
+founder diga que este se parece. Los dos están lado a lado en `/dev/onda`,
+comiendo el mismo audio en el mismo cuadro.
+
+### Cuatro defectos encontrados midiendo, y uno es una corrección sobre ellos
+
+**1 · La malla necesitaba bordes.** Con caída suave el campo queda casi plano y
+el arrastre no tiene qué arrastrar (el orbe volvía a ser una mancha). Con caída
+a la cuarta los bordes son tan duros que el orbe cambia **cinco veces** más por
+cuadro que el suyo (20,3 contra 3,8). A la tercera queda en su rango.
+
+**2 · La salpicadura de anillo inyectaba veinte veces por encima del tope.** La
+r28 la multiplicaba por la escala de los agitadores de fondo (300) además de por
+su propia amplitud: ±19.000 contra el tope de ±1.000 del solver. El recorte
+convierte eso en un escalón que aparece y desaparece con cada sílaba.
+
+**3 · El porte leía el mapa material donde el suyo lee su tinte.** Su
+`uFluidSimTexture` es su densidad —lo que lleva los anillos—; nuestro mapa
+material guarda desplazamiento y es de 24 px a propósito.
+
+**4 · Y una corrección SOBRE su código, medida.** Su arco cuelga su
+desplazamiento y su compuerta del promedio **rápido**. Portado tal cual, el arco
+parpadea una vez por sílaba: **−32** de correlación a ocho cuadros con el arco
+encendido, **+0,78** apagándolo. En el suyo se nota menos porque su arco va
+sobre un degradado claro y pesa poco; sobre nuestro líquido oscuro, salta. La
+rotación se queda con el integrado (es un reloj); lo que tiene amplitud pasa al
+lento. Es el principio de la r27 aplicado a un término copiado de ellos.
+
+### Dónde quedó
+
+| | 2 cuadros | 4 | 8 | contraste |
+|---|---|---|---|---|
+| ellos | 3,81 | 2,07 | 2,29 | **0,599** |
+| **el porte** | **1,40** | **1,07** | **0,63** | **0,676** |
+| el nuestro de hoy | 1,67 | 0,39 | −0,98 | 0,454 |
+
+El porte es el primero que tiene las tres cosas a la vez: **movimiento
+persistente** (positivo a todos los desfases, como el suyo), **contraste en su
+régimen** (0,676 contra 0,599) y **la estructura de bandas anchas**. Sigue más
+calmo que el suyo (1,40 contra 3,81) y eso es lo próximo a ajustar — pero con la
+coherencia como guardia, no subiendo a ciegas.
+

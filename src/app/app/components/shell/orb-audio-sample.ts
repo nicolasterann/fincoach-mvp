@@ -80,7 +80,11 @@ export function orbVoiceSamplePcm(
     v += Math.sin(fase * 3) * 0.16 * muestra.brillo;
     v += Math.sin(fase * 5) * 0.09 * muestra.brillo;
     v += azar() * 0.06 * muestra.brillo;
-    pcm[i] = v * env * 0.5;
+    // N3C r29 · el nivel de la muestra se calibró contra el suyo: su banda total
+    // llega a 0,36 de pico hablando, y con la muestra floja de la r28 llegaba a
+    // 0,22 — con eso la compuerta del arco NO se satura y el arco parpadea una
+    // vez por sílaba, que es un defecto del banco y no del orbe.
+    pcm[i] = v * env * 0.92;
   }
   return pcm;
 }

@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createOrbRenderer, ORB_SPAN, type OrbRenderer, type OrbRgb } from "./orb-shader";
 import {
+  createElevenOrbRenderer,
+  type ElevenOrbRenderer,
+} from "./orb-eleven-shader";
+import {
   ORB_KINDS,
   orbMatter,
   orbPresentationMaterial,
@@ -51,6 +55,7 @@ const MUESTRAS = ORB_VOICE_SAMPLES;
 export function OrbCarrusel({ size = 260 }: { size?: number }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const porteRef = useRef<HTMLCanvasElement>(null);
   const [indice, setIndice] = useState(0);
   const [sonando, setSonando] = useState(false);
   const [medidas, setMedidas] = useState<OrbAudioBands>(ORB_AUDIO_ZERO);
@@ -195,6 +200,14 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
       return;
     }
     const activo = renderer;
+    let porte: ElevenOrbRenderer | null = null;
+    if (porteRef.current) {
+      try {
+        porte = createElevenOrbRenderer(porteRef.current);
+      } catch {
+        porte = null;
+      }
+    }
     let vivo = true;
     let raf = 0;
     let ultimoMs = -1;
@@ -208,6 +221,9 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
     // el halo y la deformación lo hace pulsar una vez por sílaba — el mismo
     // defecto que la r27 mató, reaparecido acá por pasar la señal equivocada.
     let lento = 0;
+    // las cuatro bandas con el envolvente lento: lo que puede mover amplitudes
+    let lentas: OrbAudioBands = ORB_AUDIO_ZERO;
+    let relojPorte = 0;
     let avisoMs = 0;
 
     const leerColor = (nombre: string): OrbRgb => {
@@ -242,6 +258,13 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
       ultimoTotal = promedio.all;
 
       lento = advanceVoiceTau(lento, promedio.all, dt, VOICE_SHAPE_TAU_MS);
+      lentas = {
+        low: advanceVoiceTau(lentas.low, promedio.low, dt, VOICE_SHAPE_TAU_MS),
+        mid: advanceVoiceTau(lentas.mid, promedio.mid, dt, VOICE_SHAPE_TAU_MS),
+        high: advanceVoiceTau(lentas.high, promedio.high, dt, VOICE_SHAPE_TAU_MS),
+        all: advanceVoiceTau(lentas.all, promedio.all, dt, VOICE_SHAPE_TAU_MS),
+      };
+      relojPorte += dt;
       reloj = advanceOrbField(reloj, orbFieldDrive(promedio.all, 0), dt);
 
       const info = activo.resize(size, size, window.devicePixelRatio || 1);
@@ -286,6 +309,24 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
         ],
       });
       canvas.dataset.fluid = activo.hasFluid() ? "1" : "0";
+
+      // ── N3C r29 · EL PORTE FIEL, AL LADO ────────────────────────────────
+      // Mismo audio, mismo cuadro, mismos colores. Es la única forma honesta de
+      // preguntar «¿se parece?»: las dos cosas haciendo LO MISMO al mismo tiempo.
+      if (porte) {
+        porte.resize(size, window.devicePixelRatio || 1);
+        porte.draw({
+          timeSeconds: relojPorte,
+          dtSeconds: dt,
+          average: promedio,
+          cumulative: acumulado,
+          slow: lentas,
+          risingAll: subiendo,
+          deep: leerColor(`--kipu-deep-${kind}`),
+          liquid: leerColor(`--kipu-liquid-${kind}`),
+          accent: leerColor(`--layer-${kind}`),
+        });
+      }
       if (ahora - avisoMs > 120) {
         avisoMs = ahora;
         setMedidas({ ...promedio });
@@ -324,6 +365,7 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
       vivo = false;
       cancelAnimationFrame(raf);
       activo.dispose();
+      porte?.dispose();
       delete (window as unknown as { __kipuOnda?: unknown }).__kipuOnda;
       void ultimoTotal;
     };
@@ -342,16 +384,23 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
         >
           ‹
         </button>
-        <div className="kipu-carrusel__orbe" style={{ width: size, height: size }}>
-          <canvas ref={canvasRef} style={{ width: size, height: size }} />
-          <button
-            type="button"
-            className="kipu-carrusel__play"
-            onClick={tocar}
-            aria-label={sonando ? "pausa" : "reproducir"}
-          >
-            {sonando ? "❚❚" : "▶"}
-          </button>
+        <div className="kipu-carrusel__par">
+          <div className="kipu-carrusel__orbe" style={{ width: size, height: size }}>
+            <canvas ref={canvasRef} style={{ width: size, height: size }} />
+            <button
+              type="button"
+              className="kipu-carrusel__play"
+              onClick={tocar}
+              aria-label={sonando ? "pausa" : "reproducir"}
+            >
+              {sonando ? "❚❚" : "▶"}
+            </button>
+            <p className="kipu-carrusel__cual">el nuestro de hoy</p>
+          </div>
+          <div className="kipu-carrusel__orbe" style={{ width: size, height: size }}>
+            <canvas ref={porteRef} style={{ width: size, height: size }} />
+            <p className="kipu-carrusel__cual">el porte de su orbe</p>
+          </div>
         </div>
         <button
           type="button"

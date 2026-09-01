@@ -271,6 +271,20 @@ export const ORB_FLUID_RING_FORCE = 30;
 /** Su `InputScale`: cuánto se desvía la dirección del empuje del centro. */
 export const ORB_FLUID_RING_INPUT_SCALE = 12;
 /**
+ * N3C r29 · LA ESCALA DEL ANILLO, y el error que costó dos mediciones.
+ *
+ * La r28 multiplicaba el empuje del anillo por `ORB_FLUID_GRID` (300), que es la
+ * escala de los agitadores de fondo. Pero el anillo YA trae su amplitud (los
+ * graves × 30) y su dirección (× 12): con las tres cosas juntas la inyección
+ * llegaba a ±19.000 contra el tope de ±1.000 del solver. El recorte convierte
+ * eso en un escalón duro que aparece y desaparece con cada sílaba — medido,
+ * correlación a ocho cuadros −31 donde el suyo da +2,3.
+ *
+ * Con 8, un empujón típico de voz aterriza cerca de 500: dentro del rango sano
+ * del solver, que es donde el fluido se desarrolla sin recortarse.
+ */
+export const ORB_FLUID_RING_GRID = 8;
+/**
  * El umbral de su compuerta: sólo se empuja cuando el promedio de TODO el
  * espectro está SUBIENDO. Es la mitad del asunto — en silencio, o mientras el
  * sonido cae, no entra ni una salpicadura y el fluido sólo coasta.
@@ -426,8 +440,8 @@ export function orbFluidSplats(input: {
         phase: t * 0.25 + audio.cumulative.all * 0.15,
         x: 0.5 + 0.1 * tx,
         y: 0.5 + 0.1 * ty,
-        dx: (tx - 0.5) * ORB_FLUID_RING_INPUT_SCALE * empuje * ORB_FLUID_GRID * dt * 60,
-        dy: (ty - 0.5) * ORB_FLUID_RING_INPUT_SCALE * empuje * ORB_FLUID_GRID * dt * 60,
+        dx: (tx - 0.5) * ORB_FLUID_RING_INPUT_SCALE * empuje * ORB_FLUID_RING_GRID * dt * 60,
+        dy: (ty - 0.5) * ORB_FLUID_RING_INPUT_SCALE * empuje * ORB_FLUID_RING_GRID * dt * 60,
         tx: (tx - 0.5) * ORB_FLUID_TRAIL * empuje,
         ty: (ty - 0.5) * ORB_FLUID_TRAIL * empuje,
         tz: ORB_FLUID_TRAIL * empuje * 0.6,
