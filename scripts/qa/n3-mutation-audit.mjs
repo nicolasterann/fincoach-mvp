@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 // build no prueba nada: prueba que el código no compila, no que alguien estaba
 // mirando.
 
-const TOTAL = 893;
+const TOTAL = 894;
 const runner = ["scripts/qa/run-capture-gate.mjs"];
 
 const CONTRACT = "src/app/app/components/shell/shell-orb-contract.ts";
@@ -33,6 +33,8 @@ const MIC = "src/app/app/components/shell/useVoiceCapture.ts";
 const BANCO = "src/app/app/components/shell/OrbVozViva.tsx";
 const CARRUSEL = "src/app/app/components/shell/OrbCarrusel.tsx";
 const MUESTRA = "src/app/app/components/shell/orb-audio-sample.ts";
+const PORTE = "src/app/app/components/shell/orb-eleven-shader.ts";
+const CUADRO = "src/app/app/components/shell/orb-gradient-texture.ts";
 const SPEC = "src/app/app/components/shell/OrbSpecimen.tsx";
 
 const mutations = [
@@ -518,6 +520,63 @@ const mutations = [
     file: LIVE,
     from: "        voice: animatedVoice,\n        wave: waveEnergy,",
     to: "        voice: 0,\n        wave: 0,",
+  },
+  // ── N3C-11 · EL PORTE DE SU ORBE ──────────────────────────────────────────
+  {
+    name: "N3C-11",
+    result:
+      "el arrastre vuelve a ser chico: se acaban las bandas anchas que barren y el orbe vuelve al moteado suave que el founder rechazo tres veces",
+    file: PORTE,
+    from: "export const EL_FBM_AMPLITUDE = 0.65;",
+    to: "export const EL_FBM_AMPLITUDE = 0.12;",
+  },
+  {
+    name: "N3C-11",
+    result:
+      "se pierde la coordenada esferica: la textura deja de estirarse hacia la silueta y el orbe se ve como una calcomania",
+    file: PORTE,
+    from: "export const EL_SPHERE_SCALE = 0.9;",
+    to: "export const EL_SPHERE_SCALE = 0.0;",
+  },
+  {
+    name: "N3C-11",
+    result:
+      "el degradado deja de ser una textura pintada: vuelve la formula, que es lo que hacia que el porte llegara cerca y no llegara",
+    file: PORTE,
+    from: "  vec3 color = texture2D(uGradient, tuv).rgb;",
+    to: "  vec3 color = vec3(0.5);",
+  },
+  {
+    name: "N3C-11",
+    result:
+      "el cuadro pierde sus pinceladas: sin detalle fino el arrastre no tiene que mover y el orbe queda tres veces mas calmo que el suyo",
+    file: CUADRO,
+    from: "    ctx.quadraticCurveTo(",
+    to: "    if (false) ctx.quadraticCurveTo(",
+  },
+  {
+    name: "N3C-11",
+    result:
+      "el cuadro pierde su grano: la textura se ve plastica y las bandas quedan demasiado limpias",
+    file: CUADRO,
+    from: "  const fuerza = input.grain ?? 9;",
+    to: "  const fuerza = 0;",
+  },
+  {
+    name: "N3C-11",
+    result:
+      "la calibracion tonal se apaga: el cuadro queda con el rango que salga y el orbe pierde su contraste (0,35 contra 0,599 del suyo)",
+    file: CUADRO,
+    from: "    const escala = (ORB_GRADIENT_P95 - ORB_GRADIENT_P05) / rango;",
+    to: "    const escala = 1;",
+  },
+  {
+    name: "N3C-11",
+    result:
+      "el porte se calibra al rango de SU TEXTURA en vez de al del ORBE: ajuste perfecto en la entrada y peor en lo que se mira",
+    file: CUADRO,
+    from: "export const ORB_GRADIENT_P05 = 0.20;",
+    to: "export const ORB_GRADIENT_P05 = 0.325;",
   },
   // ── N3C-10 · LA LEY PORTADA DE SU CÓDIGO ──────────────────────────────────
   {

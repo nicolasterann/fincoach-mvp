@@ -2648,3 +2648,80 @@ régimen** (0,676 contra 0,599) y **la estructura de bandas anchas**. Sigue más
 calmo que el suyo (1,40 contra 3,81) y eso es lo próximo a ajustar — pero con la
 coherencia como guardia, no subiendo a ciegas.
 
+
+---
+
+## Ronda 30 — la pieza que yo estaba inventando: su degradado es un cuadro
+
+El founder, viendo el porte de la r29: *«el de la derecha sí va por buen camino
+pero aún no está ahí […] copia su código exacto a ver qué más nos falta […]
+tenemos que tratar de llevar las diferencias a cero».*
+
+Fui a buscar qué faltaba y apareció rápido: **su degradado es una imagen**, y yo
+la estaba inventando con una fórmula. `creative-1.png` … `creative-9.png`,
+512×512, **250 KB cada una**. No son rampas abstractas: son **cuadros** — una
+esfera luminosa pintada, con manchas de color suaves dentro y fuera, todo muy
+desenfocado y con grano incrustado.
+
+O sea que buena parte de la riqueza de su orbe **no está en el shader**: está en
+la textura. Una malla de ocho polos no puede competir con una pintura, y por eso
+el porte llegaba cerca y no llegaba.
+
+### El cuadro nuestro
+
+`orb-gradient-texture.ts` pinta el equivalente con nuestros colores, una vez, al
+arrancar: lavado de fondo, esfera con su luz, dieciocho manchas con su reparto
+fijo, setenta y ocho pinceladas y grano. La técnica es suya; la imagen sale de
+los tres colores que el founder aprobó.
+
+Tres cosas se aprendieron pintándolo, y las tres se midieron:
+
+**1 · El rango tonal es el punto.** Su cuadro va de crema a rojo profundo —
+recorre casi todo el rango de luz. El mío iba de verde oscuro a verde oscuro, y
+por eso el arrastre no producía bandas: **no había luz que arrastrar**.
+
+**2 · El rango va REPARTIDO, no en esquinas opuestas.** Con el rango puesto en
+una diagonal, el escorzo esférico mete los extremos contra la silueta y el
+centro del orbe queda de un solo tono. Las manchas son las que llevan el rango.
+
+**3 · Hace falta detalle FINO.** Con manchas grandes solamente, el orbe tenía el
+contraste correcto y era **tres veces más calmo** que el suyo: lo que se ve es la
+textura *arrastrada*, y un arrastre grande sobre una mancha grande cambia pocos
+píxeles. Las pinceladas no se ven como trazos —el escorzo las deshace— pero le
+dan al arrastre algo que mover. (Primera pasada: se veían como rayones. Van más
+difuminadas y más flojas de lo que uno pondría.)
+
+### La lección de método: igualar la entrada no es igualar la salida
+
+Medí su textura y la nuestra con las mismas estadísticas y calibré la nuestra a
+sus números **exactos**:
+
+| | suya | nuestra tras calibrar |
+|---|---|---|
+| desvío | 0,161 | **0,161** |
+| p05 | 0,325 | **0,324** |
+| p95 | 0,837 | **0,837** |
+| contraste local (3 escalas) | 0,029 / 0,074 / 0,133 | 0,030 / 0,076 / 0,150 |
+
+Ajuste casi perfecto en la textura… **y el orbe empeoró**: su contraste en
+pantalla cayó de 0,68 a **0,35** contra el 0,599 del suyo. Entre la textura y lo
+que se mira hay un escorzo esférico, un arrastre y un mapeo tonal, y cada uno
+comprime a su manera. **El objetivo se elige por lo que sale, no por lo que
+entra.** Con el rango de la textura abierto a 0,20–0,95 el orbe aterriza donde
+tiene que aterrizar.
+
+### Dónde quedó
+
+| | ellos | el porte | el nuestro de hoy |
+|---|---|---|---|
+| contraste | 0,599 | **0,590** | 0,411 |
+| brillo medio | 0,660 | **0,661** | 0,673 |
+| movimiento 2 cuadros | 3,81 | 1,20 | 2,42 |
+| movimiento 4 | 2,07 | 1,02 | 1,11 |
+| movimiento 8 | 2,29 | 0,78 | −0,45 |
+
+**Contraste y brillo, prácticamente idénticos.** El movimiento es persistente y
+del mismo signo a todos los desfases —el carácter correcto— pero sigue entre dos
+y tres veces más calmo que el suyo. Ésa es la diferencia que queda, y es la
+próxima: con la coherencia como guardia, para no volver al temblor de la r27.
+

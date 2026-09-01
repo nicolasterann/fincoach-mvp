@@ -525,6 +525,16 @@ import {
   STATEMENT_SESSION_MARKER,
 } from "@/lib/capture/evidence-capture";
 import {
+  EL_FBM_AMPLITUDE,
+  EL_FBM_SCALE,
+  EL_NOISE_AMPLITUDE,
+  EL_SPHERE_SCALE,
+} from "@/app/app/components/shell/orb-eleven-shader";
+import {
+  ORB_GRADIENT_P05,
+  ORB_GRADIENT_P95,
+} from "@/app/app/components/shell/orb-gradient-texture";
+import {
   ORB_FLUID_LIGHT_FADE,
   ORB_FLUID_LIGHT_SIZE,
 } from "@/app/app/components/shell/orb-fluid";
@@ -30059,6 +30069,72 @@ assert(
       anillos: n3cAnillos.length,
       cayendo: n3cCayendo.filter((sp) => sp.ring).length,
     }),
+  );
+
+  // N3C-11 · EL PORTE DE SU ORBE: SU ARQUITECTURA, NUESTROS COLORES.
+  //
+  // El founder, tras tres rondas de ley de la voz: «no se parece en nada aún».
+  // Tenía razón y el diagnóstico estaba mal: no era la voz, era el DIBUJO. Su
+  // orbe es un DEGRADADO PINTADO muestreado con coordenada esférica y arrastrado
+  // radialmente con una amplitud enorme (0,65 en unidades de la textura). Lo
+  // nuestro deformaba 0,12–0,22 en unidades de RUIDO — seis a diez veces menos
+  // y en otro espacio.
+  //
+  // Y la pieza que yo estaba inventando: su degradado es una IMAGEN de 512×512
+  // —`creative-1.png` y hermanas, 250 KB cada una— pintada como un cuadro. Buena
+  // parte de la riqueza de su orbe no está en el shader: está ahí.
+  const n3cPorte = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/orb-eleven-shader.ts`,
+    "utf8",
+  );
+  const n3cCuadro = readFileSync(
+    `${process.cwd()}/src/app/app/components/shell/orb-gradient-texture.ts`,
+    "utf8",
+  );
+  assert(
+    "N3C-11 · el porte lleva su arquitectura —esfera, arrastre grande y degradado pintado— y su calibración se elige por el ORBE, no por la textura",
+    // ── LAS CONSTANTES SON LAS SUYAS ──
+    EL_FBM_AMPLITUDE === 0.65 &&
+      EL_FBM_SCALE === 3.25 &&
+      EL_SPHERE_SCALE === 0.9 &&
+      EL_NOISE_AMPLITUDE === 0.15 &&
+      // el arrastre del porte es MUCHO más grande que el del orbe de hoy, que es
+      // justamente la diferencia que el founder veía y yo no encontraba
+      EL_FBM_AMPLITUDE > 2.5 * 0.22 &&
+      // ── LA COORDENADA ESFÉRICA Y EL ARRASTRE, en ese orden ──
+      n3cPorte.includes("uv = uvDot / ((vec2(d, d) + vec2(1.0)) * (1.0 / ${EL_SPHERE_SCALE.toFixed(2)}));") &&
+      n3cPorte.includes("uv += normals.xy * (ffbm - 0.5) * ${EL_FBM_AMPLITUDE.toFixed(2)};") &&
+      // ── EL DEGRADADO ES UNA TEXTURA PINTADA, no una fórmula ──
+      n3cPorte.includes("texture2D(uGradient, tuv).rgb") &&
+      n3cCuadro.includes("export function paintOrbGradient") &&
+      // …con su esfera, sus manchas y sus pinceladas: sin detalle fino el
+      // arrastre no tiene qué mover y el orbe queda tres veces más calmo
+      // con la sangría, porque «ctx.quadraticCurveTo(» a secas también aparece
+      // dentro de un `if (false)` — la aserción débil, cuarta vez en el bloque
+      n3cCuadro.includes("\n    ctx.quadraticCurveTo(") &&
+      /for \(let i = 0; i < 78; i \+= 1\)/u.test(n3cCuadro) &&
+      n3cCuadro.includes("ctx.arc(cx, cy, R, 0, Math.PI * 2)") &&
+      // …y con grano, que las suyas traen incrustado
+      n3cCuadro.includes("const fuerza = input.grain ?? 9;") &&
+      // ── LA CALIBRACIÓN TONAL, y a QUÉ se calibra ──
+      // Su textura mide p05 0,325 / p95 0,837. Calibrar la nuestra a ESOS
+      // números da un ajuste perfecto en la textura y EMPEORA el orbe: su
+      // contraste en pantalla cayó de 0,68 a 0,35 contra el 0,599 del suyo.
+      // Igualar la entrada no es igualar la salida.
+      ORB_GRADIENT_P05 < 0.325 &&
+      ORB_GRADIENT_P95 > 0.837 &&
+      ORB_GRADIENT_P05 > 0 &&
+      ORB_GRADIENT_P95 < 1 &&
+      n3cCuadro.includes("const escala = (ORB_GRADIENT_P95 - ORB_GRADIENT_P05) / rango;") &&
+      // el remapeo es MULTIPLICATIVO en luminancia: corrige el rango sin tocar
+      // el tono, así que los colores siguen siendo los aprobados
+      n3cCuadro.includes("const factor = Math.min(3, Math.max(0.15, objetivo / Math.max(l, 1e-3)));") &&
+      // ── Y EL ORBE DE PRODUCCIÓN NO SE TOCA ──
+      // El porte vive aparte hasta que el founder diga que se parece.
+      !n3ShaderCode.includes("orb-eleven-shader") &&
+      !n3LiveCode.includes("orb-eleven-shader") &&
+      n3cCarrusel.includes("createElevenOrbRenderer"),
+    JSON.stringify({ p05: ORB_GRADIENT_P05, p95: ORB_GRADIENT_P95, amp: EL_FBM_AMPLITUDE }),
   );
 
   // N3C-4 · EL RELOJ DEL CAMPO ES PURO, ACELERA CON LA VOZ, Y ESTÁ CABLEADO.

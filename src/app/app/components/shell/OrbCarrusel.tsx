@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createOrbRenderer, ORB_SPAN, type OrbRenderer, type OrbRgb } from "./orb-shader";
+import { paintOrbGradient } from "./orb-gradient-texture";
 import {
   createElevenOrbRenderer,
   type ElevenOrbRenderer,
@@ -56,6 +57,11 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const porteRef = useRef<HTMLCanvasElement>(null);
+  // N3C r30 · VER LA TEXTURA, no sólo el orbe. Lo que se ve del orbe es la
+  // textura ARRASTRADA, así que juzgar el resultado sin mirar la entrada es
+  // adivinar — este bloque ya pagó tres veces por instrumentos que escondían el
+  // paso intermedio.
+  const texRef = useRef<HTMLCanvasElement>(null);
   const [indice, setIndice] = useState(0);
   const [sonando, setSonando] = useState(false);
   const [medidas, setMedidas] = useState<OrbAudioBands>(ORB_AUDIO_ZERO);
@@ -185,6 +191,32 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
       document.removeEventListener("keydown", despertar);
     };
   }, []);
+
+  useEffect(() => {
+    const destino = texRef.current;
+    if (!destino) return;
+    const kind = ORB_KINDS[indice % ORB_KINDS.length]!;
+    const leer = (n: string): OrbRgb => {
+      const css = getComputedStyle(destino).getPropertyValue(n).trim();
+      const m = /#?([0-9a-f]{6})/i.exec(css);
+      const hex = m ? m[1]! : "888888";
+      return [
+        Number.parseInt(hex.slice(0, 2), 16) / 255,
+        Number.parseInt(hex.slice(2, 4), 16) / 255,
+        Number.parseInt(hex.slice(4, 6), 16) / 255,
+      ];
+    };
+    const cv = paintOrbGradient({
+      deep: leer(`--kipu-deep-${kind}`),
+      liquid: leer(`--kipu-liquid-${kind}`),
+      accent: leer(`--layer-${kind}`),
+      seed: indice,
+    });
+    if (!cv) return;
+    destino.width = cv.width;
+    destino.height = cv.height;
+    destino.getContext("2d")?.drawImage(cv, 0, 0);
+  }, [indice]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -321,6 +353,7 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
           average: promedio,
           cumulative: acumulado,
           slow: lentas,
+          seed: indiceRef.current,
           risingAll: subiendo,
           deep: leerColor(`--kipu-deep-${kind}`),
           liquid: leerColor(`--kipu-liquid-${kind}`),
@@ -410,6 +443,13 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
         >
           ›
         </button>
+      </div>
+
+      <div className="kipu-carrusel__tex">
+        <p className="kipu-carrusel__cual" style={{ position: "static" }}>
+          el cuadro que se arrastra
+        </p>
+        <canvas ref={texRef} style={{ width: 168, height: 168 }} />
       </div>
 
       <div ref={hostRef} className="kipu-carrusel__pie">

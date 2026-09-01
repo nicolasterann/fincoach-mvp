@@ -1615,6 +1615,8 @@ a.kipu-perspective-module__head:focus-visible { background: var(--kipu-shell-gla
 .kipu-carrusel__orbe { position: relative; display: grid; place-items: center; }
 .kipu-carrusel__cual { position: absolute; bottom: -1.7rem; margin: 0; color: var(--kipu-shell-ink-3); font-size: var(--kipu-fs-micro); letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
 .kipu-carrusel__play { position: absolute; width: 2.6rem; height: 2.6rem; border-radius: 999px; border: none; background: rgba(255,255,255,.92); color: #111; font-size: .8rem; cursor: pointer; display: grid; place-items: center; box-shadow: 0 2px 18px rgba(0,0,0,.25); }
+.kipu-carrusel__tex { display: grid; gap: var(--kipu-sp-2); justify-items: center; }
+.kipu-carrusel__tex canvas { border-radius: 8px; }
 .kipu-carrusel__pie { display: grid; gap: var(--kipu-sp-3); justify-items: center; }
 .kipu-carrusel__nombre { color: var(--kipu-shell-ink-2); font-size: var(--kipu-fs-micro); letter-spacing: 0.1em; text-transform: uppercase; margin: 0; }
 .kipu-carrusel__bandas { display: flex; gap: var(--kipu-sp-4); margin: 0; }

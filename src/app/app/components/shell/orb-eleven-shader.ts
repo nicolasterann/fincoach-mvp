@@ -6,6 +6,7 @@ import {
 } from "./orb-fluid";
 import type { OrbAudioBands } from "./voice-capture-contract";
 import type { OrbRgb } from "./orb-shader";
+import { paintOrbGradient } from "./orb-gradient-texture";
 
 /**
  * N3C r29 · EL PORTE FIEL DE SU ORBE, CON NUESTROS COLORES.
@@ -68,6 +69,7 @@ uniform vec4 uCum;        // los mismos, INTEGRADOS
 uniform vec4 uSlow;       // …y los mismos, LENTOS (900 ms)
 uniform vec3 uDeep, uLiquid, uAccent;
 uniform sampler2D uFluid;
+uniform sampler2D uGradient;
 uniform float uHasFluid;
 uniform float uGrain;
 
@@ -107,57 +109,6 @@ float noise3(vec3 p){
   float k = fract(sin(n + 171.0) * 43758.5453);
   return mix(mix(mix(a,b,f.x), mix(c,d,f.x), f.y),
              mix(mix(e,g,f.x), mix(h,k,f.x), f.y), f.z) * 2.0 - 1.0;
-}
-
-/**
- * NUESTRO degradado, en el lugar de su imagen. Tres colores de la capa
- * repartidos en un campo suave y ancho: hace falta que sea ANCHO, porque lo que
- * se ve son sus bandas arrastradas, no su detalle.
- */
-vec3 degradado(vec2 p){
-  // Una MALLA DE COLOR: cinco polos repartidos por el plano, mezclados por
-  // distancia suave. Es lo que hace su imagen de degradado, y la diferencia con
-  // dos senos se ve enseguida — los senos dan bandas rectas y una malla da
-  // manchas orgánicas, que es lo que arrastrado produce sus barridos.
-  vec2 P = clamp(p, vec2(-0.35), vec2(1.35));
-  vec3 claro = mix(uAccent, vec3(1.0), 0.30);
-  vec3 medio = mix(uLiquid, uAccent, 0.55);
-  // Ocho polos y una caída AFILADA: con una caída suave el campo queda casi
-  // plano y el arrastre no tiene nada que arrastrar — medido mirando, el orbe
-  // volvía a ser un degradado liso. Lo que hace falta son REGIONES con bordes
-  // blandos, que es lo que su imagen tiene.
-  vec2 polos[8];
-  polos[0] = vec2(0.10, 0.16);
-  polos[1] = vec2(0.62, 0.06);
-  polos[2] = vec2(0.94, 0.30);
-  polos[3] = vec2(0.22, 0.55);
-  polos[4] = vec2(0.70, 0.52);
-  polos[5] = vec2(0.06, 0.88);
-  polos[6] = vec2(0.48, 0.94);
-  polos[7] = vec2(0.92, 0.86);
-  vec3 cols[8];
-  cols[0] = uDeep;
-  cols[1] = uLiquid;
-  cols[2] = claro;
-  cols[3] = medio;
-  cols[4] = uDeep;
-  cols[5] = uLiquid;
-  cols[6] = medio;
-  cols[7] = uDeep;
-  vec3 suma = vec3(0.0);
-  float peso = 0.0;
-  for(int i = 0; i < 8; i++){
-    vec2 dd = P - polos[i];
-    // La potencia decide el BORDE, y se calibró midiendo. Con 2 el campo es un
-    // degradado liso y el arrastre no tiene qué arrastrar (el orbe volvía a ser
-    // una mancha). Con 4 los bordes son tan duros que el orbe cambia CINCO VECES
-    // más por cuadro que el suyo (20,3 contra 3,8). Con 3 queda en su rango.
-    float w = 1.0 / (0.020 + dot(dd, dd));
-    w = w * w * w;
-    suma += cols[i] * w;
-    peso += w;
-  }
-  return suma / max(peso, 1e-5);
 }
 
 vec3 tonemap(vec3 x){
@@ -211,7 +162,14 @@ void main(){
   uv += normals.xy * (ffbm - 0.5) * ${EL_FBM_AMPLITUDE.toFixed(2)};
   uv += noiseDisp * ${EL_NOISE_AMPLITUDE.toFixed(2)};
 
-  vec3 color = degradado(uv);
+  // Su muestreo: la textura es cuadrada y el lienzo también, así que su
+  // getCoverUv es la identidad y no hace falta. Se repite en espejo para que un
+  // arrastre que se sale del cuadro no encuentre un borde duro — el suyo usa el
+  // borde repetido de la imagen, que con su fondo claro da lo mismo.
+  // Su textura se muestrea con el borde REPETIDO (clamp): su fondo es claro, así
+  // que salirse no produce un salto. Espejar, en cambio, dibuja una costura.
+  vec2 tuv = clamp(uv, 0.0, 1.0);
+  vec3 color = texture2D(uGradient, tuv).rgb;
 
   // ── 4 · EL ARCO, que sólo existe con sonido ──
   vec2 ringUv = uvDot * 0.75;
@@ -261,6 +219,8 @@ export interface ElevenOrbFrame {
   cumulative: OrbAudioBands;
   /** Las mismas bandas con el envolvente lento: lo que puede mover amplitudes. */
   slow: OrbAudioBands;
+  /** Qué capa es: decide su cuadro pintado. */
+  seed: number;
   risingAll: number;
   deep: OrbRgb;
   liquid: OrbRgb;
@@ -335,6 +295,26 @@ export function createElevenOrbRenderer(
     time: u("uTime"), avg: u("uAvg"), cum: u("uCum"), slow: u("uSlow"),
     deep: u("uDeep"), liquid: u("uLiquid"), accent: u("uAccent"),
     fluid: u("uFluid"), hasFluid: u("uHasFluid"), grain: u("uGrain"),
+    gradient: u("uGradient"),
+  };
+
+  // ── LA TEXTURA PINTADA ──
+  const gradTex = gl.createTexture();
+  let gradSeed = -1;
+  const subirGradiente = (frame: ElevenOrbFrame) => {
+    if (!gradTex || frame.seed === gradSeed) return;
+    const cv = paintOrbGradient({
+      deep: frame.deep, liquid: frame.liquid, accent: frame.accent, seed: frame.seed,
+    });
+    if (!cv) return;
+    gradSeed = frame.seed;
+    gl.bindTexture(gl.TEXTURE_2D, gradTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   };
   let disposed = false;
 
@@ -388,6 +368,12 @@ export function createElevenOrbRenderer(
       gl.uniform3fv(locs.accent, frame.accent);
       gl.uniform1f(locs.grain, frame.grain ?? 0.10);
       gl.uniform1f(locs.hasFluid, fluid ? 1 : 0);
+      subirGradiente(frame);
+      if (gradTex) {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, gradTex);
+        gl.uniform1i(locs.gradient, 2);
+      }
       if (fluid) {
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, fluid.lightTexture);
@@ -403,6 +389,7 @@ export function createElevenOrbRenderer(
       disposed = true;
       fluid?.dispose();
       gl.deleteProgram(prog);
+      if (gradTex) gl.deleteTexture(gradTex);
       gl.deleteBuffer(buf);
     },
   };
