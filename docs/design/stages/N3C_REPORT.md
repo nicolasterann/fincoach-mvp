@@ -2798,69 +2798,6 @@ lo que sale, no por lo que entra.
 
 ---
 
-## Ronda 32 — el grano estaba en la capa de al lado
-
-Cuatro cosas del founder, y la primera es la que más enseña:
-
-### 1 · «Le falta la textura de grain, no sé de dónde sale»
-
-De ningún sitio donde yo hubiera mirado. Tres rondas buscándolo dentro del
-shader, y ahí no está:
-
-- su configuración dice **`grainOpacity: 0`** — el grano del shader está apagado;
-- su PNG de degradado es **liso**: la diferencia entre píxeles vecinos da 0,0017.
-
-Está en el **DOM, encima del lienzo**. Su propio marcado lo dice:
-
-```
-tw-absolute tw-mix-blend-overlay tw-inset-0
-tw-bg-[image:var(--noise-png)] tw-bg-[length:calc(256px*var(--noise-scale))]
-```
-
-Un `<div>` con un mosaico de ruido, `mix-blend-mode: overlay`, `opacity: 0.5`,
-mosaico de 256 px (128 en pantallas de doble densidad). Nada de WebGL.
-
-**La lección: cuando algo se ve y no está en el código que estás leyendo, mirá
-la capa de al lado.** Acá el mosaico se genera —no se usa el suyo— con su misma
-receta.
-
-Un detalle que casi lo esconde otra vez: la capa se rendía en el servidor, donde
-no hay `document`, y quedaba con `background-image: none`. Sin error y sin nada
-en consola. Ahora el mosaico se genera después de montar.
-
-### 2 · «No veo que hayas replicado su orbe naranja de Narrator»
-
-Tenía razón: en la r31 usé su imagen sólo como diagnóstico y nunca quedó un orbe
-naranja al que mirar. Ahora es el tercer orbe de `/dev/onda`, permanente, y sus
-cinco tonos salen de su propio PNG por percentiles de luminancia —el 5, el 20,
-el 50, el 80 y el 95—:
-
-**#b93919 · #e25b2c · #f98857 · #ffbb82 · #ffcf9b**
-
-Es su paleta, no una interpretación nuestra.
-
-### 3 · «El líquido sólo fluye por los lados y casi nunca toca el centro»
-
-Medido por anillos, **el centro es el anillo MÁS activo**: 2,01 contra 1,92 del
-borde. Lo que faltaba no era movimiento sino **algo que se viera moverse** — el
-centro de nuestro cuadro era el núcleo liso de la esfera, y una zona lisa
-arrastrada no cambia nada aunque se mueva.
-
-Hay además una razón estructural que vale anotar: el arrastre va multiplicado
-por la normal, **que en el centro vale cero exacto**. Así que la única forma de
-que el centro tenga vida es que tenga dibujo. Tres manchas van al centro a
-propósito.
-
-### 4 · «Agregá un texto de narración»
-
-Cada muestra lleva su guion y se ve en pantalla. Y las sílabas ahora **salen del
-texto**: las comas y los puntos generan pausas donde caerían al leerlo, así que
-el orbe recibe los flancos de subida de una frase de verdad y no de una ráfaga
-regular.
-
-
----
-
 ## Ronda 32 — el grano estaba en la capa de al lado, y el naranja no existía
 
 El founder, viendo la r31: *«aún no me encanta […] le falta la textura de grain
@@ -2928,8 +2865,8 @@ Tenía razón: en la r31 usé su textura sólo como diagnóstico y nunca constru
 orbe naranja permanente. El experimento pedido —replicarlo con SUS colores para
 que la diferencia se vea sin discutir— no existía.
 
-Los cinco tonos salen de `creative-1.png` por percentiles de luminancia, no a
-ojo:
+Los cinco tonos salen de `creative-1.png` por percentiles de luminancia —el 5,
+el 20, el 50, el 80 y el 95—, no a ojo:
 
 | | tono |
 |---|---|
