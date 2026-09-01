@@ -30112,17 +30112,18 @@ assert(
       // con la sangría, porque «ctx.quadraticCurveTo(» a secas también aparece
       // dentro de un `if (false)` — la aserción débil, cuarta vez en el bloque
       n3cCuadro.includes("\n    ctx.quadraticCurveTo(") &&
-      /for \(let i = 0; i < 78; i \+= 1\)/u.test(n3cCuadro) &&
+      /for \(let i = 0; i < 14; i \+= 1\)/u.test(n3cCuadro) &&
       n3cCuadro.includes("ctx.arc(cx, cy, R, 0, Math.PI * 2)") &&
       // …y con grano, que las suyas traen incrustado
-      n3cCuadro.includes("const fuerza = input.grain ?? 9;") &&
+      n3cCuadro.includes("const fuerza = input.grain ?? 0.3;") &&
       // ── LA CALIBRACIÓN TONAL, y a QUÉ se calibra ──
       // Su textura mide p05 0,325 / p95 0,837. Calibrar la nuestra a ESOS
       // números da un ajuste perfecto en la textura y EMPEORA el orbe: su
       // contraste en pantalla cayó de 0,68 a 0,35 contra el 0,599 del suyo.
       // Igualar la entrada no es igualar la salida.
       ORB_GRADIENT_P05 < 0.325 &&
-      ORB_GRADIENT_P95 > 0.837 &&
+      ORB_GRADIENT_P95 < 0.837 &&
+      ORB_GRADIENT_P95 * 1.15 < 1 &&
       ORB_GRADIENT_P05 > 0 &&
       ORB_GRADIENT_P95 < 1 &&
       n3cCuadro.includes("const escala = (ORB_GRADIENT_P95 - ORB_GRADIENT_P05) / rango;") &&

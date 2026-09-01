@@ -54,10 +54,35 @@ export const EL_FBM_SPEED = 4.5;
 export const EL_NOISE_SCALE = 0.65;
 export const EL_NOISE_SPEED = 0.25;
 export const EL_NOISE_AMPLITUDE = 0.15;
-export const EL_RING_OPACITY = 0.25;
+// El arco SUMA luz encima del orbe. Con su 0,25 el 42% de los cuadros hablando
+// tenían algún píxel en 1,0 —quemado—, porque nuestro degradado llega más claro
+// a la zona del arco que el suyo. 0,17 lo deja en cero quemados sin que el arco
+// deje de verse.
+export const EL_RING_OPACITY = 0.17;
 export const EL_FLUID_OPACITY = 0.1;
 export const EL_EXPOSURE = 0.15;
+export const EL_SATURATION = 1.0;
+export const EL_CONTRAST = 0.0;
 export const EL_TIME_SCALE = 1.4;
+/**
+ * N3C r31 · CUÁNTO ACELERA EL SONIDO LOS RELOJES, y por qué NO es su constante.
+ *
+ * Su shader suma el audio integrado a los relojes con coeficientes 0,25 · 0,1 ·
+ * 0,2. Portados tal cual, nuestro orbe pasa de 1,45 a 3,6 de cambio por cuadro
+ * al hablar. Medí el suyo con el mismo instrumento y su orbe **cambia lo mismo
+ * callado (1,36) que hablando (1,40)**: el sonido le cambia la ESTRUCTURA —el
+ * arco aparece, el hueco se abre, los anillos nacen— pero no la velocidad.
+ *
+ * Eso es exactamente lo que el founder describió como «el movimiento está cerca
+ * pero sigue sin ser tan fluido»: un orbe que se acelera dos veces y media al
+ * hablar se lee agitado, no fluido.
+ *
+ * No sé por qué su fórmula no les acelera a ellos —puede haber un tope que no
+ * encontré, o su pintura satura antes—. Lo que sí sé es lo que MIDE su orbe, y
+ * la vara es ésa. Este factor lleva el término del audio a donde su conducta
+ * dice que tiene que estar.
+ */
+export const EL_AUDIO_CLOCK = 0.02;
 
 const FRAG = `
 precision highp float;
@@ -95,25 +120,88 @@ float fbm(vec2 st){
   }
   return v;
 }
-float noise3(vec3 p){
-  vec3 i = floor(p); vec3 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  float n = i.x + i.y * 57.0 + i.z * 113.0;
-  float a = fract(sin(n) * 43758.5453);
-  float b = fract(sin(n + 1.0) * 43758.5453);
-  float c = fract(sin(n + 57.0) * 43758.5453);
-  float d = fract(sin(n + 58.0) * 43758.5453);
-  float e = fract(sin(n + 113.0) * 43758.5453);
-  float g = fract(sin(n + 114.0) * 43758.5453);
-  float h = fract(sin(n + 170.0) * 43758.5453);
-  float k = fract(sin(n + 171.0) * 43758.5453);
-  return mix(mix(mix(a,b,f.x), mix(c,d,f.x), f.y),
-             mix(mix(e,g,f.x), mix(h,k,f.x), f.y), f.z) * 2.0 - 1.0;
+// ── N3C r31 · SIMPLEX 3D DE VERDAD ────────────────────────────────────────
+//
+// El porte usaba un ruido de valor con hash de seno, interpolado trilineal.
+// Ellos usan simplex. La diferencia no es de gusto: un ruido de valor tiene
+// derivada discontinua en cada celda, así que al avanzar su coordenada de
+// tiempo el dibujo cambia A SALTOS. Medido con el mismo instrumento en las dos
+// pantallas: nuestro porte cambiaba 2,58 por cuadro contra 1,40 del suyo —o sea
+// que se movía MÁS y se veía menos fluido—, que es exactamente lo que el
+// founder describió: «el movimiento está cerca pero sigue sin ser tan fluido».
+//
+// Implementación clásica de Ashima Arts / Stefan Gustavson (MIT), que es la
+// misma familia que usa cualquier snoise de WebGL.
+vec3 mod289_3(vec3 x){ return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 mod289_4(vec4 x){ return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 permute4(vec4 x){ return mod289_4(((x * 34.0) + 1.0) * x); }
+vec4 taylorInvSqrt4(vec4 r){ return 1.79284291400159 - 0.85373472095314 * r; }
+
+float noise3(vec3 v){
+  const vec2 C = vec2(1.0 / 6.0, 1.0 / 3.0);
+  const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+  vec3 i  = floor(v + dot(v, C.yyy));
+  vec3 x0 = v - i + dot(i, C.xxx);
+  vec3 g = step(x0.yzx, x0.xyz);
+  vec3 l = 1.0 - g;
+  vec3 i1 = min(g.xyz, l.zxy);
+  vec3 i2 = max(g.xyz, l.zxy);
+  vec3 x1 = x0 - i1 + C.xxx;
+  vec3 x2 = x0 - i2 + C.yyy;
+  vec3 x3 = x0 - D.yyy;
+  i = mod289_3(i);
+  vec4 p = permute4(permute4(permute4(
+             i.z + vec4(0.0, i1.z, i2.z, 1.0))
+           + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+           + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+  float n_ = 0.142857142857;
+  vec3 ns = n_ * D.wyz - D.xzx;
+  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+  vec4 x_ = floor(j * ns.z);
+  vec4 y_ = floor(j - 7.0 * x_);
+  vec4 x = x_ * ns.x + ns.yyyy;
+  vec4 y = y_ * ns.x + ns.yyyy;
+  vec4 h = 1.0 - abs(x) - abs(y);
+  vec4 b0 = vec4(x.xy, y.xy);
+  vec4 b1 = vec4(x.zw, y.zw);
+  vec4 s0 = floor(b0) * 2.0 + 1.0;
+  vec4 s1 = floor(b1) * 2.0 + 1.0;
+  vec4 sh = -step(h, vec4(0.0));
+  vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+  vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+  vec3 p0 = vec3(a0.xy, h.x);
+  vec3 p1 = vec3(a0.zw, h.y);
+  vec3 p2 = vec3(a1.xy, h.z);
+  vec3 p3 = vec3(a1.zw, h.w);
+  vec4 norm = taylorInvSqrt4(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+  p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+  vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+  m = m * m;
+  return 42.0 * dot(m * m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
 }
 
-vec3 tonemap(vec3 x){
-  x *= 1.04;
-  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+// ── N3C r31 · SUS FUNCIONES DE COLOR, EXACTAS ─────────────────────────────
+//
+// El porte tenía nuestro tonemap ACES y ELLOS NO HACEN TONEMAP: su shader
+// termina en un clamp y ya. Se vio aislando: metiendo SU textura naranja en
+// nuestro porte, el resultado salía crema lavado y el suyo no. ACES comprime los
+// altos y desatura — justo lo que le faltaba de fuerza al porte.
+vec3 contrasteEl(vec3 c, float v){
+  return clamp(0.5 + (1.0 + v) * (c - 0.5), vec3(0.0), vec3(1.0));
+}
+vec3 exposicionEl(vec3 c, float v){ return (1.0 + v) * c; }
+vec3 saturacionEl(vec3 rgb, float k){
+  vec3 W = vec3(0.2125, 0.7154, 0.0721);
+  return mix(vec3(dot(rgb, W)), rgb, k);
+}
+float overlayEl(float b, float m){
+  return b < 0.5 ? (2.0 * b * m) : (1.0 - 2.0 * (1.0 - b) * (1.0 - m));
+}
+vec3 overlayEl(vec3 b, vec3 m){
+  return vec3(overlayEl(b.r, m.r), overlayEl(b.g, m.g), overlayEl(b.b, m.b));
+}
+vec3 luzDuraEl(vec3 base, vec3 mezcla, float opacidad){
+  return overlayEl(mezcla, base) * opacidad + base * (1.0 - opacidad);
 }
 
 void main(){
@@ -130,7 +218,7 @@ void main(){
 
   // ── 2 · LA DEFORMACIÓN DE DOMINIO ──
   // El integrado corre el reloj; el promedio, más abajo, escala amplitudes.
-  float fbmTime2 = uTime * (${EL_FBM_SPEED.toFixed(2)} * 0.5) + uCum.x * 0.25;
+  float fbmTime2 = uTime * (${EL_FBM_SPEED.toFixed(2)} * 0.5) + uCum.x * (0.25 * ${EL_AUDIO_CLOCK.toFixed(3)});
   vec2 fbmUv = uv * ${EL_FBM_SCALE.toFixed(2)};
   vec2 q = vec2(fbm(fbmUv), fbm(fbmUv + vec2(1.0)));
   vec2 r = vec2(
@@ -142,7 +230,7 @@ void main(){
   ffbm = mix(ffbm, 0.0, clamp(length(q), 0.0, 1.0));
   ffbm = mix(ffbm, 1.0, clamp(length(r.x), 0.0, 1.0));
 
-  float noiseTime1 = uTime * ${EL_NOISE_SPEED.toFixed(2)} * 0.5 + uCum.z * 0.1;
+  float noiseTime1 = uTime * ${EL_NOISE_SPEED.toFixed(2)} * 0.5 + uCum.z * (0.1 * ${EL_AUDIO_CLOCK.toFixed(3)});
   float noiseTime2 = uTime * ${EL_NOISE_SPEED.toFixed(2)};
   vec2 noiseDisp = vec2(
     noise3(vec3(vUv * ${EL_NOISE_SCALE.toFixed(2)}, noiseTime1)),
@@ -175,7 +263,7 @@ void main(){
   vec2 ringUv = uvDot * 0.75;
   float ang = atan(ringUv.y, ringUv.x);
   float len = length(ringUv);
-  float ringTime = (-uTime * 0.5) - uCum.a * 0.2;
+  float ringTime = (-uTime * 0.5) - uCum.a * (0.2 * ${EL_AUDIO_CLOCK.toFixed(3)});
   // ── N3C r29 · EL ARCO VA CON EL RELOJ LENTO, y esto es una CORRECCIÓN sobre
   // su propio código, medida.
   //
@@ -198,18 +286,19 @@ void main(){
   cl = clamp(pow(cl * min(uSlow.a * 4.0, 1.0), 3.0), 0.0, 1.0);
   color += vec3(cl) * ${EL_RING_OPACITY.toFixed(2)};
 
-  // ── 5 · EL FLUIDO COMO LUZ ──
-  float fm = length(fluido) * 0.01 * ${EL_FLUID_OPACITY.toFixed(2)};
-  color = mix(color, vec3(1.0) - (vec3(1.0) - color) * (vec3(1.0) - vec3(fm)), 0.85);
+  // ── 5 · EL FLUIDO COMO LUZ, con SU mezcla ──
+  color = luzDuraEl(color, vec3(1.0), length(fluido) * 0.01 * ${EL_FLUID_OPACITY.toFixed(2)});
 
-  // grano y exposición
-  float grano = fract(sin(dot(vUv * 700.0, vec2(12.9898, 78.233))) * 43758.5453);
-  color *= 1.0 - uGrain * (0.5 - grano);
-  color *= 1.0 + ${EL_EXPOSURE.toFixed(2)};
+  // ── 6 · SU CORRECCIÓN DE COLOR, en su orden: saturación, contraste,
+  // exposición. Y NADA de tonemap: terminan en un clamp.
+  color = saturacionEl(color, ${EL_SATURATION.toFixed(2)});
+  color = contrasteEl(color, ${EL_CONTRAST.toFixed(2)});
+  color = exposicionEl(color, ${EL_EXPOSURE.toFixed(2)});
+  color = clamp(color, 0.0, 1.0);
 
   float aa = fwidth(sqrt(rr)) + 1e-4;
   float mascara = 1.0 - smoothstep(1.0 - aa, 1.0, sqrt(rr));
-  gl_FragColor = vec4(tonemap(color) * mascara, mascara);
+  gl_FragColor = vec4(color * mascara, mascara);
 }`;
 
 export interface ElevenOrbFrame {
@@ -230,6 +319,8 @@ export interface ElevenOrbFrame {
 
 export interface ElevenOrbRenderer {
   resize(css: number, dpr: number): { width: number; height: number };
+  /** Sólo para medir: reemplaza el degradado pintado por una imagen. */
+  useImage(img: TexImageSource): void;
   draw(frame: ElevenOrbFrame): void;
   hasFluid(): boolean;
   dispose(): void;
@@ -301,8 +392,49 @@ export function createElevenOrbRenderer(
   // ── LA TEXTURA PINTADA ──
   const gradTex = gl.createTexture();
   let gradSeed = -1;
+  /**
+   * N3C r31 · PODER PONER SU TEXTURA, para separar los dos problemas.
+   *
+   * El founder: «replica exactamente su orbe naranja, el de Narration, con los
+   * mismos colores y tonos, así eliminamos factores». Es el método correcto y se
+   * puede llevar más lejos: si nuestro shader come SU imagen y el resultado es
+   * idéntico al suyo, entonces el shader está bien y lo único que falla es
+   * nuestra pintura. Y si no es idéntico, la diferencia está en el shader y la
+   * pintura no tiene nada que ver.
+   *
+   * Sólo para medir: se pasa desde la mesa de luz y nunca desde producción.
+   */
+  const subirImagen = (img: TexImageSource) => {
+    if (!gradTex) return;
+    gradSeed = -2;
+    gl.bindTexture(gl.TEXTURE_2D, gradTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    conMipmaps();
+  };
+  /**
+   * N3C r31 · LOS MIPMAPS, que estaban en su cargador y yo no había portado
+   * (`generateMipmaps: true`). No es un detalle de rendimiento: es LO QUE MATA
+   * EL HORMIGUEO DEL GRANO.
+   *
+   * La textura trae grano, y el escorzo esférico la MINIFICA hacia la silueta.
+   * Sin mipmaps cada cuadro muestrea granos distintos y el grano CAMINA: medido,
+   * nuestro orbe cambiaba 8–10 por cuadro contra 1,4 del suyo, callado y
+   * hablando por igual. Eso no es movimiento, es hormigueo — y es justo lo que
+   * hace que se lea «menos fluido».
+   *
+   * Con mipmaps el grano se promedia donde la textura se comprime, que es lo que
+   * hace cualquier motor con una textura minificada.
+   */
+  const conMipmaps = () => {
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  };
   const subirGradiente = (frame: ElevenOrbFrame) => {
-    if (!gradTex || frame.seed === gradSeed) return;
+    if (!gradTex || gradSeed === -2 || frame.seed === gradSeed) return;
     const cv = paintOrbGradient({
       deep: frame.deep, liquid: frame.liquid, accent: frame.accent, seed: frame.seed,
     });
@@ -311,10 +443,7 @@ export function createElevenOrbRenderer(
     gl.bindTexture(gl.TEXTURE_2D, gradTex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    conMipmaps();
   };
   let disposed = false;
 
@@ -326,6 +455,9 @@ export function createElevenOrbRenderer(
       if (canvas.height !== px) canvas.height = px;
       gl.viewport(0, 0, px, px);
       return { width: px, height: px };
+    },
+    useImage(img) {
+      subirImagen(img);
     },
     draw(frame) {
       if (disposed || gl.isContextLost()) return;

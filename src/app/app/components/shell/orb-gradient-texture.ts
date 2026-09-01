@@ -37,7 +37,22 @@ export const ORB_GRADIENT_SIZE = 512;
  * es lo que se mira. Estos números son más anchos que los suyos a propósito.
  */
 export const ORB_GRADIENT_P05 = 0.20;
-export const ORB_GRADIENT_P95 = 0.95;
+// El p95 tiene que dejar sitio para SU exposición: el shader multiplica por
+// 1,15 al final, así que un p95 de 0,88 se va a 1,01 y quema. 0,80 × 1,15 = 0,92.
+// …y también tiene que dejar sitio para el ARCO, que suma hasta 0,25 encima.
+// Con 0,80 el 47% de los cuadros hablando tenían algún píxel quemado.
+export const ORB_GRADIENT_P95 = 0.72;
+/**
+ * Y su MEDIA, que es el tercer número y el que faltaba. Fijar sólo los extremos
+ * deja libre cuánta área es oscura: nuestra pintura quedaba con casi todo en la
+ * mitad clara y el orbe se leía perlado, como metal pulido, en vez de tener las
+ * regiones oscuras que el suyo tiene. Se ajusta con una gamma después del
+ * remapeo lineal, que mueve los medios sin tocar los extremos.
+ */
+// Su TEXTURA mide 0,605 de media, pero calibrar a ese número deja el ORBE en
+// 0,78 contra el 0,66 del suyo: entre medio están el escorzo, el arrastre y su
+// exposición ×1,15. Como en el rango, el objetivo se elige por lo que sale.
+export const ORB_GRADIENT_MEDIA = 0.56;
 
 function mezclar(a: OrbRgb, b: OrbRgb, t: number): OrbRgb {
   return [
@@ -119,11 +134,16 @@ export function paintOrbGradient(
     cx - R * 0.35, cy - R * 0.40, R * 0.05,
     cx, cy, R,
   );
-  esfera.addColorStop(0, css(alto));
-  esfera.addColorStop(0.34, css(mezclar(base, alto, 0.35)));
-  esfera.addColorStop(0.68, css(base));
-  esfera.addColorStop(0.88, css(medio));
-  esfera.addColorStop(1, css(bajo));
+  // N3C r31 · LA ESFERA VA SUAVE, y las manchas mandan.
+  //
+  // Con la esfera recorriendo todo el rango, el cuadro es un degradado radial y
+  // el orbe se lee como METAL PULIDO: una perla con un reflejo. En los suyos la
+  // esfera apenas se insinúa y lo que se ve son las manchas de la pintura. Es la
+  // diferencia entre un objeto iluminado y un campo de color.
+  esfera.addColorStop(0, css(mezclar(base, alto, 0.45)));
+  esfera.addColorStop(0.5, css(base));
+  esfera.addColorStop(0.85, css(mezclar(base, medio, 0.55)));
+  esfera.addColorStop(1, css(medio));
   ctx.fillStyle = esfera;
   ctx.beginPath();
   ctx.arc(cx, cy, R, 0, Math.PI * 2);
@@ -135,12 +155,12 @@ export function paintOrbGradient(
   // El realce ocupa poco a propósito — en el suyo el crema es una minoría, y
   // subirlo es lo que convirtió el orbe en una perla.
   const reparto: OrbRgb[] = [];
-  for (let i = 0; i < 3; i += 1) reparto.push(alto);
-  for (let i = 0; i < 6; i += 1) reparto.push(bajo);
-  for (let i = 0; i < 5; i += 1) reparto.push(medio);
-  for (let i = 0; i < 4; i += 1) reparto.push(mezclar(base, accent, 0.5));
+  for (let i = 0; i < 5; i += 1) reparto.push(alto);
+  for (let i = 0; i < 10; i += 1) reparto.push(bajo);
+  for (let i = 0; i < 8; i += 1) reparto.push(medio);
+  for (let i = 0; i < 7; i += 1) reparto.push(mezclar(base, accent, 0.5));
   ctx.save();
-  ctx.filter = `blur(${Math.round(N * 0.045)}px)`;
+  ctx.filter = `blur(${Math.round(N * 0.058)}px)`;
   for (let i = 0; i < reparto.length; i += 1) {
     // Fisher-Yates con el mismo azar determinista: el reparto es fijo, las
     // posiciones no.
@@ -152,15 +172,28 @@ export function paintOrbGradient(
     const rad = (0.02 + rnd() * 0.78) * N * 0.5;
     const px = cx + Math.cos(ang) * rad;
     const py = cy + Math.sin(ang) * rad;
-    const rr = N * (0.07 + rnd() * 0.17);
+    // N3C r31 · MASAS CON BORDE BLANDO, no degradados que se funden.
+    //
+    // Con manchas de degradado radial el cuadro se vuelve papilla: todo se
+    // mezcla con todo y el orbe se lee como METAL PULIDO, una perla con reflejo.
+    // En sus pinturas hay REGIONES —una zona clara junto a una oscura, con el
+    // borde blando pero definido—. Eso se consigue rellenando la forma con color
+    // plano y dejando que el desenfoque le dé el borde, no pintando el borde.
+    const rr = N * (0.10 + rnd() * 0.24);
     const col = reparto[i]!;
-    const g = ctx.createRadialGradient(px, py, 0, px, py, rr);
-    g.addColorStop(0, css(col, 0.85));
-    g.addColorStop(0.55, css(col, 0.40));
-    g.addColorStop(1, css(col, 0));
-    ctx.fillStyle = g;
+    ctx.fillStyle = css(col, 0.78);
     ctx.beginPath();
-    ctx.arc(px, py, rr, 0, Math.PI * 2);
+    // una forma irregular, no un círculo: tres arcos con radios distintos
+    const p1 = rnd() * Math.PI * 2;
+    for (let k = 0; k <= 12; k += 1) {
+      const th = p1 + (k / 12) * Math.PI * 2;
+      const rad = rr * (0.62 + 0.5 * Math.abs(Math.sin(th * 1.5 + p1)));
+      const qx = px + Math.cos(th) * rad;
+      const qy = py + Math.sin(th) * rad;
+      if (k === 0) ctx.moveTo(qx, qy);
+      else ctx.lineTo(qx, qy);
+    }
+    ctx.closePath();
     ctx.fill();
   }
   ctx.restore();
@@ -170,8 +203,8 @@ export function paintOrbGradient(
   ctx.filter = `blur(${Math.round(N * 0.06)}px)`;
   const lx = cx - R * 0.42;
   const ly = cy - R * 0.48;
-  const luz = ctx.createRadialGradient(lx, ly, 0, lx, ly, R * 0.60);
-  luz.addColorStop(0, css(alto, 0.50));
+  const luz = ctx.createRadialGradient(lx, ly, 0, lx, ly, R * 0.42);
+  luz.addColorStop(0, css(alto, 0.34));
   luz.addColorStop(1, css(alto, 0));
   ctx.fillStyle = luz;
   ctx.fillRect(0, 0, N, N);
@@ -192,9 +225,9 @@ export function paintOrbGradient(
   // Más difuminadas y más flojas de lo que uno pondría: a la primera pasada se
   // veían como RAYONES sobre el orbe. Lo que hacen falta no son trazos visibles
   // sino energía de detalle fino para que el arrastre tenga qué mover.
-  ctx.filter = `blur(${Math.round(N * 0.024)}px)`;
+  ctx.filter = `blur(${Math.round(N * 0.046)}px)`;
   ctx.lineCap = "round";
-  for (let i = 0; i < 78; i += 1) {
+  for (let i = 0; i < 14; i += 1) {
     const ang = rnd() * Math.PI * 2;
     const rad = rnd() * N * 0.52;
     const px = cx + Math.cos(ang) * rad;
@@ -202,7 +235,7 @@ export function paintOrbGradient(
     const largo = N * (0.05 + rnd() * 0.16);
     const dir = ang + (rnd() - 0.5) * 1.6 + Math.PI / 2;
     const col = rnd() < 0.45 ? alto : bajo;
-    ctx.strokeStyle = css(col, 0.07 + rnd() * 0.11);
+    ctx.strokeStyle = css(col, 0.05 + rnd() * 0.08);
     ctx.lineWidth = N * (0.016 + rnd() * 0.038);
     ctx.beginPath();
     ctx.moveTo(px - Math.cos(dir) * largo * 0.5, py - Math.sin(dir) * largo * 0.5);
@@ -215,6 +248,28 @@ export function paintOrbGradient(
     ctx.stroke();
   }
   ctx.restore();
+
+  // ── 4c · UNA SUAVIZADA FINAL DE TODO EL CUADRO ──
+  //
+  // Sus pinturas están más suaves que la mía a TODAS las escalas: medí la
+  // diferencia entre píxeles vecinos a 512 y la suya da 0,0023 contra los
+  // 0,0233 que daba la mía. Lo que se ve del orbe es la textura barrida, así que
+  // cada punto de detalle de más se convierte en cambio por cuadro — y demasiado
+  // cambio por cuadro es lo que el founder llamó «menos fluido».
+  {
+    const tmp = document.createElement("canvas");
+    tmp.width = N;
+    tmp.height = N;
+    const t = tmp.getContext("2d");
+    if (t) {
+      t.drawImage(cv, 0, 0);
+      ctx.clearRect(0, 0, N, N);
+      ctx.save();
+      ctx.filter = `blur(${Math.max(1, Math.round(N * 0.010))}px)`;
+      ctx.drawImage(tmp, 0, 0);
+      ctx.restore();
+    }
+  }
 
   // ── 5 · LA CALIBRACIÓN TONAL, contra la medida de su textura ──
   //
@@ -248,6 +303,66 @@ export function paintOrbGradient(
       d[i + 1] = Math.max(0, Math.min(255, d[i + 1]! * factor));
       d[i + 2] = Math.max(0, Math.min(255, d[i + 2]! * factor));
     }
+    // ── la gamma que lleva la MEDIA a la suya ──
+    let suma = 0;
+    for (let i = 0, k = 0; i < d.length; i += 4, k += 1) {
+      lum[k] = (0.2126 * d[i]! + 0.7152 * d[i + 1]! + 0.0722 * d[i + 2]!) / 255;
+      suma += lum[k]!;
+    }
+    const media = suma / lum.length;
+    if (media > 0.02 && media < 0.98) {
+      const gamma = Math.min(3, Math.max(0.35, Math.log(ORB_GRADIENT_MEDIA) / Math.log(media)));
+      for (let i = 0, k = 0; i < d.length; i += 4, k += 1) {
+        const l = lum[k]!;
+        if (l <= 1e-3) continue;
+        const factor = Math.min(3, Math.max(0.15, Math.pow(l, gamma) / l));
+        d[i] = Math.max(0, Math.min(255, d[i]! * factor));
+        d[i + 1] = Math.max(0, Math.min(255, d[i + 1]! * factor));
+        d[i + 2] = Math.max(0, Math.min(255, d[i + 2]! * factor));
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
+  // ── 5b · EL BORDE UNIFORME, que es lo que mata las rayas ──
+  //
+  // El founder: «en los filos de abajo y a veces del costado izquierdo hay unas
+  // rayas perpendiculares a la esfera que se ven como cortando». Es el recorte
+  // de la textura: el arrastre saca el muestreo fuera de [0,1] y ahí la textura
+  // REPITE su última fila — una fila repetida a lo largo del borde es
+  // literalmente una raya. (Es primo del defecto de la r9 en el fluido.)
+  //
+  // En el suyo no se nota porque el borde de sus cuadros es un lavado claro y
+  // uniforme: repetirlo no dibuja nada. Acá se hace lo mismo a propósito: el
+  // 12% exterior se funde hacia el color medio del propio borde, así que
+  // repetirlo es repetir un color plano.
+  {
+    const img = ctx.getImageData(0, 0, N, N);
+    const d = img.data;
+    // el color medio del anillo exterior, que es hacia donde se funde
+    let r0 = 0, g0 = 0, b0 = 0, c0 = 0;
+    const margen = Math.floor(N * 0.06);
+    for (let y = 0; y < N; y += 1) {
+      for (let x = 0; x < N; x += 1) {
+        if (x > margen && x < N - margen && y > margen && y < N - margen) continue;
+        const i = (y * N + x) * 4;
+        r0 += d[i]!; g0 += d[i + 1]!; b0 += d[i + 2]!; c0 += 1;
+      }
+    }
+    r0 /= c0; g0 /= c0; b0 /= c0;
+    const banda = N * 0.12;
+    for (let y = 0; y < N; y += 1) {
+      for (let x = 0; x < N; x += 1) {
+        const dBorde = Math.min(x, y, N - 1 - x, N - 1 - y);
+        if (dBorde >= banda) continue;
+        const t = 1 - dBorde / banda;
+        const k = t * t * (3 - 2 * t);
+        const i = (y * N + x) * 4;
+        d[i] = d[i]! + (r0 - d[i]!) * k;
+        d[i + 1] = d[i + 1]! + (g0 - d[i + 1]!) * k;
+        d[i + 2] = d[i + 2]! + (b0 - d[i + 2]!) * k;
+      }
+    }
     ctx.putImageData(img, 0, 0);
   }
 
@@ -255,7 +370,18 @@ export function paintOrbGradient(
   // El suyo viene incrustado en el PNG (250 KB para un degradado sólo se
   // explican con grano). Sin él la textura se ve plástica y las bandas quedan
   // demasiado limpias.
-  const fuerza = input.grain ?? 9;
+  // N3C r31 · EL GRANO ES DIEZ VECES MÁS FLOJO DE LO QUE YO CREÍA, y ésta era
+  // la causa del «menos fluido».
+  //
+  // Medí la variación de píxel a píxel de las dos texturas a 512: la suya da
+  // 0,0023 y la nuestra daba 0,0233 — DIEZ VECES más. Lo que se ve del orbe es
+  // la textura barrida, así que un grano fuerte no se lee como grano: CAMINA. El
+  // orbe cambiaba 7,5 por cuadro contra 1,4 del suyo, callado y hablando por
+  // igual, que es hormigueo y no movimiento.
+  //
+  // El grano de sus PNG existe pero es finísimo. Acá se calibra contra ese
+  // número, no contra lo que parece bien mirando la textura de cerca.
+  const fuerza = input.grain ?? 0.3;
   if (fuerza > 0) {
     const img = ctx.getImageData(0, 0, N, N);
     const d = img.data;

@@ -2725,3 +2725,73 @@ del mismo signo a todos los desfases —el carácter correcto— pero sigue entr
 y tres veces más calmo que el suyo. Ésa es la diferencia que queda, y es la
 próxima: con la coherencia como guardia, para no volver al temblor de la r27.
 
+
+---
+
+## Ronda 31 — el porte contra su orbe naranja, con su textura de control
+
+El founder: *«en los filos de abajo hay unas rayas perpendiculares que se ven
+como cortando […] el movimiento está cerca pero sigue sin ser tan fluido […]
+replica exactamente su orbe naranja, el de Narration, así eliminamos factores».*
+
+La idea de eliminar factores es la que desbloqueó la ronda, y se puede llevar
+más lejos que igualar colores: **se le puede dar a nuestro shader SU imagen**.
+Si con su textura el resultado es el suyo, el shader está bien y sólo falla
+nuestra pintura; si no, la pintura no tiene nada que ver. `/dev/onda?tex=<url>`
+hace exactamente eso.
+
+La primera corrida con su textura salió **crema lavado** donde el suyo es
+naranja rico. O sea: el shader.
+
+### Cuatro defectos del porte, encontrados así
+
+**1 · Yo les estaba aplicando un tonemap y ELLOS NO TONEMAPEAN.** Su shader
+termina en `clamp(color, 0, 1)` y ya. Nuestro ACES comprimía los altos y
+desaturaba — eso era el lavado. Ahora van sus funciones exactas —`contrast`,
+`exposure`, `czm_saturation`, `blendHardLight`— en su orden.
+
+**2 · Las rayas del borde eran el recorte de la textura.** El arrastre saca el
+muestreo fuera de [0,1] y ahí la textura repite su última fila: una fila
+repetida a lo largo del borde es literalmente una raya. En el suyo no se nota
+porque el borde de sus cuadros es un lavado uniforme. Ahora el 12% exterior del
+nuestro se funde a un color plano, así que repetirlo no dibuja nada.
+
+**3 · El ruido 3D era un hash con escalones; el suyo es simplex.** Un ruido de
+valor tiene derivada discontinua en cada celda: al avanzar su coordenada de
+tiempo, el dibujo cambia A SALTOS.
+
+**4 · Y la causa grande del «menos fluido»: nuestro grano era DIEZ VECES más
+fuerte que el suyo.** Medida la diferencia entre píxeles vecinos a 512, la suya
+da **0,0023** y la nuestra daba **0,0233**. Lo que se ve del orbe es la textura
+barrida, así que un grano fuerte no se lee como grano: **camina**. El orbe
+cambiaba 7,5 por cuadro contra 1,4 del suyo.
+
+### Y una corrección sobre su propio código
+
+Medí su orbe con el mismo instrumento, callado y hablando: **1,36 y 1,40**. Su
+orbe **cambia lo mismo con voz que sin voz** — el sonido le cambia la
+ESTRUCTURA (el arco aparece, el hueco se abre, los anillos nacen) pero no la
+velocidad. Portando sus coeficientes tal cual, el nuestro pasaba de 1,45 a 3,6.
+
+No encontré por qué su fórmula no les acelera a ellos. Lo que sí sé es lo que
+mide su orbe, y ésa es la vara: el término del audio sobre los relojes se llevó
+a donde su conducta dice.
+
+### Dónde quedó
+
+| | ellos | el porte |
+|---|---|---|
+| movimiento callado | 1,36 | **1,43** |
+| movimiento hablando | 1,40 | 1,71 |
+| contraste | 0,599 | **0,58** |
+| brillo medio | 0,66 | 0,76 |
+| textura, píxel a píxel | 0,0023 | **0,0022** |
+| textura, 4 px | 0,0080 | **0,0087** |
+| rayas en el borde | no | **no** |
+
+Lo que sigue distinto: el brillo medio, 15% más claro, y el movimiento hablando,
+22% más. Y una vuelta de calibración que hay que dejar escrita porque se repitió
+dos veces: **igualar la textura no es igualar el orbe.** Calibrada a la media de
+su textura (0,605) el orbe salía en 0,78; el objetivo de la pintura se elige por
+lo que sale, no por lo que entra.
+

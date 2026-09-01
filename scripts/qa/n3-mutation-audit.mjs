@@ -559,7 +559,7 @@ const mutations = [
     result:
       "el cuadro pierde su grano: la textura se ve plastica y las bandas quedan demasiado limpias",
     file: CUADRO,
-    from: "  const fuerza = input.grain ?? 9;",
+    from: "  const fuerza = input.grain ?? 0.3;",
     to: "  const fuerza = 0;",
   },
   {

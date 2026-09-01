@@ -240,6 +240,19 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
         porte = null;
       }
     }
+    // N3C r31 · `?tex=<url>` mete una imagen ajena en el porte. Existe para
+    // separar los dos problemas: si el shader come SU textura y da lo mismo que
+    // su orbe, el shader está bien y lo que falla es nuestra pintura. Es una
+    // herramienta de medición de la mesa de luz — producción nunca la toca.
+    if (porte && typeof window !== "undefined") {
+      const url = new URLSearchParams(window.location.search).get("tex");
+      if (url) {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => porte?.useImage(img);
+        img.src = url;
+      }
+    }
     let vivo = true;
     let raf = 0;
     let ultimoMs = -1;
