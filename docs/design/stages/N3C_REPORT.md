@@ -2922,3 +2922,184 @@ imitación a ojo.
 capa de grano, paleta de Narrator, manchas al centro, guion de narración) ·
 auditoría de mutación 141 mutaciones, restauración 895/895 · `npm run build`
 verde.
+
+
+---
+
+## Ronda 33 — fui a la fuente con el Chrome abierto, y el porte no era su orbe en seis cosas
+
+El founder, tras 32 rondas: *«llevamos varias rondas atrapados […] necesito una
+intervención de lógica, de arquitectura y de first principles […] evita caer en
+sesgos del proceso actual».* Se pidió con razón: el bloque llevaba diez rondas
+ajustando constantes de un porte contra números de archivo, y la premisa del
+traspaso —«su orbe naranja no está expuesto en ninguna página pública suya»—
+era falsa. Esta ronda no ajustó nada a ojo: leyó su código entero, decodificó sus
+assets vivos, pasó su clip de voz por su propio analizador y reconstruyó el
+porte como un **clon**, capa por capa.
+
+### 1 · Su orbe SÍ está en la portada, y es medible
+
+Abriendo `elevenlabs.io` en el Chrome del founder: el carrusel «ElevenCreative»
+del hero tiene **un solo lienzo WebGL** —el orbe del centro, 512×512 de búfer
+para 256 px CSS a DPR 2— y los orbes vecinos son imágenes estáticas. Su marcado,
+de afuera hacia adentro:
+
+```
+div.tw-rounded-full.tw-overflow-hidden.tw-ring-0.5.tw-ring-inset.tw-ring-black/10
+  ├ svg  (filtro feGaussianBlur 4 → cartel de carga desenfocado; invisible bajo el lienzo)
+  ├ img  creative-1.png por /_next/image   (el CARTEL mientras carga; no es la textura)
+  ├ div  → canvas 512×512
+  └ div.tw-mix-blend-overlay
+      └ div  background: noise@20aq.avif · 256 px (128 en 2x) · image-rendering: pixelated · opacity .5
+```
+
+El panel de fondo es **crema, `#f5f3f1`**. Nuestro banco comparaba sobre negro:
+eso solo ya cambia todo lo que el ojo lee de un orbe.
+
+Su pestaña estuvo oculta durante la sesión (`visibilityState: hidden`, rAF en
+cero), así que sólo se capturaron cuadros ESTÁTICOS de su orbe. **Eso mismo
+explica el dato más engañoso del bloque** (ver §4).
+
+### 2 · Su textura viva es un WebP, no el PNG; y su grano es negro con alfa
+
+Los recursos que su página descarga para el orbe son dos:
+`creative-1.18030cd4.webp` (512×512, 2,7 KB) y `noise@20aq.289c1f1d.avif`
+(256×256). El PNG de 250 KB contra el que se calibraron las rondas 30–32 es el
+**cartel** que va debajo del lienzo mientras carga.
+
+| | PNG (cartel) | **WebP (lo que muestrea su WebGL)** |
+|---|---|---|
+| media | 0,605 | **0,559** |
+| p05 / p50 / p95 | 0,325 / — / 0,837 | **0,297 / 0,572 / 0,748** |
+| píxel a píxel | 0,0017–0,0023 | 0,0016 |
+| paleta por percentiles | #b93919…#ffcf9b | **#a6361a · #c5532b · #de8156 · #f1ae82 · #f5b488** |
+
+Y el AVIF del grano, decodificado: **RGB = 0 en todos los píxeles**; lo que varía
+es el alfa — media 103/255, desvío 43/255, gaussiano, correlación +0,11 a un
+píxel y −0,16 a dos. Sobre `overlay`, un negro con alfa `a` no «da textura
+alrededor del gris»: **oscurece**, y más en los medios tonos (base ≥ 0,5 →
+base − a/2·(1−base)). Con la media 0,40 eso baja los medios ~0,08–0,10. Nuestro
+grano era gris centrado en 128: sobre overlay, textura sí, oscurecimiento cero.
+Ahí estaba buena parte del «15 % más claro».
+
+### 3 · El shader, línea por línea: seis diferencias
+
+Se bajó su chunk `75548` (47 KB), se embelleció y se leyó entero — el reproductor,
+el fluido y el shader. Contra `orb-eleven-shader.ts`:
+
+1. **`EL_AUDIO_CLOCK = 0.02` no existe en el suyo.** Ver §4.
+2. **El arco cuelga del promedio rápido** (`uAudioAverage`), no de un envolvente
+   de 900 ms. La «corrección» de la r29 era gusto nuestro.
+3. **La orientación.** Su vértice espeja la x (`vUv = (1−uv.x, uv.y)`) y su `main`
+   la vuelve a espejar para leer la textura (`uv = (1−vUv.x, vUv.y)`): la textura
+   se ve DERECHA y el ruido/círculo/anillo miran la x espejada. El porte hacía
+   exactamente lo contrario.
+4. **El fluido no era el suyo.** El porte leía un «tinte de luz» de 0 a 1 de
+   NUESTRA simulación (cinco agitadores siempre encendidos, curl 30, mapa de 24
+   px). Su fluido es Dobryakov casi puro con un splat de anillos, curl CERO,
+   tinte a 512 desenfocado ENTERO cada cuadro, y sus bandas van ×2 con el anillo
+   a `graves × 30`: **su tinte vive en cientos**, y por eso su shader lo lee con
+   `× 0,001` (desplazamiento) y `× 0,01` (luz dura). Alimentar esas fórmulas con
+   un tinte de 0 a 1 es no tener fluido.
+5. `ringColorOpacity` es **0,25** (el porte lo había bajado a 0,17 «para no
+   quemar»: lo que quemaba era nuestra pintura demasiado clara).
+6. Su `clearColor [1,1,1,0]` de la config **no se aplica** (no hay `clearColor`
+   en el chunk); su advección usa la rama de filtrado por hardware cuando la
+   extensión existe; su `pulse` se calcula y no se usa.
+
+### 4 · Por qué «su orbe no acelera al hablar» era falso
+
+Su clip de Narrator es público (`…/117d85a7-….mp3`, 3,42 s, CORS abierto). Se
+decodificó y se pasó por SU analizador (fftSize 256, Blackman, smoothing 0,8,
+−100…−30 dB, 60 lecturas por segundo):
+
+| banda | media | pico |
+|---|---|---|
+| graves 0–200 Hz (bins 0–1) | **0,768** | 0,99 |
+| medios | 0,530 | 0,79 |
+| agudos | 0,225 | 0,39 |
+| total | 0,219 | 0,34 |
+
+Con eso, su integrador de graves llega a 55 en 3,4 s, y su término `+ ∫graves × 0,25`
+mueve el reloj del fbm **13,85** contra **10,78** del tiempo puro: **su orbe se
+acelera ~2,3× mientras habla.** El porte sin parche medía 1,45 → 3,6 (2,5×): era
+CORRECTO. La referencia «1,36 callado / 1,40 hablando» de la r31 se midió, con
+toda probabilidad, sobre una pestaña oculta —rAF parado, orbe congelado— y lo
+que se comparó fue ruido de captura contra ruido de captura. El parche se cae y
+sus coeficientes van tal cual.
+
+### 5 · Lo que se construyó
+
+- **`orb-eleven-fluid.ts`** (nuevo): su fluido, con sus constantes
+  (128/512, 0,98/0,98/0,97, radio 1,5, blur 1,2, 3 iteraciones, `InputScale` 12,
+  `OverallSoundScale` 2, mezcla 0,35/0,25, `dt` fijo 0,016, una actualización
+  por 1/60 s) y su splat de anillos exacto. Sin vorticidad: con curl 0 es un paso
+  muerto.
+- **`orb-eleven-shader.ts`** (reescrito): su `main` en GLSL 1.0 en su orden, sus
+  acumuladores adentro (`setAudioData`), sin parche, arco sobre el rápido,
+  orientación corregida, `uResolution`/`uTextureResolution` con `getCoverUv`,
+  premultiplicado, DPR ≤ 2.
+- **`orb-grain-overlay.ts`**: mosaico NEGRO con alfa gaussiano (103 ± 43) y un
+  núcleo pequeño (0,05 a 1 px, −0,10 a 2 px) que reproduce su correlación
+  (+0,08/−0,19 medido contra +0,11/−0,16). `orbGrainAlpha` es pura: el gate la
+  MIDE. La receta (overlay, 50 %, 256/128 px, pixelado) pasa a CSS: leer
+  `devicePixelRatio` en el render era el error de hidratación del banco.
+- **Las capas** en CSS: recorte redondo con anillo interior de 0,5 px al 10 %,
+  panel crema.
+- **El banco**: su clip real como primera muestra (decodificado al montar con un
+  `OfflineAudioContext`, con 1,5 s de silencio de cola para que el bucle
+  respire); el orbe de la derecha come **su WebP** por defecto (`?pintado=1` lo
+  vuelve a nuestra pintura con su paleta); la paleta y las metas de calibración
+  del cuadro pasan a las del WebP (p05 0,30 · p95 0,75 · media 0,56).
+
+### 6 · Dónde quedó, medido (paso determinista, 240 cuadros con su clip)
+
+| | brillo sobre el disco | movimiento por cuadro (96 px) |
+|---|---|---|
+| **ellos** (referencia de archivo) | **0,66** | — |
+| el clon con SU textura (derecha) | **0,67** | 0,68 |
+| el clon con nuestra pintura (centro) | 0,742 | 0,52 |
+
+El brillo, que era la diferencia numérica más grande del traspaso (0,76 contra
+0,66), queda en 0,67 sin tocar ninguna calibración: era el grano negro y el
+WebP. El movimiento no se compara con cifras viejas porque el instrumento
+cambió; la vara para el movimiento ahora es más fuerte que una captura: es SU
+código con SU audio, sin parches.
+
+A ojo, con las capturas de su portada al lado: el orbe de la derecha tiene el
+mismo carácter —crema arriba a la derecha, rojo profundo abajo a la izquierda,
+mate y granulado, el filo fino—. Lo que queda distinto entre el centro y la
+derecha es exclusivamente la pintura.
+
+### 7 · Lecciones de método
+
+- **Cuando algo «no se puede medir», volver a mirar la superficie.** El orbe
+  estaba en el hero. Tres rondas se apoyaron en «no hay superficie pública».
+- **Una pestaña oculta mide ruido.** `visibilityState` antes de cualquier
+  métrica de movimiento; y una razón 1,03 entre dos números al piso del
+  instrumento no es una conducta, es el piso.
+- **El asset que se mide tiene que ser el que se muestrea.** El PNG era el
+  cartel; la textura era el WebP.
+- **Un parche empírico sobre una fórmula ajena es una hipótesis, no una
+  constante.** Si su fórmula «no les hace» lo que nos hace, primero probar su
+  fórmula con SU entrada.
+- **Igualar la entrada SÍ iguala la salida cuando la cadena es la misma.** Las
+  lecciones contrarias de r30/r31 se aprendieron con una cadena que no era la
+  suya.
+
+### Verificación
+
+`npm run lint` 0 errores (8 warnings preexistentes ajenos al bloque) · gate de
+captura **895/895** (pin N3C-12 reescrito: mide el mosaico en Node y lee la
+receta CSS) · auditoría de mutación **143 mutaciones, todas mueren con nombre,
+restauración 895/895** (seis nuevas: overlay en CSS, desvío del alfa, grano gris
+en vez de negro, núcleo de correlación, anillo del recorte, calibración P05) ·
+`npm run build` verde.
+
+**Nota de procedencia.** El dibujo del clon es un porte del shader que
+ElevenLabs sirve en su sitio (chunk `75548`) y sólo existe para el banco de
+`/dev/onda`; su fluido es Dobryakov (MIT). La atribución «MIT a ElevenLabs» que
+llevaban los archivos era imprecisa: lo que ElevenLabs publica bajo MIT es el
+orbe de `elevenlabs/ui`, que es otro shader. Producción sigue en `orb-shader.ts`
+y no carga ningún asset ajeno; qué se lleva a producción de esto —la técnica
+con pintura propia— es decisión del founder.

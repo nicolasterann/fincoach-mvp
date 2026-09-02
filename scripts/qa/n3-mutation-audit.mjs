@@ -527,17 +527,41 @@ const mutations = [
     name: "N3C-12",
     result:
       "el grano deja de mezclarse como overlay: la capa tapa el orbe en vez de darle textura",
-    file: GRANO,
-    from: '    mixBlendMode: "overlay",',
-    to: '    mixBlendMode: "normal",',
+    file: CSS,
+    from: ".kipu-grano { position: absolute; inset: 0; pointer-events: none; mix-blend-mode: overlay;",
+    to: ".kipu-grano { position: absolute; inset: 0; pointer-events: none; mix-blend-mode: normal;",
   },
   {
     name: "N3C-12",
     result:
-      "el mosaico del grano se vuelve gris plano: sobre overlay eso no hace NADA y el grano desaparece",
+      "el mosaico del grano se vuelve plano: sin desvio en el alfa no hay grano, solo un velo uniforme",
     file: GRANO,
-    from: "export const ORB_GRAIN_SPREAD = 30;",
-    to: "export const ORB_GRAIN_SPREAD = 0;",
+    from: "export const ORB_GRAIN_ALPHA_SD = 43;",
+    to: "export const ORB_GRAIN_ALPHA_SD = 0;",
+  },
+  {
+    name: "N3C-12",
+    result:
+      "el grano vuelve a ser GRIS en vez de negro: sobre overlay el gris medio no oscurece nada, y el orbe queda ~0,08 mas claro que el suyo",
+    file: GRANO,
+    from: "    d[i] = 0;\n    d[i + 1] = 0;\n    d[i + 2] = 0;",
+    to: "    d[i] = 128;\n    d[i + 1] = 128;\n    d[i + 2] = 128;",
+  },
+  {
+    name: "N3C-12",
+    result:
+      "el mosaico pierde su correlacion espacial: ruido blanco puro en vez del grano ligeramente afilado del suyo",
+    file: GRANO,
+    from: "export const ORB_GRAIN_KERNEL_2 = -0.1;",
+    to: "export const ORB_GRAIN_KERNEL_2 = 0;",
+  },
+  {
+    name: "N3C-12",
+    result:
+      "el recorte redondo pierde su anillo interior de 0,5 px: la silueta del clon deja de tener el filo del suyo",
+    file: CSS,
+    from: "box-shadow: inset 0 0 0 0.5px rgba(0,0,0,.1); }",
+    to: "box-shadow: none; }",
   },
   {
     name: "N3C-12",
@@ -625,7 +649,7 @@ const mutations = [
     result:
       "el porte se calibra al rango de SU TEXTURA en vez de al del ORBE: ajuste perfecto en la entrada y peor en lo que se mira",
     file: CUADRO,
-    from: "export const ORB_GRADIENT_P05 = 0.20;",
+    from: "export const ORB_GRADIENT_P05 = 0.30;",
     to: "export const ORB_GRADIENT_P05 = 0.325;",
   },
   // ── N3C-10 · LA LEY PORTADA DE SU CÓDIGO ──────────────────────────────────

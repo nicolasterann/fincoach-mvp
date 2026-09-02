@@ -36,12 +36,21 @@ export const ORB_GRADIENT_SIZE = 512;
  * Así que el objetivo de la textura se elige por lo que produce en el ORBE, que
  * es lo que se mira. Estos números son más anchos que los suyos a propósito.
  */
-export const ORB_GRADIENT_P05 = 0.20;
-// El p95 tiene que dejar sitio para SU exposición: el shader multiplica por
-// 1,15 al final, así que un p95 de 0,88 se va a 1,01 y quema. 0,80 × 1,15 = 0,92.
-// …y también tiene que dejar sitio para el ARCO, que suma hasta 0,25 encima.
-// Con 0,80 el 47% de los cuadros hablando tenían algún píxel quemado.
-export const ORB_GRADIENT_P95 = 0.72;
+/**
+ * N3C r33 · RECALIBRADO CONTRA SU TEXTURA VIVA, que es un WebP y no el PNG.
+ *
+ * Todo lo anterior se midió sobre `creative-1.png` (p05 0,325 · p95 0,837 ·
+ * media 0,605), pero ese PNG es el CARTEL que su página muestra debajo del
+ * lienzo mientras carga. Lo que su WebGL muestrea es `creative-1.webp`, 512×512,
+ * y mide distinto: **p05 0,297 · p50 0,572 · p95 0,748 · media 0,559**, con
+ * diferencia entre píxeles vecinos 0,0016. Es más oscuro y con menos crema
+ * arriba. Y con el clon ya exacto (mismo shader, mismo fluido, mismo grano
+ * encima), igualar la entrada SÍ es igualar la salida para la misma pintura:
+ * las lecciones de «se elige por lo que sale» se aprendieron con una cadena
+ * que no era la suya (tonemap, grano gris, fluido de 0 a 1).
+ */
+export const ORB_GRADIENT_P05 = 0.30;
+export const ORB_GRADIENT_P95 = 0.75;
 /**
  * Y su MEDIA, que es el tercer número y el que faltaba. Fijar sólo los extremos
  * deja libre cuánta área es oscura: nuestra pintura quedaba con casi todo en la
@@ -49,9 +58,7 @@ export const ORB_GRADIENT_P95 = 0.72;
  * regiones oscuras que el suyo tiene. Se ajusta con una gamma después del
  * remapeo lineal, que mueve los medios sin tocar los extremos.
  */
-// Su TEXTURA mide 0,605 de media, pero calibrar a ese número deja el ORBE en
-// 0,78 contra el 0,66 del suyo: entre medio están el escorzo, el arrastre y su
-// exposición ×1,15. Como en el rango, el objetivo se elige por lo que sale.
+// La media de su WebP: 0,559.
 export const ORB_GRADIENT_MEDIA = 0.56;
 
 function mezclar(a: OrbRgb, b: OrbRgb, t: number): OrbRgb {
@@ -87,8 +94,9 @@ export interface OrbGradientInput {
    *
    * Con los tres colores de la capa hay que INVENTAR los intermedios, y ahí se
    * cuela mi criterio. Para replicar su naranja de Narrator hacen falta los
-   * suyos exactos, y se sacan de su propio PNG por percentiles de luminancia:
-   * #b93919 · #e25b2c · #f98857 · #ffbb82 · #ffcf9b.
+   * suyos exactos, y se sacan de su WebP vivo por percentiles de luminancia
+   * (r33; los del PNG eran más claros): #a6361a · #c5532b · #de8156 · #f1ae82 ·
+   * #f5b488.
    */
   tonos?: readonly OrbRgb[];
   /** Qué capa es: dos capas nunca comparten el mismo cuadro. */

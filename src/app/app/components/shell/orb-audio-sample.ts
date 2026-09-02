@@ -36,6 +36,20 @@ export interface OrbVoiceSample {
    * caen donde caerían al leerlo.
    */
   texto: string;
+  /**
+   * N3C r33 · UNA VOZ DE VERDAD, LA SUYA.
+   *
+   * Las muestras sintéticas tienen lo que el orbe mira —bandas y flancos—, pero
+   * no la PROPORCIÓN entre bandas de una voz grabada. Su portada reproduce un
+   * clip público de 3,4 s («Christopher», el orbe de Narrator); pasándolo por su
+   * propio analizador la banda grave lee 0,77 de media y casi 1,0 de pico, los
+   * medios 0,53, los agudos 0,22 y el total 0,22. Con una muestra que no tenga
+   * ese reparto, todo lo que cuelga de una banda —los relojes, el arco, los
+   * anillos— se juzga contra otra cosa. Si hay `url`, la muestra es ese clip
+   * decodificado (a 48 kHz, con una pausa de silencio al final para que el
+   * bucle respire) y `f0` no se usa.
+   */
+  url?: string;
   /** Frecuencia fundamental, en hercios. 0 = silencio. */
   f0: number;
   /** Sílabas por segundo. */
@@ -45,7 +59,23 @@ export interface OrbVoiceSample {
   energia: number;
 }
 
+/** Su clip público de Narrator, el que suena en el orbe naranja de su portada. */
+export const ORB_REAL_VOICE_URL =
+  "https://storage.googleapis.com/eleven-public-prod/database/workspace/48ab3aae468d4e9baded4b1693820088/voices/EkK5I93UQWFDigLMpZcX/117d85a7-853f-482d-bf48-2d169f399830.mp3";
+/** Silencio que se le añade al clip para que el bucle tenga un «entre frases». */
+export const ORB_REAL_VOICE_TAIL_SECONDS = 1.5;
+
 export const ORB_VOICE_SAMPLES: readonly OrbVoiceSample[] = [
+  {
+    nombre: "Christopher · su clip real de Narrator",
+    url: ORB_REAL_VOICE_URL,
+    f0: 0,
+    ritmo: 0,
+    brillo: 0,
+    energia: 0,
+    texto:
+      "La misma voz grabada que suena en su portada: 3,4 segundos de narración, decodificados y pasados por su propio analizador.",
+  },
   {
     nombre: "voz calmada",
     f0: 118,
@@ -247,4 +277,33 @@ export function createOrbSampleAnalyser(sampleRate = ORB_SAMPLE_RATE) {
       return orbAudioBands(bins, sampleRate);
     },
   };
+}
+
+/**
+ * Decodifica un clip de voz a números, a la tasa del banco, y le añade una
+ * cola de silencio. Usa un contexto sin salida (`OfflineAudioContext`), que
+ * decodifica y remuestrea sin necesitar un gesto del usuario — la trampa de
+ * la política de autoplay que ya nos costó una ronda no aplica acá.
+ */
+export async function decodeOrbVoiceClip(
+  url: string,
+  sampleRate = ORB_SAMPLE_RATE,
+  tailSeconds = ORB_REAL_VOICE_TAIL_SECONDS,
+): Promise<Float32Array | null> {
+  if (typeof window === "undefined") return null;
+  const Offline =
+    window.OfflineAudioContext ??
+    (window as unknown as { webkitOfflineAudioContext?: typeof OfflineAudioContext })
+      .webkitOfflineAudioContext;
+  if (!Offline) return null;
+  const res = await fetch(url, { mode: "cors" });
+  if (!res.ok) return null;
+  const buf = await res.arrayBuffer();
+  const ctx = new Offline(1, 1, sampleRate);
+  const audio = await ctx.decodeAudioData(buf);
+  const voz = audio.getChannelData(0);
+  const cola = Math.max(0, Math.floor(tailSeconds * sampleRate));
+  const pcm = new Float32Array(voz.length + cola);
+  pcm.set(voz, 0);
+  return pcm;
 }

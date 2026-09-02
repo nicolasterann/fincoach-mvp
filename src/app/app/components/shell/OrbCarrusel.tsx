@@ -24,14 +24,13 @@ import {
   orbMatter,
   orbPresentationMaterial,
   orbWaterline,
-  type OrbKind,
 } from "./shell-orb-contract";
-import { advanceOrbField, orbFieldDrive, orbFieldSpeed } from "./orb-water-sim";
+import { advanceOrbField, orbFieldDrive } from "./orb-water-sim";
 import {
   createOrbSampleAnalyser,
+  decodeOrbVoiceClip,
   orbVoiceSamplePcm,
   ORB_SAMPLE_RATE,
-  ORB_SAMPLE_SECONDS,
   ORB_VOICE_SAMPLES,
 } from "./orb-audio-sample";
 import {
@@ -56,30 +55,35 @@ import {
  * analizador la parte en las cuatro bandas de la referencia, y el orbe recibe
  * exactamente lo que recibiría el suyo.
  *
- * La muestra se sintetiza acá —formantes, sílabas y pausas— para no depender de
- * un archivo de nadie y para que sea siempre la misma en las dos pantallas.
+ * N3C r33 · Y AHORA LO MISMO DE VERDAD: su clip de voz grabada, su textura WebP,
+ * su grano, su recorte y su fondo crema. Ver `orb-eleven-shader.ts`.
  */
 
 const MUESTRAS = ORB_VOICE_SAMPLES;
 
 /**
- * N3C r32 · SU NARANJA DE NARRATOR, sacado de su propio PNG.
+ * N3C r32/r33 · SU NARANJA DE NARRATOR, sacado de su textura VIVA.
  *
  * El founder: «no veo que hayas replicado su orbe naranja de Narrator; el
  * experimento era replicarlo exacto, con sus colores y textura, para encontrar
- * las diferencias de forma más clara». Tenía razón: en la r31 usé su imagen
- * SÓLO como diagnóstico y nunca quedó un orbe naranja al que mirar.
- *
- * Los cinco tonos salen de `creative-1.png` por percentiles de luminancia —el 5,
- * el 20, el 50, el 80 y el 95—, que es su paleta y no una interpretación mía.
+ * las diferencias de forma más clara». Los cinco tonos salen de su
+ * `creative-1.webp` —lo que su WebGL muestrea; el PNG es sólo el cartel de
+ * carga— por percentiles de luminancia (5, 20, 50, 80 y 95).
  */
 const NARRATOR: readonly OrbRgb[] = [
-  [0xb9 / 255, 0x39 / 255, 0x19 / 255],
-  [0xe2 / 255, 0x5b / 255, 0x2c / 255],
-  [0xf9 / 255, 0x88 / 255, 0x57 / 255],
-  [0xff / 255, 0xbb / 255, 0x82 / 255],
-  [0xff / 255, 0xcf / 255, 0x9b / 255],
+  [0xa6 / 255, 0x36 / 255, 0x1a / 255],
+  [0xc5 / 255, 0x53 / 255, 0x2b / 255],
+  [0xde / 255, 0x81 / 255, 0x56 / 255],
+  [0xf1 / 255, 0xae / 255, 0x82 / 255],
+  [0xf5 / 255, 0xb4 / 255, 0x88 / 255],
 ];
+
+/**
+ * Su textura viva, tal cual la sirve su CDN (con CORS abierto). Sólo para el
+ * banco: producción jamás carga un asset ajeno.
+ */
+export const NARRATOR_TEXTURE_URL =
+  "https://eleven-public-cdn.elevenlabs.io/marketing_website/_next/static/media/creative-1.18030cd4.webp";
 
 export function OrbCarrusel({ size = 260 }: { size?: number }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -95,6 +99,7 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
   const [sonando, setSonando] = useState(false);
   const [medidas, setMedidas] = useState<OrbAudioBands>(ORB_AUDIO_ZERO);
   const [falla, setFalla] = useState<string | null>(null);
+  const [clipListo, setClipListo] = useState(false);
   /**
    * El mosaico del grano: nulo en el servidor, el PNG de ruido en el navegador.
    * El porqué de esta puerta y no un efecto está en `orb-grain-overlay.ts`.
@@ -115,10 +120,43 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
   const analizadorRef = useRef(createOrbSampleAnalyser());
   const posRef = useRef(0);
   const corriendoRef = useRef(false);
+  /** Su clip real, decodificado una vez al montar. */
+  const clipRef = useRef<Float32Array | null>(null);
 
   useEffect(() => {
     indiceRef.current = indice;
   }, [indice]);
+
+  /**
+   * N3C r33 · EL CLIP REAL SE TRAE ANTES DEL PRIMER TOQUE.
+   *
+   * Un `await` dentro del manejador del clic gasta la activación del usuario y
+   * el sonido no arranca (lección de la r28). Así que el clip se decodifica al
+   * montar, y el clic ya lo encuentra como números.
+   */
+  useEffect(() => {
+    let vivo = true;
+    const url = MUESTRAS.find((m) => m.url)?.url;
+    if (!url) return;
+    decodeOrbVoiceClip(url)
+      .then((pcm) => {
+        if (!vivo || !pcm) return;
+        clipRef.current = pcm;
+        setClipListo(true);
+      })
+      .catch(() => {
+        /* sin clip: la muestra queda en silencio y el banco lo dice */
+      });
+    return () => {
+      vivo = false;
+    };
+  }, []);
+
+  const pcmDe = useCallback((i: number): Float32Array => {
+    const m = MUESTRAS[i]!;
+    if (m.url) return clipRef.current ?? orbVoiceSamplePcm(m);
+    return orbVoiceSamplePcm(m);
+  }, []);
 
   const parar = useCallback(() => {
     try {
@@ -147,7 +185,7 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
     }
     // La reproducción que MIRA el orbe es la de la muestra en números: arranca
     // siempre, en cualquier navegador y sin permiso de nadie.
-    pcmRef.current = orbVoiceSamplePcm(MUESTRAS[indiceRef.current]!);
+    pcmRef.current = pcmDe(indiceRef.current);
     analizadorRef.current = createOrbSampleAnalyser();
     posRef.current = 0;
     corriendoRef.current = true;
@@ -177,7 +215,7 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
     } catch {
       /* sin sonido; el banco sigue midiendo */
     }
-  }, [parar]);
+  }, [parar, pcmDe]);
 
   // al cambiar de orbe, la muestra cambia con él — como en el suyo
   useEffect(() => {
@@ -286,19 +324,27 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
         narrador = null;
       }
     }
+    const flags =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search)
+        : new URLSearchParams();
     // N3C r31 · `?tex=<url>` mete una imagen ajena en el porte. Existe para
     // separar los dos problemas: si el shader come SU textura y da lo mismo que
     // su orbe, el shader está bien y lo que falla es nuestra pintura. Es una
     // herramienta de medición de la mesa de luz — producción nunca la toca.
-    if (porte && typeof window !== "undefined") {
-      const url = new URLSearchParams(window.location.search).get("tex");
-      if (url) {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.onload = () => porte?.useImage(img);
-        img.src = url;
-      }
-    }
+    const cargar = (destino: ElevenOrbRenderer | null, url: string) => {
+      if (!destino) return;
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => destino.useImage(img);
+      img.src = url;
+    };
+    const tex = flags.get("tex");
+    if (tex) cargar(porte, tex);
+    // N3C r33 · EL ORBE DE LA DERECHA COME SU TEXTURA VIVA por defecto. Con
+    // `?pintado=1` usa nuestra pintura con su paleta: la distancia entre las
+    // dos es lo que falta de PINTURA, y nada más.
+    if (flags.get("pintado") !== "1") cargar(narrador, NARRATOR_TEXTURE_URL);
     let vivo = true;
     let raf = 0;
     let ultimoMs = -1;
@@ -307,13 +353,9 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
     let promedio: OrbAudioBands = ORB_AUDIO_ZERO;
     let acumulado: OrbAudioBands = ORB_AUDIO_ZERO;
     let ultimoTotal = 0;
-    // N3C r28 · el envolvente LENTO, que es el que puede mover amplitudes. El
-    // promedio de bandas es el RÁPIDO (mezcla 0,55 ≈ 30 ms): colgarle el dipolo,
-    // el halo y la deformación lo hace pulsar una vez por sílaba — el mismo
-    // defecto que la r27 mató, reaparecido acá por pasar la señal equivocada.
+    // N3C r28 · el envolvente LENTO, que es el que puede mover amplitudes en
+    // NUESTRO orbe de producción. El clon no lo usa: su arco cuelga del rápido.
     let lento = 0;
-    // las cuatro bandas con el envolvente lento: lo que puede mover amplitudes
-    let lentas: OrbAudioBands = ORB_AUDIO_ZERO;
     let relojPorte = 0;
     let avisoMs = 0;
 
@@ -338,7 +380,7 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
       let crudo: OrbAudioBands = ORB_AUDIO_ZERO;
       if (corriendoRef.current) {
         posRef.current += dt * ORB_SAMPLE_RATE;
-        if (posRef.current >= ORB_SAMPLE_RATE * ORB_SAMPLE_SECONDS) posRef.current = 0;
+        if (posRef.current >= pcmRef.current.length) posRef.current = 0;
         crudo = analizadorRef.current.leer(pcmRef.current, Math.floor(posRef.current));
       }
       bandasRef.current = crudo;
@@ -349,12 +391,6 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
       ultimoTotal = promedio.all;
 
       lento = advanceVoiceTau(lento, promedio.all, dt, VOICE_SHAPE_TAU_MS);
-      lentas = {
-        low: advanceVoiceTau(lentas.low, promedio.low, dt, VOICE_SHAPE_TAU_MS),
-        mid: advanceVoiceTau(lentas.mid, promedio.mid, dt, VOICE_SHAPE_TAU_MS),
-        high: advanceVoiceTau(lentas.high, promedio.high, dt, VOICE_SHAPE_TAU_MS),
-        all: advanceVoiceTau(lentas.all, promedio.all, dt, VOICE_SHAPE_TAU_MS),
-      };
       relojPorte += dt;
       reloj = advanceOrbField(reloj, orbFieldDrive(promedio.all, 0), dt);
 
@@ -401,20 +437,16 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
       });
       canvas.dataset.fluid = activo.hasFluid() ? "1" : "0";
 
-      // ── N3C r29 · EL PORTE FIEL, AL LADO ────────────────────────────────
-      // Mismo audio, mismo cuadro, mismos colores. Es la única forma honesta de
-      // preguntar «¿se parece?»: las dos cosas haciendo LO MISMO al mismo tiempo.
-      // ── EL NARANJA DE NARRATOR, con SUS colores ──
+      // ── N3C r33 · EL CLON, AL LADO ────────────────────────────────────────
+      // Mismo audio crudo, mismo cuadro. El clon lleva SUS acumuladores adentro
+      // (su `setAudioData`), así que acá sólo recibe las bandas del analizador.
       if (narrador) {
         narrador.resize(size, window.devicePixelRatio || 1);
         narrador.draw({
           timeSeconds: relojPorte,
           dtSeconds: dt,
-          average: promedio,
-          cumulative: acumulado,
-          slow: lentas,
+          bands: crudo,
           seed: 99,
-          risingAll: subiendo,
           deep: NARRATOR[0]!,
           liquid: NARRATOR[2]!,
           accent: NARRATOR[3]!,
@@ -427,11 +459,8 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
         porte.draw({
           timeSeconds: relojPorte,
           dtSeconds: dt,
-          average: promedio,
-          cumulative: acumulado,
-          slow: lentas,
+          bands: crudo,
           seed: indiceRef.current,
-          risingAll: subiendo,
           deep: leerColor(`--kipu-deep-${kind}`),
           liquid: leerColor(`--kipu-liquid-${kind}`),
           accent: leerColor(`--layer-${kind}`),
@@ -485,7 +514,7 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
   const muestra = MUESTRAS[indice]!;
 
   return (
-    <div className="kipu-carrusel" data-sonando={sonando ? "1" : "0"}>
+    <div className="kipu-carrusel" data-sonando={sonando ? "1" : "0"} data-fondo="crema">
       <div className="kipu-carrusel__pista">
         <button
           type="button"
@@ -508,15 +537,21 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
             </button>
             <p className="kipu-carrusel__cual">el nuestro de hoy</p>
           </div>
+          {/* Sus capas, en su orden: recorte redondo con anillo interior, el
+              lienzo, y el grano encima mezclado como overlay. */}
           <div className="kipu-carrusel__orbe" style={{ width: size, height: size }}>
-            <canvas ref={porteRef} style={{ width: size, height: size }} />
-            <div style={orbGrainStyle(grano)} />
-            <p className="kipu-carrusel__cual">el porte, con nuestros colores</p>
+            <div className="kipu-orbe-recorte">
+              <canvas ref={porteRef} style={{ width: size, height: size }} />
+              <div className="kipu-grano" style={orbGrainStyle(grano)} />
+            </div>
+            <p className="kipu-carrusel__cual">su clon, con nuestra pintura</p>
           </div>
           <div className="kipu-carrusel__orbe" style={{ width: size, height: size }}>
-            <canvas ref={narradorRef} style={{ width: size, height: size }} />
-            <div style={orbGrainStyle(grano)} />
-            <p className="kipu-carrusel__cual">su naranja de narrator</p>
+            <div className="kipu-orbe-recorte">
+              <canvas ref={narradorRef} style={{ width: size, height: size }} />
+              <div className="kipu-grano" style={orbGrainStyle(grano)} />
+            </div>
+            <p className="kipu-carrusel__cual">su clon, con su textura</p>
           </div>
         </div>
         <button
@@ -539,6 +574,7 @@ export function OrbCarrusel({ size = 260 }: { size?: number }) {
       <div ref={hostRef} className="kipu-carrusel__pie">
         <p className="kipu-carrusel__nombre">
           {ORB_KINDS[indice % ORB_KINDS.length]} · {muestra.nombre}
+          {muestra.url && !clipListo ? " · (trayendo el clip…)" : ""}
         </p>
         {muestra.texto && (
           <p className="kipu-carrusel__guion" data-sonando={sonando ? "1" : "0"}>

@@ -525,9 +525,11 @@ import {
   STATEMENT_SESSION_MARKER,
 } from "@/lib/capture/evidence-capture";
 import {
+  ORB_GRAIN_ALPHA_MEAN,
+  ORB_GRAIN_ALPHA_SD,
   ORB_GRAIN_OPACITY,
-  ORB_GRAIN_SPREAD,
   ORB_GRAIN_TILE,
+  orbGrainAlpha,
 } from "@/app/app/components/shell/orb-grain-overlay";
 import {
   EL_FBM_AMPLITUDE,
@@ -544,6 +546,7 @@ import {
   ORB_FLUID_LIGHT_SIZE,
 } from "@/app/app/components/shell/orb-fluid";
 import {
+  ORB_REAL_VOICE_URL,
   ORB_VOICE_SAMPLES,
 } from "@/app/app/components/shell/orb-audio-sample";
 import {
@@ -30147,62 +30150,110 @@ assert(
     JSON.stringify({ p05: ORB_GRADIENT_P05, p95: ORB_GRADIENT_P95, amp: EL_FBM_AMPLITUDE }),
   );
 
-  // N3C-12 · EL GRANO NO ESTÁ EN EL WEBGL, Y SU NARANJA ES SU PALETA.
+  // N3C-12 · EL GRANO NO ESTÁ EN EL WEBGL, ES NEGRO CON ALFA, Y SU NARANJA ES
+  // SU PALETA.
   //
   // El founder: «le falta la textura de grain que tiene el de ellos, no sé de
-  // dónde sale». Salía del único sitio donde yo no había mirado: NO está en su
-  // shader (su config dice `grainOpacity: 0`) ni en su textura (su PNG mide
-  // 0,0017 de diferencia entre píxeles vecinos, o sea liso). Está en el DOM,
+  // dónde sale». Salía del único sitio donde no se había mirado: NO está en su
+  // shader (su config dice `grainOpacity: 0`) ni en su textura. Está en el DOM,
   // ENCIMA del lienzo: un div con un mosaico de ruido, `mix-blend-mode:
-  // overlay` y `opacity: 0.5`, leído de su propio marcado.
+  // overlay`, `opacity: 0.5`, 256 px (128 en doble densidad), pixelado.
   //
-  // Tres rondas buscándolo dentro del shader. La lección queda: cuando algo se
-  // ve y no está en el código que mirás, mirá la CAPA DE AL LADO.
+  // r33 · Y el mosaico es NEGRO con alfa: decodificado su `noise@20aq.avif`,
+  // RGB = 0 en todos los píxeles y el alfa es gaussiano (media 103, desvío 43,
+  // correlación +0,11 a un píxel y −0,16 a dos). Sobre overlay eso sólo
+  // OSCURECE: ~0,08–0,10 en los medios tonos, buena parte del «15 % más claro».
+  // El pin viejo pedía un gris centrado (`128 +`), que sobre overlay no baja
+  // nada. Acá el gate MIDE el mosaico en vez de buscar cadenas: la función es
+  // pura y corre en Node.
   const n3cGrano = readFileSync(
     `${process.cwd()}/src/app/app/components/shell/orb-grain-overlay.ts`,
     "utf8",
   );
+  const n3cCss = readFileSync(`${process.cwd()}/src/app/globals.css`, "utf8");
+  const n3cAlfa = orbGrainAlpha(128);
+  const n3cAlfaStats = (() => {
+    const n = n3cAlfa.length;
+    const N = Math.round(Math.sqrt(n));
+    let suma = 0;
+    for (let i = 0; i < n; i += 1) suma += n3cAlfa[i]!;
+    const media = suma / n;
+    let s2 = 0;
+    for (let i = 0; i < n; i += 1) s2 += (n3cAlfa[i]! - media) ** 2;
+    const varianza = s2 / n;
+    const ac = (lag: number) => {
+      let c = 0;
+      for (let y = 0; y < N; y += 1) {
+        for (let x = 0; x < N - lag; x += 1) {
+          c += (n3cAlfa[y * N + x]! - media) * (n3cAlfa[y * N + x + lag]! - media);
+        }
+      }
+      return c / (N * (N - lag) * Math.max(1e-9, varianza));
+    };
+    return { media, desvio: Math.sqrt(varianza), ac1: ac(1), ac2: ac(2) };
+  })();
   assert(
-    "N3C-12 · el grano es una capa encima con la receta de la referencia, y el naranja de Narrator lleva SU paleta",
+    "N3C-12 · el grano es una capa encima, NEGRA con alfa gaussiano con la media, el desvío y la correlación del suyo, con su receta CSS; y el naranja de Narrator lleva SU paleta (del WebP vivo)",
     // ── EL GRANO, con su receta ──
     ORB_GRAIN_TILE === 256 &&
       ORB_GRAIN_OPACITY === 0.5 &&
-      n3cGrano.includes('mixBlendMode: "overlay"') &&
-      n3cGrano.includes('backgroundRepeat: "repeat"') &&
-      // el mosaico ronda el gris medio: sobre `overlay`, el gris exacto no hace
-      // nada, así que lo que se ve es cuánto se aparta
-      n3cGrano.includes("const v = 128 +") &&
-      ORB_GRAIN_SPREAD > 0 &&
-      ORB_GRAIN_SPREAD < 80 &&
+      ORB_GRAIN_ALPHA_MEAN === 103 &&
+      ORB_GRAIN_ALPHA_SD === 43 &&
+      // negro: la capa sólo oscurece — el alfa lleva el grano
+      n3cGrano.includes("    d[i] = 0;\n    d[i + 1] = 0;\n    d[i + 2] = 0;\n    d[i + 3] = Math.round(alfa[k]!);") &&
+      // …y el mosaico MEDIDO tiene sus estadísticas (no las de un gris plano ni
+      // las de ruido blanco): media 103 ± 4, desvío 43 ± 4, +ac1, −ac2
+      Math.abs(n3cAlfaStats.media - 103) < 4 &&
+      Math.abs(n3cAlfaStats.desvio - 43) < 4 &&
+      n3cAlfaStats.ac1 > 0.03 &&
+      n3cAlfaStats.ac1 < 0.2 &&
+      n3cAlfaStats.ac2 < -0.08 &&
+      // la receta vive en CSS (leer devicePixelRatio en el render rompía la
+      // hidratación): overlay, 50 %, 256 px, 128 en doble densidad, pixelado
+      /\.kipu-grano \{[^}]*mix-blend-mode: overlay;[^}]*opacity: \.5;[^}]*background-repeat: repeat;[^}]*background-size: 256px auto;[^}]*image-rendering: pixelated;/u.test(n3cCss) &&
+      /@media \(min-resolution: 2x\) \{ \.kipu-grano \{ background-size: 128px auto; \} \}/u.test(n3cCss) &&
       // …y se genera DESPUÉS DE MONTAR: en el servidor no hay `document` y la
       // capa quedaba sin imagen, sin error y sin nada en consola
       n3cGrano.includes('if (typeof document === "undefined") return null;') &&
       n3cCarrusel.includes("useSyncExternalStore(\n    orbGrainSubscribe,") &&
-      n3cCarrusel.includes("style={orbGrainStyle(grano)}") &&
+      n3cCarrusel.includes('className="kipu-grano" style={orbGrainStyle(grano)}') &&
+      // ── EL RECORTE REDONDO CON SU ANILLO INTERIOR (`ring-0.5 ring-inset ring-black/10`) ──
+      /\.kipu-orbe-recorte \{[^}]*border-radius: 9999px;[^}]*overflow: hidden;[^}]*box-shadow: inset 0 0 0 0\.5px rgba\(0,0,0,\.1\);/u.test(n3cCss) &&
+      n3cCarrusel.includes('<div className="kipu-orbe-recorte">') &&
+      n3cCarrusel.includes('data-fondo="crema"') &&
 
       // ── SU NARANJA, con SUS tonos ──
-      // Sacados de su `creative-1.png` por percentiles de luminancia (5, 20, 50,
-      // 80, 95), que es su paleta y no una interpretación nuestra.
+      // Sacados de su `creative-1.webp` —lo que su WebGL muestrea— por
+      // percentiles de luminancia (5, 20, 50, 80, 95). El PNG era el cartel.
       n3cCarrusel.includes("const NARRATOR: readonly OrbRgb[]") &&
-      n3cCarrusel.includes("0xb9 / 255") &&
-      n3cCarrusel.includes("0xff / 255, 0xcf / 255, 0x9b / 255") &&
+      n3cCarrusel.includes("0xa6 / 255, 0x36 / 255, 0x1a / 255") &&
+      n3cCarrusel.includes("0xf5 / 255, 0xb4 / 255, 0x88 / 255") &&
       n3cCarrusel.includes("tonos: NARRATOR,") &&
+      n3cCarrusel.includes("export const NARRATOR_TEXTURE_URL") &&
+      n3cCarrusel.includes('cargar(narrador, NARRATOR_TEXTURE_URL)') &&
       n3cCuadro.includes("const base = t ? t[2]! : mezclar(liquid, accent, 0.34);") &&
 
       // ── EL CENTRO TIENE DIBUJO ──
-      // Medido por anillos, el centro es el MÁS activo (2,01 contra 1,92 del
-      // borde): lo que faltaba no era movimiento sino algo que se viera
-      // moverse. El arrastre además se apaga ahí por construcción —va por la
-      // normal, que en el centro vale cero—, así que la única vida posible del
-      // centro es que tenga pintura.
       n3cCuadro.includes("const alCentro = i < 3;") &&
 
-      // ── Y EL GUION DE NARRACIÓN ──
+      // ── Y EL GUION DE NARRACIÓN, con SU clip real primero ──
       n3cMuestra.includes("texto: string;") &&
+      n3cMuestra.includes("export const ORB_REAL_VOICE_URL") &&
+      n3cMuestra.includes("export async function decodeOrbVoiceClip(") &&
+      ORB_VOICE_SAMPLES[0]?.url === ORB_REAL_VOICE_URL &&
       ORB_VOICE_SAMPLES.every((m) => m.f0 === 0 || m.texto.length > 20) &&
       n3cMuestra.includes("const enPausa = (t: number) => {") &&
       n3cCarrusel.includes("kipu-carrusel__guion"),
-    JSON.stringify({ mosaico: ORB_GRAIN_TILE, opacidad: ORB_GRAIN_OPACITY }),
+    JSON.stringify({
+      mosaico: ORB_GRAIN_TILE,
+      opacidad: ORB_GRAIN_OPACITY,
+      alfa: {
+        media: +n3cAlfaStats.media.toFixed(1),
+        desvio: +n3cAlfaStats.desvio.toFixed(1),
+        ac1: +n3cAlfaStats.ac1.toFixed(3),
+        ac2: +n3cAlfaStats.ac2.toFixed(3),
+      },
+    }),
   );
 
   // N3C-4 · EL RELOJ DEL CAMPO ES PURO, ACELERA CON LA VOZ, Y ESTÁ CABLEADO.

@@ -7,10 +7,13 @@ import { OrbCarrusel } from "@/app/app/components/shell/OrbCarrusel";
  * el sentido en que están los orbes en carrusel y con un audio sample, que
  * puedes poner play y pasar entre uno y otro».
  *
- * Existe por una razón de método que este bloque ya pagó tres veces: comparar
- * dos cosas exige que estén haciendo LO MISMO. Un deslizador no es una voz y una
- * foto no es un movimiento — y cada vez que comparé algo distinto, me inventé un
- * defecto o me perdí uno.
+ * N3C r33 · Ahora compara de verdad contra lo suyo: el orbe de la derecha es un
+ * CLON —su shader línea por línea, su fluido con sus magnitudes, su grano
+ * negro-con-alfa encima, su recorte redondo, su fondo crema— comiendo SU
+ * textura WebP y SU clip de voz grabada. El del medio es el mismo clon con
+ * nuestra pintura y nuestros colores: la distancia entre los dos es lo que
+ * falta de PINTURA, y la distancia entre el de la derecha y su portada es lo
+ * que falta de CLON (que debería ser cero).
  */
 export const metadata = { title: "Kipu · la onda de voz" };
 
@@ -21,18 +24,25 @@ export default function OndaPage() {
         <p className="kipu-sistema-eyebrow">DEV · BLOQUE N3C</p>
         <h1>La onda de voz</h1>
         <p className="kipu-sistema-note">
-          El mismo formato que su página: un orbe grande, un botón de play con una
-          muestra de voz, y flechas para pasar de uno a otro. Dale play y mirá cómo
-          <b> nacen anillos desde adentro</b> y viajan hacia el borde siguiendo el
-          sonido. Con la muestra «silencio» el orbe queda en calma: el fluido sólo
-          recibe un empujón cuando el sonido <b>sube</b>, igual que el suyo.
+          Tres orbes sobre el mismo fondo crema de su portada, comiendo el mismo
+          audio en el mismo cuadro. <b>Izquierda:</b> el nuestro de producción.
+          <b> Centro:</b> el clon de su orbe con nuestra pintura y nuestros
+          colores. <b>Derecha:</b> el clon con <b>su</b> textura y <b>su</b>
+          grano — tiene que verse como el orbe naranja de elevenlabs.io, y si no,
+          la diferencia está en el clon y no en la pintura.
         </p>
         <p className="kipu-sistema-note">
-          Los cuatro números de abajo son las <b>cuatro bandas</b> que mira el orbe
-          —graves, medios, agudos y total—, cada una moviendo otra cosa. Es la ley
-          de la referencia, leída de su propio código y no adivinada: los graves
-          dan la amplitud de los anillos, el total integrado los hace viajar, y la
-          derivada del total decide cuándo se dispara uno.
+          La primera muestra es <b>su clip real de voz</b> («Christopher», el que
+          suena en su portada), decodificado y pasado por su mismo analizador. Las
+          otras son sintéticas. Dale play y compará contra su página con la misma
+          voz: el arco aparece al hablar, los anillos nacen adentro y viajan hacia
+          el borde, y el orbe <b>se acelera</b> al hablar — eso es suyo, no un
+          defecto nuestro.
+        </p>
+        <p className="kipu-sistema-note">
+          Flags: <code>?pintado=1</code> hace que el orbe de la derecha use nuestra
+          pintura con su paleta en vez de su WebP; <code>?tex=&lt;url&gt;</code>
+          mete una imagen ajena en el del centro.
         </p>
         <p className="kipu-sistema-note">
           <Link href="/dev/vidrio?hoja=voz">← la mesa de luz</Link>

@@ -1,13 +1,16 @@
 # N3C · TRASPASO — replicar el orbe de ElevenLabs
 
-**Fecha:** 2026-09-01 · **Rama:** `main` · **Último commit:** `fbbda42`
-**Estado:** cerca, no llegamos. El founder: *«estamos cerca pero no logramos
-llegar aún».*
+**Fecha:** 2026-09-02 · **Rama:** `main` · **Ronda:** 33
+**Estado:** el porte pasó a ser un **clon** (su shader línea por línea, su fluido
+con sus magnitudes, su grano, sus capas, su clip de voz, su textura). Lo que
+queda es decisión de producto: qué se lleva a producción y cómo se pinta lo
+nuestro.
 
-Este documento es autosuficiente. Contiene el objetivo, el mapa de archivos,
-TODO lo que se descubrió de la implementación de ElevenLabs, todo lo que se
-midió, todos los callejones sin salida (que valen tanto como los aciertos), los
-instrumentos de medición listos para copiar, y las hipótesis abiertas.
+Este documento es autosuficiente y **reemplaza al traspaso de la r32**, que
+tenía cuatro afirmaciones falsas (no había superficie pública medible; la
+textura era un PNG; el grano era un gris simétrico; su orbe no acelera al
+hablar). Las cuatro se corrigieron leyendo su código y decodificando sus assets
+vivos — el detalle está en `N3C_REPORT.md`, ronda 33.
 
 ---
 
@@ -19,9 +22,9 @@ representa el «Saldo Kipu» del usuario. El orbe vive en cinco capas (Saldo,
 Reserva, Metas, Ahorro, Patrimonio, Deuda) dentro de un carrusel.
 
 Estamos en el **Bloque N («el acabado»)**, etapa **N3C**. N no cambia **ningún
-número** — es presentación, tiempo y gesto. El encargo concreto de N3C, dado por
-el founder (Nicolás, **no técnico** — hay que explicarle en palabras cotidianas y
-analogías físicas, el detalle técnico va en los docs, y escribe y lee en
+número** — es presentación, tiempo y gesto. El encargo de N3C, dado por el
+founder (Nicolás, **no técnico**: se le explica en palabras cotidianas y
+analogías físicas, el detalle técnico va a los docs, y escribe y lee en
 español): **que nuestro orbe se vea y se mueva exactamente como el de
 ElevenLabs**, sobre todo cuando reacciona a la voz.
 
@@ -29,30 +32,33 @@ ElevenLabs**, sobre todo cuando reacciona a la voz.
 
 ## 2 · Dónde mirar: la página y los orbes
 
-**Página de trabajo: `/dev/onda`** (en producción y en local). Archivo:
-[src/app/dev/onda/page.tsx](../../../src/app/dev/onda/page.tsx).
+**Página de trabajo: `/dev/onda`** (`npm run dev` → `http://localhost:3000/dev/onda`).
+Archivo: [src/app/dev/onda/page.tsx](../../../src/app/dev/onda/page.tsx).
 
-Muestra **tres orbes en fila**, todos reaccionando al mismo audio:
+Tres orbes sobre **el mismo fondo crema de su portada (`#f5f3f1`)**, comiendo el
+mismo audio en el mismo cuadro:
 
-| # | qué es | shader | textura | grano |
+| # | qué es | shader | textura | capas encima |
 |---|---|---|---|---|
 | 1 | **el nuestro de hoy** — el orbe de producción | `orb-shader.ts` | procedural | no |
-| 2 | **el porte** — la réplica de su arquitectura, con NUESTROS colores | `orb-eleven-shader.ts` | `orb-gradient-texture.ts` | sí |
-| 3 | **su naranja de Narrator** — la réplica con SUS colores | `orb-eleven-shader.ts` | `orb-gradient-texture.ts` con paleta `NARRATOR` | sí |
+| 2 | **su clon, con nuestra pintura** | `orb-eleven-shader.ts` + `orb-eleven-fluid.ts` | `orb-gradient-texture.ts` | recorte + anillo + grano |
+| 3 | **su clon, con SU textura** | ídem | **su `creative-1.webp`** (cargado de su CDN, sólo en el banco) | recorte + anillo + grano |
 
-Debajo se ve **la textura pintada** (el «cuadro» que el shader arrastra), las
-**cuatro bandas de audio** en vivo, el **guion de narración** de la muestra
-activa, flechas para cambiar de muestra y un botón de play.
+La primera muestra de audio es **su clip real** («Christopher», el que suena en
+su portada, 3,4 s + 1,5 s de silencio de cola). Las demás son sintéticas.
 
-**El orbe #3 es el experimento central**: mismo shader, misma técnica de
-pintura, los colores exactos de ellos. Existe para que la diferencia contra el
-suyo se vea sin discutir.
+Flags de URL:
+- `?tocar=1` — deja el play armado en el primer toque
+- `?pintado=1` — el orbe #3 usa nuestra pintura con su paleta en vez de su WebP
+  (la distancia #3-con-WebP ↔ #3-pintado es lo que falta de PINTURA)
+- `?tex=<url>` — mete una imagen ajena en el orbe #2
 
-> **El orbe de producción (#1) NO se toca** mientras se evalúa el porte. Esa es
-> una orden explícita del founder.
+> **El orbe de producción (#1) NO se toca** mientras se evalúa el clon. Orden
+> explícita del founder.
 
-También existe `/dev/vidrio?hoja=voz` («la mesa de luz»), la superficie previa de
-diagnóstico.
+**Cómo leer el banco:** la distancia entre #3 y su portada (misma voz, mismo
+fondo) es lo que le falta al CLON — hoy, a ojo, ninguna diferencia de carácter.
+La distancia entre #2 y #3 es lo que le falta a nuestra PINTURA.
 
 ---
 
@@ -62,374 +68,247 @@ Todos bajo `src/app/app/components/shell/`:
 
 | archivo | qué hace |
 |---|---|
-| `OrbCarrusel.tsx` | **la escena de comparación**: los tres orbes, el audio, las bandas, el guion, la paleta `NARRATOR`, los flags de URL y el paso determinista |
-| `orb-eleven-shader.ts` | **la réplica del shader de ellos** (nombres `EL_*`). Atribución MIT a ElevenLabs |
-| `orb-gradient-texture.ts` | **pinta el cuadro** que el shader arrastra (su degradado es una imagen, no una fórmula) |
-| `orb-grain-overlay.ts` | **el grano**, que en su implementación NO es WebGL sino una capa del DOM |
-| `orb-fluid.ts` | simulación de fluido (basada en el fluido de Pavel Dobryakov, MIT). El «splat» de anillos y la compuerta de flanco de subida |
-| `orb-shader.ts` | **el orbe de producción**. Enorme (96 KB). No tocar en este trabajo |
-| `voice-capture-contract.ts` | **la ley del audio**: cuatro bandas, los dos acumuladores, las constantes del analizador |
-| `orb-audio-sample.ts` | voz sintetizada + analizador propio + el guion de narración de cada muestra |
-| `orb-reference-shader.ts` | shader de referencia usado en rondas anteriores |
+| `OrbCarrusel.tsx` | la escena: tres orbes, audio (clip real + sintéticos), bandas, guion, paleta `NARRATOR`, `NARRATOR_TEXTURE_URL`, flags, paso determinista `__kipuOnda` |
+| `orb-eleven-shader.ts` | **el clon del shader** (su `main` en GLSL 1.0, en su orden; sus acumuladores de audio adentro) |
+| `orb-eleven-fluid.ts` | **su fluido** (Dobryakov + su splat de anillos, sus constantes, tinte en cientos) |
+| `orb-grain-overlay.ts` | el grano del DOM: mosaico NEGRO con alfa gaussiano (103 ± 43) y núcleo de correlación; `orbGrainAlpha` es pura |
+| `orb-gradient-texture.ts` | pinta nuestro cuadro; calibrado a las estadísticas de su WebP |
+| `orb-audio-sample.ts` | muestras sintéticas + `ORB_REAL_VOICE_URL` + `decodeOrbVoiceClip` + el analizador propio (réplica de `getByteFrequencyData`) |
+| `voice-capture-contract.ts` | la ley del audio: cuatro bandas, dos acumuladores (0,55 / 0,25 × 60·dt·1,4) |
+| `orb-shader.ts` | el orbe de producción. No tocar |
+| `src/app/globals.css` | `.kipu-orbe-recorte`, `.kipu-grano`, `.kipu-carrusel[data-fondo="crema"]` |
 
-Documentos:
-- `docs/design/stages/N3C_SPEC.md` — el contrato de la etapa
-- `docs/design/stages/N3C_REPORT.md` — **el diario completo, rondas 1–32.** Append-only. Ahí está el detalle de cada hallazgo
-- `docs/design/N_DESIGN_001_ACABADO_FIRST_PRINCIPLES_2026-08-28.md` — el plan del bloque N
+Documentos: `N3C_SPEC.md` (contrato), `N3C_REPORT.md` (diario, rondas 1–33),
+`N_DESIGN_001_ACABADO_FIRST_PRINCIPLES_2026-08-28.md` (plan del bloque).
 
 ---
 
-## 4 · Lo que sabemos de la implementación de ElevenLabs
+## 4 · Lo que sabemos de su implementación (verificado en la r33)
 
-Todo esto **se leyó de su código y su marcado publicados**, o se midió sobre su
-página. No es interpretación a ojo.
+Todo se leyó de su bundle o se midió sobre sus assets vivos con el Chrome del
+founder. **Su orbe SÍ está en una página pública:** es el lienzo del centro del
+carrusel «ElevenCreative» del hero de `elevenlabs.io` (512×512 de búfer, 256 px
+CSS, DPR 2; los vecinos son imágenes estáticas).
 
-### 4.1 · La ley del audio (su código, portado literal)
-
-- Cuatro bandas del espectro: **graves 0–200 Hz**, **medios 200 Hz–2 kHz**,
-  **agudos 2–20 kHz**, **total** = espectro entero.
-- `fftSize = 256`, `smoothingTimeConstant = 0.8`, cada banda dividida por 255.
-- **Dos acumuladores por banda:**
-  - `audioAverage = lerp(prev, ahora, 0.55)` — rápido (τ≈30 ms), **escala
-    amplitudes**
-  - `cumulativeAudio = lerp(cum, cum + ahora·60·dt·1.4, 0.25)` — integrador,
-    **mueve relojes** (offsets de tiempo)
-- **La regla de oro:** el audio integrado mueve **tiempos**; el audio promediado
-  escala **amplitudes**. Un reloj rápido puede cambiar velocidades, jamás
-  amplitudes.
-
-⚠️ `getByteFrequencyData` devuelve **decibelios** (−100…−30), no amplitud. El
-silencio de una habitación lee ~0,25 — lo mismo que una voz. Esto causó el
-temblor de la r27; se resolvió con un piso de ruido adaptativo
-(`advanceVoiceFloor` / `voiceAboveFloor`).
-
-### 4.2 · La arquitectura de su dibujo
+### 4.1 · Sus capas (su marcado, de afuera hacia adentro)
 
 ```
-IMAGEN de degradado pintada (PNG 512×512, ~250 KB, creative-1..9.png)
-  → remapeo a coordenadas esféricas (sphereScale 0.9, spherePower 1.1)
-  → arrastre radial por fbm con dominio deformado
-       (fbmAmplitude 0.65, fbmScale 3.25, fbmPower 2.75, fbmSpeed 4.5)
-     + desplazamiento por simplex noise (0.15)
-     + fluido (0.001)
-  → muestrear la textura
-  → arco con compuerta de sonido (ringColorOpacity 0.25)
-  → fluido en «hard light»
-  → saturación / contraste / exposición (0.15)
-  → clamp — SIN tonemap
+div .rounded-full .overflow-hidden .ring-0.5 .ring-inset .ring-black/10   (panel de fondo #f5f3f1)
+  ├ svg    cartel desenfocado de carga (filtro feGaussianBlur 4) — invisible bajo el lienzo
+  ├ img    creative-1.png por /_next/image — el CARTEL mientras carga; NO es la textura
+  ├ div → canvas 512×512 (WebGL2, premultiplicado, sin antialias, DPR = min(dpr, 2))
+  └ div .mix-blend-overlay
+      └ div  background: noise@20aq.avif · 256 px (128 px en 2x) · image-rendering: pixelated · opacity .5
 ```
 
-**Hallazgo mayor (r30): su degradado es un CUADRO, no una fórmula.** Buena parte
-de la riqueza de su orbe no está en el shader: está en la imagen. Son esferas
-luminosas pintadas, con manchas de color suaves, muy desenfocadas.
+### 4.2 · Su textura viva: `creative-1.18030cd4.webp` (512×512, 2,7 KB)
 
-### 4.3 · Su fluido
+media **0,559** · p05 **0,297** · p50 0,572 · p95 **0,748** · desvío 0,149 ·
+píxel a píxel 0,0016 · paleta por percentiles (5/20/50/80/95):
+`#a6361a · #c5532b · #de8156 · #f1ae82 · #f5b488`.
+(El PNG de 250 KB de las rondas 30–32 mide 0,605 / 0,325 / 0,837: es el cartel.)
 
-- **Un splat por cuadro**, sólo cuando `audioAverageDelta.all > 1e-4` (flanco de
-  subida).
-- El splat es un **tren de anillos concéntricos**:
-  `mod(dist*2 − phase, 1)`, siempre centrado.
-- Amplitud = banda de graves × 30. Fase = tiempo + ∫total.
-- `curlStrength 0`; disipaciones 0,98 / 0,98 / 0,97; simRes 128; dyeRes 512.
+### 4.3 · Su grano: `noise@20aq.avif` (256×256)
 
-### 4.4 · El grano (r32 — costó tres rondas encontrarlo)
+**RGB = 0 en todos los píxeles.** Alfa gaussiano: media 103/255, desvío 43/255,
+correlación +0,11 a 1 px, −0,16 a 2 px. Sobre `overlay` sólo OSCURECE (~0,08–0,10
+en medios tonos). Nuestro mosaico replica media, desvío y correlación
+(`orbGrainAlpha`, núcleo 0,05 / −0,10 → +0,08 / −0,19).
 
-**No está en su shader ni en su textura.** Su configuración dice
-`grainOpacity: 0`, y su PNG es liso (diferencia entre píxeles vecinos: 0,0017).
+### 4.4 · Su shader (chunk `75548`, leído entero)
 
-Está en el **DOM, encima del lienzo**. Su propio marcado:
+Config: `timeScale 1.4 · sphereScale .9 · spherePower 1.1 · noiseSpeed .25 ·
+noiseAmplitude .15 · noiseScale .65 · ringColorOpacity .25 · fluidColorOpacity .1 ·
+fbmScale 3.25 · fbmPower 2.75 · fbmAmplitude .65 · fbmSpeed 4.5 · contrast 0 ·
+grainOpacity 0 · exposure .15 · saturation 1`.
 
-```
-tw-absolute tw-mix-blend-overlay tw-inset-0
-tw-bg-[image:var(--noise-png)] tw-bg-[length:calc(256px*var(--noise-scale))]
-```
+Cadena: vUv con x espejada (vértice) → `uv` la vuelve a espejar → coordenada
+esférica → fbm con dominio deformado (`fbmTime2 = t·2,25 + ∫graves·0,25`) →
+simplex (`noiseTime1 = t·0,125 + ∫agudos·0,1`, amplitud ×(1 + agudos·0,25)) →
+`uv += −fluido.rg·0,001 + normal·(ffbm−0,5)·0,65 + ruido·0,15` → `texture(cover)`
+→ arco (`ringTime = −t·0,5 − ∫total·0,2`; escala 0,65 + graves·0,4; corrimiento
+1 + medios·1,5; compuerta `min(total·4, 1)^3`) × 0,25 → luz dura con blanco,
+opacidad `|fluido|·0,001` → saturación → contraste → exposición ×1,15 → clamp.
+**Sin tonemap. Sin `EL_AUDIO_CLOCK`.** Su `clearColor` de config no se aplica.
 
-Un `<div>` con PNG de ruido en mosaico, `mix-blend-mode: overlay`,
-`opacity: 0.5`, mosaico de **256 px** (128 en pantallas de doble densidad).
-Confirmado desde el otro lado: su página descarga `noise@20aq.avif`.
+Audio (`setAudioData`, por cuadro): `cum += 0,25 · bandas · 60·dt·1,4`;
+`avg = lerp(avg, bandas, 0,55)`. Analizador: fftSize 256, smoothing 0,8, bandas
+0–200 / 200–2000 / 2000–20000 Hz + total, cada una /255.
 
-### 4.5 · Su paleta naranja de Narrator
+### 4.5 · Su fluido (mismo chunk)
 
-Sacada de `creative-1.png` por **percentiles de luminancia** (5, 20, 50, 80, 95):
+Dobryakov: sim 128, tinte 512, disipaciones 0,98/0,98/0,97, presión 3
+iteraciones, radio 1,5, curl 0, `dt` fijo 0,016, una actualización por 1/60 s,
+**blur9 del tinte entero en cada cuadro** (offsets en unidades de 128 sobre la
+textura de 512). Audio propio: bandas ×2 (`OverallSoundScale`), mezcla 0,35/0,25
+sin el 1,4. **Una salpicadura por cuadro sólo si `Δavg.total > 1e−4`**, y es un
+tren de anillos: `pDist = mod(dist·2 − (t·0,25 + ∫total·0,15), 1)`, amplitud
+`graves × 30`, color `(dx, dy, 1)` con `dx,dy = (paseo − 0,5)·12`. **El tinte
+vive en cientos**; por eso el shader lo lee con ×0,001 y ×0,01.
 
-`#b93919` · `#e25b2c` · `#f98857` · `#ffbb82` · `#ffcf9b` — media 0,604.
+### 4.6 · Su conducta con voz real (la vara nueva)
 
-### 4.6 · Su conducta medida (la vara)
-
-| | callado | hablando |
-|---|---|---|
-| movimiento | **1,36** | **1,40** |
-| coherencia (flujo vs vibración) | +0,271 | +0,358 |
-| contraste | 0,599 | |
-| brillo medio | 0,66 | |
-| textura, píxel a píxel | 0,0023 | |
-
-**El dato conductual más importante: su orbe se mueve casi IGUAL callado que
-hablando (razón 1,03).** El sonido le cambia la **estructura** (aparece el arco,
-se abre el hueco, nacen los anillos), **no la velocidad**. Portando sus
-coeficientes tal cual, el nuestro se iba de 1,45 a 3,6 — nunca se encontró por
-qué su fórmula no les acelera a ellos. `EL_AUDIO_CLOCK = 0.02` es una
-**corrección empírica** sobre sus constantes para respetar la conducta medida.
-**Esta es una hipótesis abierta: entender por qué su fórmula no acelera.**
-
-### 4.7 · Dipolo radial al hablar
-
-Hablar **oscurece el centro** (−17,6 %), nodo en r≈0,58, anillo brillante con
-pico en r≈0,82 (+13 %); la silueta se mueve 1,2 %.
+Su clip (`ORB_REAL_VOICE_URL`, CORS abierto) por su analizador:
+graves **0,77** de media (0,99 pico), medios 0,53, agudos 0,22, total 0,22.
+Con eso `∫graves·0,25` mueve el reloj del fbm **13,85** contra **10,78** del
+tiempo en 3,4 s: **su orbe se acelera ~2,3× al hablar**. Es conducta suya, no
+defecto nuestro. (La «referencia» 1,36/1,40 de la r31 era una pestaña oculta
+midiendo ruido.)
 
 ---
 
 ## 5 · Nuestras constantes actuales
 
-`orb-eleven-shader.ts`:
-```
-EL_SPHERE_SCALE 0.9 · EL_SPHERE_POWER 1.1
-EL_FBM_SCALE 3.25 · EL_FBM_POWER 2.75 · EL_FBM_AMPLITUDE 0.65 · EL_FBM_SPEED 4.5
-EL_NOISE_SCALE 0.65 · EL_NOISE_SPEED 0.25 · EL_NOISE_AMPLITUDE 0.15
-EL_RING_OPACITY 0.17 · EL_FLUID_OPACITY 0.1
-EL_EXPOSURE 0.15 · EL_SATURATION 1.0 · EL_CONTRAST 0.0
-EL_TIME_SCALE 1.4 · EL_AUDIO_CLOCK 0.02   ← corrección empírica, ver 4.6
-```
-
-`orb-gradient-texture.ts`: `ORB_GRADIENT_SIZE 512`, calibración tonal
-`P05 0.20 / P95 0.72 / MEDIA 0.56`, borde uniforme del 12 % (mata las rayas),
-30 manchas con reparto fijo, **3 forzadas al centro** (`alCentro = i < 3`).
-
-`orb-grain-overlay.ts`: `ORB_GRAIN_TILE 256`, `ORB_GRAIN_OPACITY 0.5`,
-`ORB_GRAIN_SPREAD 30`.
+`orb-eleven-shader.ts`: las suyas de §4.4, tal cual (`EL_*`), sin parche.
+`orb-eleven-fluid.ts`: las suyas de §4.5 (`EL_FLUID_*`).
+`orb-grain-overlay.ts`: `TILE 256 · OPACITY 0.5 · ALPHA_MEAN 103 · ALPHA_SD 43 · KERNEL_1 0.05 · KERNEL_2 −0.1`.
+`orb-gradient-texture.ts`: `P05 0.30 · P95 0.75 · MEDIA 0.56` (las de su WebP),
+borde uniforme del 12 %, 30 manchas, 3 al centro.
+CSS: `.kipu-grano` 256 px (128 en 2x), pixelado; `.kipu-orbe-recorte` anillo
+interior 0,5 px al 10 %; panel `#f5f3f1`.
 
 ---
 
 ## 6 · Dónde estamos, medido
 
-Última medición (sobre **el disco**, excluyendo las esquinas del lienzo):
+Paso determinista, 240 cuadros con su clip, sobre el disco a 96 px:
 
-| | calma | hablando | razón |
-|---|---|---|---|
-| el porte (orbe #2), movimiento | 0,132 | 0,139 | **1,05** |
-| el porte, brillo | 0,706 | 0,714 | |
-| su naranja nuestro (orbe #3), brillo | 0,580 | 0,614 | |
-| **ellos (referencia, r31)** | 1,36 | 1,40 | **1,03** |
-
-Con el instrumento de la r31 (lienzo completo):
-
-| | ellos | el porte |
+| | brillo | movimiento/cuadro |
 |---|---|---|
-| movimiento callado | 1,36 | 1,43 |
-| movimiento hablando | 1,40 | 1,71 |
-| contraste | 0,599 | 0,58 |
-| **brillo medio** | **0,66** | **0,76** |
-| textura, píxel a píxel | 0,0023 | 0,0022 |
-| rayas en el borde | no | no |
+| ellos (referencia de archivo, r31) | **0,66** | — |
+| **#3 · clon con su textura** | **0,67** | 0,68 |
+| #2 · clon con nuestra pintura | 0,742 | 0,52 |
 
-**Lo que sigue distinto y es la pista más concreta: el brillo medio, ~15 % más
-claro que el suyo.** Y el founder sigue diciendo que se ve distinto, con lo cual
-hay al menos una diferencia que ninguno de estos números captura.
+El brillo, que era la diferencia numérica más grande (0,76), cerró sin tocar
+calibración alguna: era el grano negro y el WebP. Su movimiento en vivo no se
+pudo medir en esta sesión (pestaña oculta); la vara para el movimiento es ahora
+su código con su audio, sin parches — más fuerte que cualquier captura.
 
 ---
 
 ## 7 · Callejones sin salida y lecciones (leer antes de repetirlos)
 
-1. **Igualar la textura NO es igualar el orbe.** Calibrada la pintura a la media
-   exacta de su textura (0,605), el orbe salía en 0,78 — peor. El objetivo de la
-   pintura se elige por **lo que sale**, no por lo que entra.
-2. **«Movimiento medio por cuadro» no distingue flujo de vibración.** Hubo una
-   ronda entera guiada por esa métrica ciega, y el founder vio un orbe temblando
-   que la métrica declaraba correcto. La métrica buena es la **coherencia**:
-   correlación entre imágenes de diferencia consecutivas. Positiva = flujo;
-   negativa = vibración.
-3. **Cuando algo se ve y no está en el código que estás leyendo, mirá la CAPA DE
-   AL LADO.** (El grano: tres rondas dentro del shader, y estaba en el DOM.)
-4. **La queja del usuario nombra el síntoma, no la causa.** «El líquido no toca
-   el centro» — medido por anillos, el centro es el MÁS activo (2,01 vs 1,92 del
-   borde). Se movía sin dibujar: el arrastre se multiplica por la normal, que en
-   el centro vale cero. Faltaba **estructura que arrastrar**, no movimiento.
-5. **Un grano fuerte no se lee como grano: CAMINA.** El nuestro era 10× el suyo
-   (0,0233 vs 0,0023) y como lo que se ve es la textura *barrida*, el orbe
-   cambiaba 7,5 por cuadro contra 1,4 del suyo.
-6. **Nosotros tonemapeábamos y ellos no.** Su cadena termina en `clamp`.
-7. **Ruido con escalones ≠ simplex.** Nuestro ruido 3D era un hash con derivada
-   discontinua por celda: al avanzar el tiempo, el dibujo cambiaba a saltos.
-8. Un cuadro que va **de un tono a otro similar** no produce bandas: no hay luz
-   que arrastrar. Y el rango tiene que ir **repartido en manchas**, no en
-   esquinas opuestas (el escorzo esférico mete los extremos contra la silueta).
-9. **React:** un valor que sólo existe en el navegador (el mosaico se pinta con
-   un lienzo) no puede nacer en un efecto (render en cascada, el lint lo rechaza)
-   ni en el primer render (el servidor dice «sin imagen» y la hidratación no lo
-   repara — quedaba en `none` **sin error y sin nada en consola**). La puerta es
-   `useSyncExternalStore`.
+1. **Cuando algo «no se puede medir», volver a mirar la superficie.** El orbe
+   estaba en el hero de su portada. Tres rondas se apoyaron en lo contrario.
+2. **Una pestaña oculta mide ruido.** Mirar `document.visibilityState` antes de
+   cualquier métrica de movimiento; dos números al piso del instrumento no son
+   una conducta.
+3. **El asset que se mide tiene que ser el que se muestrea.** El PNG era el
+   cartel; la textura era el WebP. Verificar con `performance.getEntriesByType`.
+4. **Un parche empírico sobre una fórmula ajena es una hipótesis.** Si «su
+   fórmula no les hace lo que nos hace», probar su fórmula con SU entrada antes
+   de corregirla.
+5. **Cuando algo se ve y no está en el código que mirás, mirá la capa de al
+   lado** — y luego DECODIFICÁ esa capa (el grano era negro con alfa, no gris).
+6. **Igualar la entrada SÍ iguala la salida cuando la cadena es la misma.** Las
+   lecciones contrarias (r30/r31) se aprendieron con tonemap, grano gris y un
+   fluido de 0 a 1 — una cadena que no era la suya.
+7. **«Movimiento medio por cuadro» no distingue flujo de vibración**; la
+   coherencia (correlación entre diferencias consecutivas) sí. Sigue vigente.
+8. **React:** un valor que sólo existe en el navegador nace por
+   `useSyncExternalStore`; y leer `devicePixelRatio` en el render rompe la
+   hidratación — va a una media query.
 
 ---
 
-## 8 · Lo que NO se pudo medir (y por qué importa)
-
-**Su orbe naranja de Narrator no está expuesto en ninguna página pública suya.**
-Se verificó:
-
-- portada `elevenlabs.io`: sólo dos lienzos de onda (516×172), ningún orbe;
-- `/text-to-speech`: el único lienzo cuadrado (483×483) es un **globo de
-  idiomas**, no el orbe;
-- `/agents`: ningún lienzo cuadrado;
-- el widget «Voice chat» no publica ningún lienzo hasta que la llamada empieza
-  (se recorrió el shadow DOM: cero lienzos).
-
-Además **su lienzo no conserva el búfer de dibujo**, así que no se puede releer
-desde fuera de su cuadro. `captureStream` + `<video>` **congela el renderer** en
-pestaña de fondo (`v.play()` no resuelve), y forzar `preserveDrawingBuffer`
-parcheando `getContext` no prende porque su contexto no se recrea (posible
-`OffscreenCanvas` en un worker).
-
-**Consecuencia:** las cifras de referencia de la §4.6 son las medidas en rondas
-anteriores de este trabajo. **Si el próximo chat encuentra una superficie suya
-medible en vivo, es probablemente el avance más grande disponible** — permitiría
-comparar píxel contra píxel con el mismo instrumento en vez de contra números de
-archivo. Iniciar una llamada de voz en su servicio no se hizo por decisión
-propia; si el founder lo autoriza, ésa es la vía directa al orbe naranja.
-
----
-
-## 9 · Cómo correr y medir
-
-### Levantar
+## 8 · Cómo correr y medir
 
 ```
-npm run dev        # luego abrir http://localhost:3000/dev/onda
+npm run dev        # http://localhost:3000/dev/onda
 ```
 
-Flags de URL en `/dev/onda`:
-- `?tocar=1` — deja el play armado en el primer toque (los clics de CDP no
-  disparan los manejadores de React en esta página, aunque sí conceden la
-  activación de audio; el rodeo es `element.click()`)
-- `?tex=<url>` — mete una imagen ajena en el porte (diagnóstico: pasar SU PNG
-  por NUESTRO shader aísla «pintura» de «shader»)
-
-Paso determinista (porque una pestaña oculta suspende `requestAnimationFrame`):
+Paso determinista (una pestaña oculta suspende `requestAnimationFrame`):
 ```js
-window.__kipuOnda(dt, n)   // avanza n cuadros de dt segundos
+window.__kipuOnda(dt, n)   // avanza n cuadros de dt segundos, con el clip si está sonando
 ```
 
-### Instrumento de medición (pegar en la consola de `/dev/onda`)
-
+Instrumento (pegar en la consola; O[1] = #2, O[2] = #3):
 ```js
-// brillo y movimiento sobre el DISCO (excluye las esquinas del lienzo)
-window.__mideC = async (cv, n) => {
-  const W = 96, t = document.createElement('canvas');
-  t.width = W; t.height = W;
-  const c = t.getContext('2d', { willReadFrequently: true });
-  const F = [];
-  for (let i = 0; i < n; i++) {
-    await new Promise(r => requestAnimationFrame(r));
-    c.drawImage(cv, 0, 0, W, W);
-    const d = c.getImageData(0, 0, W, W).data, L = [];
-    for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) {
-      const dx = (x + .5) / W - .5, dy = (y + .5) / W - .5;
-      if (Math.hypot(dx, dy) > 0.46) continue;
-      const k = (y * W + x) * 4;
-      L.push((0.2126 * d[k] + 0.7152 * d[k+1] + 0.0722 * d[k+2]) / 255);
-    }
-    F.push(Float32Array.from(L));
-  }
-  let b = 0; for (const f of F) { let s = 0; for (const v of f) s += v; b += s / f.length; }
-  b /= F.length;
-  let m = 0;
-  for (let i = 1; i < F.length; i++) {
-    let s = 0; for (let k = 0; k < F[i].length; k++) s += Math.abs(F[i][k] - F[i-1][k]);
-    m += s / F[i].length;
-  }
-  m = m / (F.length - 1) * 100;
-  return { brillo: +b.toFixed(3), mov: +m.toFixed(3) };
-};
-
-const O = [...document.querySelectorAll('.kipu-carrusel__orbe')].map(o => o.querySelector('canvas'));
-await window.__mideC(O[1], 90);   // el porte
+const O = [...document.querySelectorAll('.kipu-carrusel__orbe canvas')];
+const W = 96, t = document.createElement('canvas'); t.width = W; t.height = W;
+const c = t.getContext('2d', { willReadFrequently: true });
+const leer = cv => { c.drawImage(cv, 0, 0, W, W); const d = c.getImageData(0, 0, W, W).data, f = [];
+  for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) { const dx = (x+.5)/W-.5, dy = (y+.5)/W-.5;
+    if (Math.hypot(dx, dy) > .46) continue; const k = (y*W+x)*4; f.push((.2126*d[k]+.7152*d[k+1]+.0722*d[k+2])/255); }
+  return Float32Array.from(f); };
+const F = []; for (let i = 0; i < 240; i++) { window.__kipuOnda(1/60, 1); F.push(leer(O[2])); }
+let b = 0; for (const f of F) { let s = 0; for (const v of f) s += v; b += s / f.length; } b /= F.length;
+let m = 0; for (let i = 1; i < F.length; i++) { let s = 0; for (let k = 0; k < F[i].length; k++) s += Math.abs(F[i][k]-F[i-1][k]); m += s / F[i].length; }
+({ brillo: +b.toFixed(3), mov: +(m / (F.length-1) * 100).toFixed(3) })
 ```
 
-Para **coherencia** (flujo vs vibración) el instrumento está en el REPORT, ronda
-27: correlación entre imágenes de diferencia consecutivas.
+Para medir SU orbe en vivo: abrir `elevenlabs.io` con la pestaña **visible**
+(comprobar `document.visibilityState === 'visible'` y que un contador de rAF
+avance), darle play al orbe naranja del hero; su lienzo no conserva el búfer,
+así que la lectura tiene que ocurrir dentro del mismo cuadro (rAF encolado
+después del suyo) o por captura de pantalla.
 
 ### Puertas obligatorias antes de comitear
 
 ```
-npm run lint                            # 0 errores (hay 10 warnings preexistentes)
+npm run lint                            # 0 errores (8 warnings preexistentes ajenos)
 node scripts/qa/run-capture-gate.mjs    # 895/895
-node scripts/qa/n3-mutation-audit.mjs   # 141 mutaciones, restauración 895/895
+node scripts/qa/n3-mutation-audit.mjs   # 143 mutaciones mueren con nombre, restauración 895/895
 npm run build                           # verde
 ```
 
-El **pin N3C-12** en `src/app/dev/capture-test/page.tsx` fija la capa de grano,
-la paleta Narrator, las manchas al centro y el guion de narración. Si se cambia
-alguno de esos, hay que actualizar el pin **y** su mutación.
+El pin **N3C-12** mide el mosaico del grano en Node (media 103 ± 4, desvío
+43 ± 4, +ac1, −ac2), lee la receta CSS, y fija la paleta del WebP, la URL de la
+textura, el clip real y el guion. **N3C-11** fija las constantes del shader y
+tres líneas literales del clon (esfera, arrastre, muestreo `uGradient`).
 
-⚠️ **Aserciones débiles:** este bloque ya perdió tiempo dos veces con pins que no
-distinguían el código vivo del muerto (p.ej. `includes("ctx.quadraticCurveTo(")`
-pasa igual con `if (false) ctx.quadraticCurveTo(`). Preguntate siempre **qué
-haría el test si lo probado NO existiera**, y que la mutación mate un test
-**nombrado**, no el build.
+⚠️ **Aserciones débiles:** preguntate siempre qué haría el test si lo probado NO
+existiera, y que la mutación mate un test **nombrado**. Este bloque lo pagó dos
+veces.
 
 ---
 
-## 10 · Reglas de la casa (no negociables)
+## 9 · Reglas de la casa (no negociables)
 
-1. **Atribución MIT obligatoria** en todo archivo con código portado (ElevenLabs,
-   fluido de Pavel Dobryakov). No es opcional.
-2. **No tocar el orbe de producción** (`orb-shader.ts`) mientras se evalúa el
-   porte.
-3. **Mostrar el trabajo en `/dev/onda` antes de desplegar.** Producción no es el
-   banco de pruebas del founder.
+1. **Procedencia honesta.** El clon es un porte del shader que ElevenLabs sirve
+   en su sitio (no está bajo MIT; lo que ellos publican bajo MIT es el orbe de
+   `elevenlabs/ui`, otro shader). Existe para el banco. Su fluido es Dobryakov
+   (MIT, atribuido). Producción no carga assets ajenos. Qué se lleva a
+   producción —la técnica con pintura propia— lo decide el founder.
+2. **No tocar el orbe de producción** (`orb-shader.ts`) mientras se evalúa el clon.
+3. **Mostrar el trabajo en `/dev/onda` antes de desplegar.**
 4. **Comitear y subir a `main`** cuando esté verde — el founder lo revisa en
-   producción. Mensajes de commit en español, terminando con
-   `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
+   producción. Mensajes de commit en español.
 5. **N no cambia ningún número.** Es presentación, tiempo y gesto.
-6. **Nada de «colchón»** en copy de interfaz (la palabra está prohibida; el gate
-   de captura la caza). La capa protegida se llama **Reserva**.
-7. Al founder se le explica **sin jerga**: concepto en palabras cotidianas,
-   efecto práctico, analogías físicas. El detalle técnico va a los docs.
+6. **Nada de «colchón»** en copy de interfaz. La capa protegida es **Reserva**.
+7. Al founder se le explica **sin jerga**.
 
 ---
 
-## 11 · Hipótesis abiertas para el próximo intento
+## 10 · Lo que queda, en orden
 
-Ordenadas por lo que más probablemente explique el «todavía se ve distinto»:
-
-1. **El brillo medio, 15 % más claro (0,76 vs 0,66).** Es la diferencia numérica
-   más grande que queda. Ojo con la lección §7.1: bajar la media de la pintura no
-   baja la del orbe en proporción. Habría que barrer `ORB_GRADIENT_MEDIA` /
-   `P05` / `P95` **midiendo la salida**, no la entrada. También revisar si
-   `EL_EXPOSURE 0.15` se está aplicando en el mismo punto de la cadena que el
-   suyo.
-2. **Encontrar una superficie suya medible en vivo** (§8). Sin eso estamos
-   comparando contra números de archivo. Puede requerir permiso del founder para
-   abrir una llamada de voz en su servicio.
-3. **Por qué su fórmula no les acelera al hablar** (§4.6). `EL_AUDIO_CLOCK 0.02`
-   es un parche empírico sobre sus constantes; hay algo de su cadena que no
-   entendimos. Si aparece, se cae un parche y probablemente mejore la conducta
-   entera.
-4. **La textura.** Su cuadro es una pintura de 250 KB; el nuestro es un
-   procedimiento de 30 manchas. Puede que la diferencia restante sea sencillamente
-   **riqueza de imagen**. Vale la pena probar el diagnóstico `?tex=` con su PNG y
-   medir cuánto de la diferencia total desaparece: eso reparte la culpa entre
-   «pintura» y «shader» de una vez.
-5. **Cosas que ningún número nuestro mide:** el color en movimiento, el gradiente
-   de borde, el ritmo de aparición del arco. Conviene pedirle al founder que
-   señale en una captura **qué zona** se ve distinta, en vez de seguir barriendo
-   constantes a ciegas.
+1. **La pasada del founder** con `/dev/onda` y `elevenlabs.io` lado a lado, la
+   misma voz, pestañas visibles. La pregunta es una sola: ¿#3 es su orbe? Si sí,
+   el clon está cerrado y todo lo que falta es pintura.
+2. **La pintura.** #2 contra #3 con `?pintado=1` en #3 muestra cuánto pierde
+   nuestro pintor procedural con la MISMA paleta. Su cuadro tiene regiones
+   grandes y blandas con un rango de luz repartido (ver la cuadrícula de
+   luminancia 4×4 de su WebP en el REPORT r33: 0,74 arriba a la izquierda, 0,32
+   en el tercio inferior izquierdo). Opciones: afinar el pintor contra esas
+   estadísticas de segundo orden, o pintar cinco cuadros a mano/IA (uno por capa)
+   con nuestros colores.
+3. **Qué va a producción.** El orbe de producción sigue siendo `orb-shader.ts`.
+   Llevar la técnica exige pintar las cinco texturas y decidir la procedencia
+   (reescritura propia de la técnica, no copia del shader).
+4. **Medir su orbe en vivo** (pestaña visible) para cerrar el único número que
+   sigue siendo de archivo: el movimiento. No bloquea nada.
 
 ---
 
-## 12 · Historial en una línea por ronda (rondas 26–32)
+## 11 · Historial en una línea por ronda (rondas 26–33)
 
-- **r26** — las ondas de voz, medidas en su página en vez de imitadas
-- **r27** — el temblor: tres causas, dos nuestras (piso de ruido del micrófono,
-  suavizado del analizador borrado, reloj no integrado en la mesa de luz)
-- **r28** — la ley del audio estaba publicada en su código: se dejó de adivinar
-  (cuatro bandas, dos acumuladores)
-- **r29** — no era la voz: era **toda la arquitectura del dibujo**. Nace
-  `orb-eleven-shader.ts`
-- **r30** — su degradado es **un cuadro**, no una fórmula. Nace
-  `orb-gradient-texture.ts`
-- **r31** — el porte contra su naranja: cuatro defectos (tonemap de más, rayas
-  por el recorte de la textura, ruido con escalones, grano 10× fuerte)
-- **r32** — el grano estaba en la **capa de al lado**; se construye por fin su
-  naranja de Narrator; el centro era el anillo más activo; guion de narración
-
-El detalle completo de cada una está en `docs/design/stages/N3C_REPORT.md`.
+- **r26** — las ondas de voz, medidas en su página
+- **r27** — el temblor: piso de ruido, suavizado del analizador, reloj integrado
+- **r28** — la ley del audio, publicada en su código: cuatro bandas, dos acumuladores
+- **r29** — no era la voz: era la arquitectura del dibujo. Nace `orb-eleven-shader.ts`
+- **r30** — su degradado es un cuadro. Nace `orb-gradient-texture.ts`
+- **r31** — el porte contra su naranja: tonemap, rayas, ruido con escalones, grano 10×
+- **r32** — el grano estaba en el DOM; su naranja de Narrator; el guion
+- **r33** — **a la fuente:** su orbe está en la portada; textura WebP; grano negro con
+  alfa; seis diferencias de shader (sin parche de reloj, arco rápido, orientación,
+  fluido en cientos, arco 0,25); su clip real; el porte pasa a ser un clon
